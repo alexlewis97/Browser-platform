@@ -1,49 +1,45 @@
-"""WebSocket stub for the future Chrome extension (and Playwright MCP extension bridge)."""
+"""WebSocket endpoints for run events and the future Chrome extension bridge."""
 
 from __future__ import annotations
 
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from browser_platform.local_access import access_token_ok
+from browser_platform.local_access import access_token_ok, origin_allowed
 
 router = APIRouter()
 
 PROTOCOL = 1
 
 
-def _ws_token(ws: WebSocket) -> str:
-    header = ws.headers.get("x-browser-platform-token") or ws.headers.get("authorization") or ""
-    if header.lower().startswith("bearer "):
-        return header[7:].strip()
-    if header:
-        return header.strip()
-    return (ws.query_params.get("access_token") or ws.query_params.get("token") or "").strip()
+async def _accept_if_authorized(ws: WebSocket) -> bool:
+    settings = getattr(ws.app.state, "settings", None)
+    origin = ws.headers.get("origin")
+    if not origin_allowed(origin, settings):
+        await ws.close(code=1008, reason="origin not allowed")
+        return False
+    # Browser WebSocket API cannot set custom headers — query token is allowed here only.
+    if not access_token_ok(ws, settings, allow_query=True):
+        await ws.close(code=1008, reason="invalid or missing access token")
+        return False
+    await ws.accept()
+    return True
 
 
 @router.websocket("/ws/extension")
 async def extension_socket(ws: WebSocket) -> None:
-    settings = getattr(ws.app.state, "settings", None)
-    if not access_token_ok(ws, settings):
-        await ws.close(code=1008, reason="invalid or missing access token")
+    if not await _accept_if_authorized(ws):
         return
-    await ws.accept()
     await ws.send_json(
         {
             "type": "hello_ack",
             "server": "browser-platform",
             "protocol": PROTOCOL,
-            "features": [
-                "cdp_relay",
-                "playwright_mcp_bridge",
-                "questions",
-                "run_events",
-                "needs_confirmation",
-                "workflow_use_recorder",
-            ],
+            # Only advertise features that are actually wired.
+            "features": ["questions", "run_events", "needs_confirmation", "workflow_use_recorder"],
             "notes": {
-                "cdp_relay": "The extension will attach chrome.debugger and relay CDP to this socket. Not implemented in v1; use --remote-debugging-port or chrome://inspect/#remote-debugging for now.",
-                "playwright_mcp_bridge": "Reserved for connecting Playwright MCP --extension to the same user Chrome session (SSO / existing tabs).",
+                "cdp_relay": "Not implemented; use --remote-debugging-port / chrome://inspect/#remote-debugging.",
+                "playwright_mcp_bridge": "Reserved; not wired.",
             },
         }
     )
@@ -53,40 +49,29 @@ async def extension_socket(ws: WebSocket) -> None:
             typ = message.get("type")
             if typ == "hello":
                 await ws.send_json({"type": "hello_ack", "protocol": PROTOCOL})
-            elif typ in {"cdp_relay", "cdp_relay_ready", "cdp_message"}:
-                await ws.send_json(
-                    {
-                        "type": "stub",
-                        "for": typ,
-                        "message": "CDP relay is stubbed in v1. Point the backend at the browser's existing CDP endpoint instead.",
-                    }
-                )
-            elif typ in {"playwright_mcp_bridge", "mcp_extension"}:
-                await ws.send_json(
-                    {
-                        "type": "stub",
-                        "for": typ,
-                        "message": "Playwright MCP extension bridge is reserved; not wired in v1.",
-                    }
-                )
             elif typ == "ping":
                 await ws.send_json({"type": "pong"})
+            elif typ in {"cdp_relay", "cdp_relay_ready", "cdp_message", "playwright_mcp_bridge", "mcp_extension"}:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "for": typ,
+                        "message": "Feature not implemented in this build.",
+                    }
+                )
             else:
-                await ws.send_json({"type": "ack", "received": typ})
+                # Do not echo arbitrary client types as a control channel.
+                await ws.send_json({"type": "error", "message": f"unsupported message type '{typ}'"})
     except WebSocketDisconnect:
         return
-
 
 
 @router.websocket("/ws/runs")
 async def runs_socket(ws: WebSocket) -> None:
     """Live run events for the mobile/web client, including needs_confirmation."""
 
-    settings = getattr(ws.app.state, "settings", None)
-    if not access_token_ok(ws, settings):
-        await ws.close(code=1008, reason="invalid or missing access token")
+    if not await _accept_if_authorized(ws):
         return
-    await ws.accept()
     run_filter = (ws.query_params.get("run_id") or ws.query_params.get("job_id") or "").strip()
     await ws.send_json(
         {
@@ -128,9 +113,15 @@ async def runs_socket(ws: WebSocket) -> None:
             if typ == "ping":
                 await ws.send_json({"type": "pong"})
             elif typ == "hello":
-                await ws.send_json({"type": "hello_ack", "protocol": PROTOCOL, "features": ["run_events", "needs_confirmation", "mint_events"]})
+                await ws.send_json(
+                    {
+                        "type": "hello_ack",
+                        "protocol": PROTOCOL,
+                        "features": ["run_events", "needs_confirmation", "mint_events"],
+                    }
+                )
             else:
-                await ws.send_json({"type": "ack", "received": typ})
+                await ws.send_json({"type": "error", "message": f"unsupported message type '{typ}'"})
     except WebSocketDisconnect:
         return
     finally:

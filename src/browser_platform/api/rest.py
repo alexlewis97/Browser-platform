@@ -74,7 +74,10 @@ async def create_workflow(payload: WorkflowCreate, request: Request) -> dict[str
                 definition = WorkflowDefinition.model_validate(data)
             except Exception:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-    stored = _state(request).store.create_workflow(definition)
+    try:
+        stored = _state(request).store.create_workflow(definition)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": stored.id, "path": stored.path, "definition": stored.definition.model_dump(exclude_none=True)}
 
 
@@ -149,7 +152,11 @@ async def create_workflow_from_task_endpoint(payload: FromTaskRequest, request: 
             seed.error = str(exc)
             jobs[job_id] = seed
 
-    asyncio.create_task(_bg())
+    # Cap in-memory from-task jobs and track the background task.
+    while len(jobs) > 50:
+        oldest = next(iter(jobs))
+        jobs.pop(oldest, None)
+    _track_task(request, asyncio.create_task(_bg()))
     return seed.model_dump(mode="json")
 
 
@@ -240,7 +247,31 @@ async def replace_workflow(workflow_id: str, payload: WorkflowReplace, request: 
         stored = _state(request).store.update_workflow(workflow_id, payload.definition)
     except KeyError:
         raise HTTPException(status_code=404, detail="workflow not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": stored.id, "path": stored.path, "definition": stored.definition.model_dump(exclude_none=True)}
+
+
+@router.delete("/api/workflows/{workflow_id}")
+async def delete_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
+    try:
+        _state(request).store.delete_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "id": workflow_id}
+
+
+def _track_task(request: Request, task: asyncio.Task) -> None:
+    tasks: set[asyncio.Task] = getattr(request.app.state, "background_tasks", None) or set()
+    request.app.state.background_tasks = tasks
+    tasks.add(task)
+
+    def _done(done: asyncio.Task) -> None:
+        tasks.discard(done)
+
+    task.add_done_callback(_done)
 
 
 @router.post("/api/workflows/{workflow_id}/run")
@@ -250,6 +281,8 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
         stored = state.store.get_workflow(workflow_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="workflow not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     missing = missing_required_inputs(stored.definition, payload.variables)
     if missing:
         raise HTTPException(
@@ -268,6 +301,23 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
         return run.model_dump(mode="json")
 
     run_id = uuid.uuid4().hex
+    # Persist a running record immediately so GET /api/runs/{id} does not 404.
+    from datetime import datetime, timezone
+
+    from browser_platform.models.run import RunRecord
+
+    pending = RunRecord(
+        id=run_id,
+        workflow_id=stored.id,
+        workflow_name=stored.definition.name,
+        workflow_version=stored.definition.version,
+        status="running",
+        cdp_url=cdp_url,
+        model=payload.llm.model if payload.llm else None,
+        write_back=payload.write_back,
+        started_at=datetime.now(timezone.utc),
+    )
+    state.store.save_run(pending)
 
     async def _run_in_background() -> None:
         await state.runner.run(
@@ -279,24 +329,17 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
             run_id=run_id,
         )
 
-    asyncio.create_task(_run_in_background())
-    return {
-        "id": run_id,
-        "workflow_id": stored.id,
-        "workflow_name": stored.definition.name,
-        "workflow_version": stored.definition.version,
-        "status": "running",
-        "cdp_url": cdp_url,
-        "model": payload.llm.model if payload.llm else None,
-        "steps": [],
-        "outputs": {},
-        "write_back": payload.write_back,
-    }
+    _track_task(request, asyncio.create_task(_run_in_background()))
+    return pending.model_dump(mode="json")
 
 
 @router.get("/api/runs")
-async def list_runs(request: Request) -> dict[str, Any]:
-    return {"runs": [r.model_dump(mode="json") for r in _state(request).store.list_runs()]}
+async def list_runs(request: Request, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    limit = max(1, min(int(limit or 50), 200))
+    offset = max(0, int(offset or 0))
+    runs = _state(request).store.list_runs()
+    page = runs[offset : offset + limit]
+    return {"runs": [r.model_dump(mode="json") for r in page], "total": len(runs), "limit": limit, "offset": offset}
 
 
 @router.get("/api/runs/{run_id}")

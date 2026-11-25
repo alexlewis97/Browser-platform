@@ -93,7 +93,7 @@ def inputs_from_json_schema(schema: dict[str, Any] | None, examples: dict[str, A
             WorkflowInput(
                 name=str(name),
                 type="string",
-                required=True if (not required or name in required) else True,
+                required=(name in required) if required else False,
                 default=default if isinstance(default, (str, int, float, bool)) else None,
                 label=pretty_label(str(name), label=label_src, description=description if isinstance(description, str) else None),
                 description=description if isinstance(description, str) else None,

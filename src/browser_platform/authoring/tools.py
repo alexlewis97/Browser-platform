@@ -22,9 +22,15 @@ def tool_name(stored: StoredWorkflow) -> tuple[str, str]:
 
 
 def is_action_ending(definition: WorkflowDefinition | None) -> bool:
-    """True when the last non-extract step is a click or submit-like action."""
+    """True when the last non-extract step can mutate the page (needs confirm).
+
+    Any click / key_press / input / select / submit counts — not only labels that
+    match a small submit word list — so destructive actions like Delete require confirm.
+    """
 
     if definition is None:
+        return False
+    if getattr(definition, "read_only", None) is True:
         return False
     last = None
     for step in reversed(definition.steps or []):
@@ -35,7 +41,9 @@ def is_action_ending(definition: WorkflowDefinition | None) -> bool:
     if last is None:
         return False
     typ = (last.type or "").lower()
-    return typ in {"click", "submit"} or is_submit_like(last)
+    if typ in {"click", "submit", "input", "select_change", "key_press", "fill"}:
+        return True
+    return is_submit_like(last)
 
 
 def _json_type(item: WorkflowInput) -> str:

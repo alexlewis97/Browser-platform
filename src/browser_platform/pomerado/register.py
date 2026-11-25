@@ -60,6 +60,26 @@ def attach_mint_job_id(
     store.update_workflow(stored.id, updated)
 
 
+def jail_integration_directory(directory: str | None, root: Any) -> str:
+    """Resolve directory under the integrations root; raise if it escapes."""
+
+    from pathlib import Path
+
+    if not directory:
+        raise ValueError("integration directory is required")
+    base = Path(root).resolve()
+    candidate = Path(directory)
+    if not candidate.is_absolute():
+        candidate = (base / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("integration directory escapes integrations root") from exc
+    return str(candidate)
+
+
 def register_published_tool(
     store,
     *,
@@ -71,9 +91,12 @@ def register_published_tool(
     input_values: dict[str, Any] | None = None,
     tool: str | None = None,
     mint_job_id: str | None = None,
+    integrations_root: Any | None = None,
 ) -> dict[str, Any]:
     """Create (or reuse) a workflow so the tool appears in the phone Workflows list."""
 
+    if integrations_root is not None:
+        directory = jail_integration_directory(directory, integrations_root)
     existing = already_registered(store, directory)
     if existing is not None:
         if mint_job_id:

@@ -28,6 +28,7 @@ class ChatRequest(BaseModel):
     confirm: bool = False
     job_id: str | None = None
     results: list[dict[str, Any]] | None = None
+    llm: dict[str, Any] | None = None
 
 
 class ValidateInputsRequest(BaseModel):
@@ -108,6 +109,7 @@ async def post_chat(payload: ChatRequest, request: Request):
     orch = _orch(request)
     if not payload.message and not payload.job_id:
         raise HTTPException(status_code=422, detail="message or job_id is required")
+    llm = payload.llm if isinstance(payload.llm, dict) else {}
     kwargs = dict(
         message=payload.message,
         history=payload.history,
@@ -115,6 +117,8 @@ async def post_chat(payload: ChatRequest, request: Request):
         confirm=payload.confirm,
         job_id=payload.job_id,
         results=payload.results,
+        llm_api_key=(llm.get("api_key") or "") if llm else "",
+        llm_model=(llm.get("model") or "") if llm else "",
     )
     if payload.stream and payload.results is None:
         queue: list[dict[str, Any]] = []
@@ -200,10 +204,12 @@ async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, A
         return ok({"tools": mcp_tools(tools)})
     if method == "tools/call":
         name = str(params.get("name") or "")
-        arguments = params.get("arguments") or {}
-        confirm = bool(params.get("confirm") or arguments.pop("confirm", False) if isinstance(arguments, dict) else False)
+        raw_arguments = params.get("arguments") or {}
+        arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+        confirm = bool(params.get("confirm") or arguments.pop("confirm", False))
         # Reuse a one-shot planned call via the orchestrator job shape.
         from browser_platform.authoring.tools import lookup_tool
+        from browser_platform.workflow_inputs import missing_required_inputs
 
         tool = lookup_tool(tools, name)
         if tool is None:
@@ -211,8 +217,11 @@ async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, A
         stored = orch.stored_for(tool)
         if stored is None:
             return err(-32602, f"Unknown workflow for '{name}'.")
+        missing = missing_required_inputs(stored.definition, arguments)
+        if missing:
+            return err(-32602, "Missing required inputs: " + ", ".join(missing))
         if is_action_tool(tool) and not confirm:
-            return err(-32000, "This workflow ends in a click or submit. Retry with confirm=true.")
+            return err(-32000, "This workflow ends in an action (click/submit). Retry with confirm=true.")
         job = {
             "id": "mcp",
             "message": f"MCP tools/call {name}",
@@ -224,7 +233,7 @@ async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, A
                     "tool": name,
                     "workflow_id": stored.id,
                     "workflow_name": stored.definition.name,
-                    "arguments": arguments if isinstance(arguments, dict) else {},
+                    "arguments": arguments,
                     "action_ending": is_action_tool(tool),
                 }
             ],

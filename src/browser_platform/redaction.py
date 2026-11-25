@@ -12,13 +12,28 @@ _KEY_NAMES = frozenset({
 })
 
 _SECRET_RE = re.compile(
-    r"(sk-or-v1-[A-Za-z0-9_-]+|sk-[A-Za-z0-9]{16,}|Bearer\s+[A-Za-z0-9._\-]+)",
+    r"("
+    r"sk-or-v1-[A-Za-z0-9_-]+|"
+    r"sk-proj-[A-Za-z0-9_-]+|"
+    r"sk-admin-[A-Za-z0-9_-]+|"
+    r"sk-svcacct-[A-Za-z0-9_-]+|"
+    r"sk-[A-Za-z0-9_-]{16,}|"
+    r"Bearer\s+[A-Za-z0-9._\-]+|"
+    r"(?:access_token|token)=([^\s&#]+)"
+    r")",
     re.IGNORECASE,
 )
 
 
 def redact_text(value: str) -> str:
-    return _SECRET_RE.sub("[REDACTED]", value)
+    def _sub(match: re.Match[str]) -> str:
+        text = match.group(0)
+        if "=" in text and text.lower().startswith(("access_token=", "token=")):
+            key = text.split("=", 1)[0]
+            return f"{key}=[REDACTED]"
+        return "[REDACTED]"
+
+    return _SECRET_RE.sub(_sub, value)
 
 
 def redact(value: Any) -> Any:
@@ -46,11 +61,21 @@ class RedactingFilter(logging.Filter):
                 record.args = redact(record.args)
             else:
                 record.args = tuple(redact(a) for a in record.args)
+        # Tracebacks / exc_text can carry secrets from str(exc).
+        if getattr(record, "exc_text", None):
+            record.exc_text = redact_text(record.exc_text)
         return True
 
 
+_INSTALLED = False
+
+
 def install_logging_redaction() -> None:
+    global _INSTALLED
+    if _INSTALLED:
+        return
     filt = RedactingFilter()
     logging.getLogger().addFilter(filt)
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "browser_platform"):
         logging.getLogger(name).addFilter(filt)
+    _INSTALLED = True

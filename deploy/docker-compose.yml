@@ -1,5 +1,7 @@
 # Oracle VM: attach to the same docker_default network as supabase-caddy.
 # Do not publish 8745 on a public interface. Pomerado minting is disabled.
+# Run from repo root: docker compose -f deploy/docker-compose.yml up -d --build
+# Requires BROWSER_PLATFORM_ACCESS_TOKEN in deploy/.env (HOST=0.0.0.0).
 services:
   backend:
     container_name: browser-platform
@@ -18,10 +20,13 @@ services:
       BROWSER_PLATFORM_AUTO_LAUNCH_CHROME: "true"
       BROWSER_PLATFORM_CHROME_HEADLESS: "true"
       BROWSER_PLATFORM_CHROME_PROFILE_DIR: "/data/chrome-profile"
+      BROWSER_PLATFORM_REQUIRE_TOKEN_ON_LOCALHOST: "true"
     volumes:
-      - ./data:/data
+      - ../data:/data
     ports:
       - "127.0.0.1:8745:8745"
+    security_opt:
+      - no-new-privileges:true
     shm_size: "1gb"
     init: true
     networks:

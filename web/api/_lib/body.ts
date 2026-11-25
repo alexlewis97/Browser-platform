@@ -9,6 +9,7 @@ export type PublishPayload = {
   republish: boolean;
 };
 
+const MAX_PACKAGE_BYTES = 8 * 1024 * 1024; // 8 MiB
 const BRACE = /\{\{?\s*([a-zA-Z_][\w]*)\s*\}?\}/g;
 const LABELS: Record<string, string> = {
   term: "Search term",
@@ -151,11 +152,27 @@ async function fromMultipart(request: Request): Promise<PublishPayload> {
     throw new Error("Pomerado packages must be uploaded as a zip (they include integration code).");
   }
   if (file instanceof File) {
+    if (typeof file.size === "number" && file.size > MAX_PACKAGE_BYTES) {
+      throw new Error(`Package exceeds ${MAX_PACKAGE_BYTES} byte limit.`);
+    }
     const packageBytes = Buffer.from(await file.arrayBuffer());
+    if (packageBytes.length > MAX_PACKAGE_BYTES) {
+      throw new Error(`Package exceeds ${MAX_PACKAGE_BYTES} byte limit.`);
+    }
+    if (packageBytes.length >= 4) {
+      const isZip = packageBytes[0] === 0x50 && packageBytes[1] === 0x4b;
+      if (!isZip) throw new Error("Package must be a zip archive.");
+    }
     const claimed = String(fields.sha256 || "").toLowerCase();
     const sha = sha256Hex(packageBytes);
     if (claimed && claimed !== sha) throw new Error("Package sha256 does not match the uploaded file.");
-    const listing = normalizeListing({ ...fields, type: typ, sha256: sha, size: packageBytes.length, contains_code: typ === "pomerado" || fields.contains_code });
+    const listing = normalizeListing({
+      ...fields,
+      type: typ,
+      sha256: sha,
+      size: packageBytes.length,
+      contains_code: typ === "pomerado",
+    });
     if (!listing) throw new Error("A name is required.");
     return { listing, packageBytes, republish: false };
   }

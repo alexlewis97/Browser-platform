@@ -276,6 +276,11 @@ class WorkflowRunner:
             result = {"verdict": "suspect", "reason": f"Output validation failed: {exc}", "usage": {"used": False}}
         run.validation = result
         if result.get("verdict") == "wrong":
+            action = is_action_ending(stored.definition)
+            # Never re-run clicks/submits. Surface the flag on action workflows;
+            # only retry (once) and fail extract/read workflows.
+            if action:
+                return
             if validation_attempt == 0:
                 run.retry_output_validation = True
             else:
@@ -333,7 +338,7 @@ class WorkflowRunner:
             and page.url
         ):
             goal = step.extractionGoal or step.goal or ""
-            cached_value = self.result_cache.get(workflow_id, index, page.url, goal)
+            cached_value = self.result_cache.get(workflow_id, index, page.url, goal, variables)
             if cached_value is not None:
                 started = time.perf_counter()
                 return (
@@ -366,7 +371,7 @@ class WorkflowRunner:
                 self.action_cache.put(workflow_id, index, page.url, success.attempt.strategy)
             if step.type in {"extract", "extract_page_content"} and definition.cache_results:
                 goal = step.extractionGoal or step.goal or ""
-                self.result_cache.put(workflow_id, index, page.url, goal, success.output)
+                self.result_cache.put(workflow_id, index, page.url, goal, success.output, variables)
             # Navigation / extract have no attempt — still workflow_use deterministic.
             if success.attempt is None and step.type in {
                 "navigation",
@@ -502,17 +507,25 @@ class WorkflowRunner:
                             )
                         self.action_cache.put(workflow_id, index, page.url, winner)
                     except StepFailed:
-                        # Agent may already have performed the action; still write back the strategy.
-                        winner = strategies[0]
-                        if write_back_repairs and agent_ok:
-                            definition = write_back(
-                                definition,
-                                step_index=index,
-                                strategy=winner,
-                                reason=det_error,
-                            )
+                        # Do not write back a selector that failed deterministic replay.
                         if not agent_ok:
                             raise
+                        # Agent claimed success but selector did not replay — treat as success
+                        # for this run only (no cache / write-back pollution).
+                        return (
+                            _tel(
+                                index,
+                                step,
+                                "browser_use",
+                                True,
+                                repair_started,
+                                output=output,
+                                tokens_in=tokens_in,
+                                tokens_out=tokens_out,
+                            ),
+                            definition,
+                            output,
+                        )
                 if agent_ok:
                     return (
                         _tel(
@@ -696,7 +709,11 @@ class WorkflowRunner:
             candidates = []
         decision = score_candidates(query, candidates, threshold=fuzzy_cfg.threshold, margin=fuzzy_cfg.margin)
         if decision.accepted and decision.winner is not None:
-            await apply_candidate(page, step, decision.winner, timeout_ms=timeout_ms)
+            try:
+                await apply_candidate(page, step, decision.winner, timeout_ms=timeout_ms)
+            except Exception:
+                # Fall through to LLM repair rather than failing the whole run.
+                return None
             definition = self._remember_target(
                 definition,
                 workflow_id,
@@ -980,6 +997,8 @@ class WorkflowRunner:
 
 
 def _pomerado_ok(result: Any) -> bool:
+    """Only terminal published results count as success (not running/incomplete)."""
+
     if result is None:
         return False
     if isinstance(result, dict):
@@ -987,17 +1006,18 @@ def _pomerado_ok(result: Any) -> bool:
             return False
         if result.get("isError") or result.get("error"):
             return False
-        status = result.get("status")
-        if status in {"failed", "error", "incomplete"}:
+        status = str(result.get("status") or "").lower()
+        if status in {"failed", "error", "incomplete", "running", "pending", "queued", "waiting"}:
             return False
-        # Stub host may return {ok: true, ...} or a published output.
-        if result.get("ok") is True:
+        if result.get("ok") is True and status in {"", "ok", "succeeded", "success", "published", "complete", "completed"}:
             return True
-        if result.get("output") is not None or result.get("result") is not None:
+        if status in {"succeeded", "success", "published", "complete", "completed"}:
             return True
-        # Empty dict is not success.
-        return bool(result)
-    return True
+        # Explicit terminal payload without a running status.
+        if status == "" and (result.get("output") is not None or result.get("result") is not None):
+            return True
+        return False
+    return False
 
 
 def _tel(
