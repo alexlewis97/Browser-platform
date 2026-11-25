@@ -69,6 +69,7 @@ class FromTaskResult(BaseModel):
     suggestions: list[dict[str, Any]] = Field(default_factory=list)
     parameters: list[dict[str, Any]] = Field(default_factory=list)
     confirmation: dict[str, Any] | None = None
+    input_validation: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -594,6 +595,15 @@ async def create_workflow_from_task(
         job.variables = resolved or job.variables
         if on_status:
             on_status(job)
+        try:
+            from browser_platform.authoring.input_validate import validate_inputs
+            job.input_validation = await validate_inputs(definition, task=task)
+            usage = (job.input_validation or {}).get("usage") or {}
+            if usage:
+                job.creation.tokens_in = int(job.creation.tokens_in or 0) + int(usage.get("tokens_in") or 0)
+                job.creation.tokens_out = int(job.creation.tokens_out or 0) + int(usage.get("tokens_out") or 0)
+        except Exception:
+            job.input_validation = {"findings": [], "blocks_publish": False, "error": "input validation skipped"}
         stored = store.create_workflow(definition)
         job.workflow_id = stored.id
         job.definition = stored.definition

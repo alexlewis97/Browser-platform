@@ -18,6 +18,8 @@ import {
   submitUrlBar,
   teardownRecordSockets,
 } from "./record";
+import { bindChatPage, handleChatClick, renderChatPage } from "./chat";
+import { findingsCard, validateInputs, type InputValidation } from "./validation";
 import { refreshDiscovery } from "./discover";
 import { ALT_MODEL, DEFAULT_MODEL, isLocalOrigin, isManagedBackendUrl, loadRunInputs, loadSettings, saveRunInputs, saveSettings, settingsComplete, type Settings } from "./storage";
 import {
@@ -43,6 +45,7 @@ type Route =
   | { name: "from-task" }
   | { name: "from-task-job"; id: string }
   | { name: "record" }
+  | { name: "chat" }
   | { name: "marketplace" }
   | { name: "settings" };
 
@@ -54,6 +57,7 @@ const ICONS = {
   fromTask: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 5h9l5 5v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M14 5v5h5M8 13h8M8 17h5"/></svg>`,
   record: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>`,
   market: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 10h16v9H4z"/><path d="M4 10 6 5h12l2 5"/><path d="M9 14v5M15 14v5"/></svg>`,
+  chat: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 6h14v9H8l-3 3V6z"/></svg>`,
 };
 
 let root: HTMLElement;
@@ -76,6 +80,7 @@ function parseRoute(): Route {
   if (parts[0] === "from-task" && parts[1]) return { name: "from-task-job", id: parts[1] };
   if (parts[0] === "from-task") return { name: "from-task" };
   if (parts[0] === "record") return { name: "record" };
+  if (parts[0] === "chat") return { name: "chat" };
   if (parts[0] === "runs" && parts[1]) return { name: "run", id: parts[1] };
   if (parts[0] === "runs") return { name: "runs" };
   if (parts[0] === "workflows" && parts[1] === "new") return { name: "new" };
@@ -217,6 +222,7 @@ function nav(): string {
       <a href="#/workflows" class="${active("workflows")}">${ICONS.workflows}Workflows</a>
       <a href="#/from-task" class="${active("from-task")}">${ICONS.fromTask}From task</a>
       <a href="#/record" class="${active("record")}">${ICONS.record}Record</a>
+      <a href="#/chat" class="${active("chat")}">${ICONS.chat}Chat</a>
       <a href="#/runs" class="${active("runs")}">${ICONS.runs}Runs</a>
       <a href="#/mint" class="${active("mint")}">${ICONS.mint}Mint</a>
       <a href="#/marketplace" class="${active("marketplace")}">${ICONS.market}Market</a>
@@ -911,8 +917,20 @@ async function fillPublishFields(workflowId: string, listings?: MarketListing[])
   (form.elements.namedItem("type") as HTMLSelectElement).value = typ;
   (form.elements.namedItem("inputs") as HTMLTextAreaElement).value = JSON.stringify(inputPayload(deriveWorkflowInputs(def)), null, 2);
   form.dataset.workflowId = stored.id;
-  submit.disabled = false;
-  submit.textContent = published ? "Update" : "Publish";
+  let blocked = false;
+  try {
+    const check = await validateInputs(def, def.description || def.name || "");
+    form.dataset.blocksPublish = check.blocks_publish ? "1" : "0";
+    const box = document.getElementById("market-input-findings");
+    const html = findingsCard(check);
+    if (box) box.innerHTML = html;
+    else if (html) fields.insertAdjacentHTML("beforeend", `<div id="market-input-findings">${html}</div>`);
+    blocked = Boolean(check.blocks_publish);
+  } catch {
+    form.dataset.blocksPublish = "0";
+  }
+  submit.disabled = blocked;
+  submit.textContent = blocked ? "Fix input errors to publish" : published ? "Update" : "Publish";
 }
 
 async function renderSettings(): Promise<string> {
@@ -1071,12 +1089,13 @@ function renderRecordPage(): string {
             : `<p class="muted">No parameters detected. You can still save a fixed workflow.</p>`
         }
         <div class="btn-row"><button class="btn" data-action="record-add-param">Add input</button></div>
-      </div>`
+      </div>
+      ${findingsCard(s.inputValidation, { applyAction: "record-apply-finding" })}`
     : "";
   const save = s.review.some((item) => item.kept)
     ? `<div class="btn-row">
         <button class="btn primary wide" data-action="record-save" id="record-save" ${s.phase === "cleaning" ? "disabled" : ""}>${s.workflowId ? "Saved" : "Save workflow"}</button>
-        <button class="btn wide" data-action="record-publish" id="record-publish" ${s.workflowId ? "" : "disabled"}>Publish to marketplace</button>
+        <button class="btn wide" data-action="record-publish" id="record-publish" ${s.workflowId && !s.inputValidation?.blocks_publish ? "" : "disabled"}>${s.inputValidation?.blocks_publish ? "Fix input errors to publish" : "Publish to marketplace"}</button>
       </div>
       ${s.workflowId ? `<p class="muted">Saved as <a href="#/workflows/${encodeURIComponent(s.workflowId)}">${escapeHtml(s.workflowId)}</a>. You can run it from the library or publish it now.</p>` : ""}
       ${s.listing ? `<div class="banner ok">Published ${escapeHtml(s.listing.name)} v${escapeHtml(s.listing.version)} to the marketplace.</div>` : ""}`
@@ -1273,6 +1292,7 @@ function renderFromTaskResult(job: FromTaskJob): string {
     </div>
     <div style="margin-top:16px">${steps}</div>
     ${outputs ? `<div style="margin-top:12px">${outputs}</div>` : ""}
+    ${findingsCard((job as FromTaskJob & { input_validation?: InputValidation }).input_validation, { applyAction: "from-task-apply-finding" })}
     <div class="btn-row" style="margin-top:16px">
       ${wfId ? `<a class="btn" href="#/workflows/${encodeURIComponent(wfId)}">Open workflow</a>
       <a class="btn primary" href="#/workflows/${encodeURIComponent(wfId)}" data-action="from-task-run" data-workflow-id="${escapeHtml(wfId)}">Run</a>` : `<span class="muted">Workflow was not saved.</span>`}
@@ -1306,6 +1326,7 @@ async function render(): Promise<void> {
   if (route.name === "settings") html = await renderSettings();
   else if (route.name === "marketplace") html = await renderMarketplace();
   else if (route.name === "record") html = renderRecordPage();
+  else if (route.name === "chat") html = shell("Chat", "Workflows as tools", `<div id="chat-page">${renderChatPage()}</div>`, "Ask one workflow, many, or the same one over a list. I'll answer your question, not dump raw results.");
   else if (route.name === "from-task") html = await renderFromTaskPage();
   else if (route.name === "from-task-job") html = await renderFromTaskPage(route.id);
   else if (route.name === "mint") html = await renderMint();
@@ -1320,6 +1341,9 @@ async function render(): Promise<void> {
   if (route.name === "run") startRunPolling(route.id);
   if (route.name === "mint-job") startMintPolling(route.id);
   if (route.name === "from-task-job") startFromTaskPolling(route.id);
+  if (route.name === "chat") {
+    void bindChatPage();
+  }
   if (route.name === "record") {
     bindRecordScreen();
     resumeLiveSession();
@@ -1568,8 +1592,59 @@ async function onClick(event: Event): Promise<void> {
     await render();
     return;
   }
+  if (action && handleChatClick(action, (target.closest("[data-action]") as HTMLElement | null) || target)) {
+    return;
+  }
+  if (action === "record-apply-finding") {
+    event.preventDefault();
+    const id = (target.closest("[data-finding]") as HTMLElement | null)?.dataset.finding;
+    const finding = (recordState.inputValidation?.findings || []).find((item) => item.id === id);
+    if (!finding?.patch || !recordState.definition) return;
+    try {
+      const result = await validateInputs(recordState.definition as import("./api").WorkflowDefinition, recordState.goal, finding.patch);
+      recordState.definition = (result.definition || recordState.definition) as Record<string, unknown>;
+      recordState.inputValidation = result;
+      if (Array.isArray(result.definition?.input_schema)) {
+        recordState.parameters = result.definition.input_schema.map((item: { name: string; label?: string; default?: string; required?: boolean }) => ({
+          name: item.name,
+          label: item.label,
+          example: item.default != null ? String(item.default) : "",
+          required: item.required !== false,
+        }));
+      }
+    } catch (err) {
+      recordState.error = err instanceof Error ? err.message : String(err);
+    }
+    await render();
+    return;
+  }
+  if (action === "from-task-apply-finding") {
+    event.preventDefault();
+    const route = parseRoute();
+    if (route.name !== "from-task-job") return;
+    try {
+      const job = await getFromTaskJob(route.id);
+      const id = (target.closest("[data-finding]") as HTMLElement | null)?.dataset.finding;
+      const finding = (job.input_validation?.findings || []).find((item) => item.id === id);
+      if (!finding?.patch || !job.definition) return;
+      const result = await validateInputs(job.definition, job.task, finding.patch);
+      if (job.workflow_id && result.definition) {
+        await api.updateWorkflow(job.workflow_id, result.definition);
+      }
+      flashMessage = { kind: "ok", text: "Applied the suggested input fix." };
+    } catch (err) {
+      flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
+    }
+    await render();
+    return;
+  }
   if (action === "record-publish") {
     event.preventDefault();
+    if (recordState.inputValidation?.blocks_publish) {
+      recordState.error = "Publishing is blocked until input validation errors are fixed.";
+      await render();
+      return;
+    }
     const btn = target.closest("button") as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
     try {
@@ -1850,10 +1925,20 @@ async function onSubmit(event: Event): Promise<void> {
         return;
       }
     }
+    if (form.dataset.blocksPublish === "1") {
+      if (status) status.innerHTML = `<div class="banner err">Publishing is blocked until input validation errors are fixed.</div>`;
+      return;
+    }
     if (button) button.disabled = true;
     if (status) status.innerHTML = `<div class="banner info">Publishing…</div>`;
     try {
       const stored = await api.getWorkflow(workflowId);
+      const check = await validateInputs(stored.definition, stored.definition.description || stored.definition.name || "");
+      if (check.blocks_publish) {
+        if (button) button.disabled = false;
+        if (status) status.innerHTML = findingsCard(check) || `<div class="banner err">Publishing is blocked until input errors are fixed.</div>`;
+        return;
+      }
       const typ = String((form.elements.namedItem("type") as HTMLSelectElement | null)?.value || inferWorkflowType(stored.definition as unknown as Record<string, unknown>));
       const name = String((form.elements.namedItem("name") as HTMLInputElement | null)?.value || stored.definition.name).trim();
       const result = await publishWorkflowJson({

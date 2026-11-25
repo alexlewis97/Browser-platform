@@ -136,6 +136,10 @@ async function fetchBackend(path: string, init: RequestInit, settings: Settings)
   }
 }
 
+export async function backendFetch(path: string, init: RequestInit = {}, settings: Settings = loadSettings()): Promise<Response> {
+  return withDiscoveryRetry(path, init, settings);
+}
+
 async function withDiscoveryRetry(path: string, init: RequestInit, settings: Settings): Promise<Response> {
   try {
     return await fetchBackend(path, init, settings);
@@ -179,6 +183,8 @@ export const api = {
   getWorkflow: (id: string) => request<StoredWorkflow>(`/api/workflows/${id}`),
   createWorkflow: (payload: Record<string, unknown>) =>
     request<StoredWorkflow>("/api/workflows", { method: "POST", body: JSON.stringify(payload) }),
+  updateWorkflow: (id: string, definition: WorkflowDefinition) =>
+    request<StoredWorkflow>(`/api/workflows/${id}`, { method: "PUT", body: JSON.stringify({ definition }) }),
   startRun: (id: string, body: Record<string, unknown>) =>
     request<RunRecord>(`/api/workflows/${id}/run`, { method: "POST", body: JSON.stringify({ ...body, wait: false }) }),
   listRuns: () => request<{ runs: RunRecord[] }>("/api/runs"),

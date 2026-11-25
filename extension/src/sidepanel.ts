@@ -3,7 +3,7 @@ import { listingIdForName } from "./lib/market.ts";
 import type { Candidate, ExtensionSettings, InstalledWorkflow, MarketListing, RunState, WorkflowInput } from "./lib/types.ts";
 import { DEFAULT_BACKEND_URL, DEFAULT_MARKET_ORIGIN } from "./lib/types.ts";
 
-type View = "installed" | "record" | "market" | "run" | "settings";
+type View = "installed" | "record" | "market" | "run" | "chat" | "settings";
 type MarketItem = MarketListing & { installed?: boolean; installedVersion?: string; updateAvailable?: boolean };
 
 let view: View = "installed";
@@ -17,6 +17,11 @@ let flash: { kind: "ok" | "err" | "info"; text: string } | null = null;
 let hitlChoice: string | null = null;
 let busy = false;
 let publishId = "";
+let chatDraft = "";
+let chatBusy = false;
+let chatLog: { role: "user" | "assistant"; content: string }[] = [];
+let chatStatus = "";
+
 
 type ReviewItem = { id: string; kept: boolean; reason?: string; stage?: string; step: Record<string, unknown> };
 type ParamDraft = { name: string; label?: string; example?: string; required?: boolean; description?: string };
@@ -70,6 +75,7 @@ function shell(title: string, body: string): string {
       ${tab("installed", "Installed")}
       ${tab("record", "Record")}
       ${tab("market", "Market")}
+      ${tab("chat", "Chat")}
       ${tab("run", "Run")}
       ${tab("settings", "Settings")}
     </nav>
@@ -358,11 +364,39 @@ function renderSettings(): string {
   );
 }
 
+
+async function backendChat(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const base = (settings.backendUrl || DEFAULT_BACKEND_URL).replace(/\/+$/, "");
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (settings.marketToken) headers["X-Browser-Platform-Token"] = settings.marketToken;
+  const res = await fetch(`${base}/api/chat`, { method: "POST", body: JSON.stringify(payload), headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || res.statusText || "Chat failed"));
+  return data as Record<string, unknown>;
+}
+
+function renderChat(): string {
+  const history = chatLog.map((msg) => `<div class="card"><strong>${escapeHtml(msg.role)}</strong><p style="white-space:pre-wrap">${escapeHtml(msg.content)}</p></div>`).join("")
+    || `<p class="muted">Ask a saved workflow, several at once, or the same one over a list. Planning runs on the backend; the tools run in this tab.</p>`;
+  return shell(
+    "Chat",
+    `${history}
+    ${chatStatus ? `<p class="muted">${escapeHtml(chatStatus)}</p>` : ""}
+    <form id="ext-chat-form" class="card">
+      <label class="field"><span>Message</span>
+        <textarea name="message" required style="min-height:80px">${escapeHtml(chatDraft)}</textarea>
+      </label>
+      <button class="btn primary wide" type="submit" ${chatBusy ? "disabled" : ""}>Send</button>
+    </form>`,
+  );
+}
+
 function render(): void {
   const usedFlash = flash;
   if (view === "market") app().innerHTML = renderMarket();
   else if (view === "record") app().innerHTML = renderRecord();
   else if (view === "run") app().innerHTML = renderRun();
+  else if (view === "chat") app().innerHTML = renderChat();
   else if (view === "settings") app().innerHTML = renderSettings();
   else app().innerHTML = renderInstalled();
   if (usedFlash) flash = null;
@@ -373,6 +407,70 @@ async function loadMarket(): Promise<void> {
   if (!res.ok) throw new Error(res.error || "Could not list marketplace");
   listings = res.listings;
 }
+
+document.addEventListener("submit", (event) => {
+  const form = event.target as HTMLFormElement | null;
+  if (!form || form.id !== "ext-chat-form") return;
+  event.preventDefault();
+  const message = String((form.elements.namedItem("message") as HTMLTextAreaElement | null)?.value || "").trim();
+  if (!message || chatBusy) return;
+  chatDraft = "";
+  chatLog.push({ role: "user", content: message });
+  chatBusy = true;
+  chatStatus = "Planning…";
+  render();
+  void (async () => {
+    try {
+      const history = chatLog.slice(0, -1);
+      let job = await backendChat({ message, history, target: "extension", stream: false });
+      if (job.status === "needs_input" || job.status === "needs_confirmation") {
+        if (job.status === "needs_confirmation") {
+          if (!confirm(String(job.confirm_reason || "Run these workflows?"))) {
+            chatLog.push({ role: "assistant", content: String(job.confirm_reason || "Cancelled.") });
+            return;
+          }
+          job = await backendChat({ message, job_id: job.id, confirm: true, target: "extension", stream: false });
+        } else {
+          chatLog.push({ role: "assistant", content: String(job.question || job.answer || "Missing required inputs.") });
+          return;
+        }
+      }
+      if (job.status === "awaiting_results" || Array.isArray(job.calls)) {
+        const calls = (job.calls || []) as Array<{ id: string; definition?: unknown; arguments?: Record<string, string>; workflow_id?: string; workflow_name?: string; tool?: string; action_ending?: boolean }>;
+        chatStatus = `Running ${calls.length} tool call(s) in this tab…`;
+        render();
+        const results = [];
+        for (const call of calls) {
+          const res = await send<{ ok: boolean; run?: Record<string, unknown>; error?: string }>("bp-run-definition", {
+            definition: call.definition,
+            values: call.arguments || {},
+            id: call.workflow_id,
+            name: call.workflow_name,
+          });
+          results.push({
+            id: call.id,
+            tool: call.tool,
+            workflow_id: call.workflow_id,
+            workflow_name: call.workflow_name,
+            inputs: call.arguments,
+            status: res.ok ? "succeeded" : "failed",
+            error: res.error,
+            outputs: (res.run && (res.run as { outputs?: Record<string, unknown> }).outputs) || {},
+            action_ending: call.action_ending,
+          });
+        }
+        job = await backendChat({ message, job_id: job.id, results, stream: false });
+      }
+      chatLog.push({ role: "assistant", content: String(job.answer || job.question || job.error || "Done.") });
+    } catch (err) {
+      flash = { kind: "err", text: err instanceof Error ? err.message : String(err) };
+    } finally {
+      chatBusy = false;
+      chatStatus = "";
+      render();
+    }
+  })();
+});
 
 document.addEventListener("click", (event) => {
   const target = event.target as HTMLElement | null;

@@ -50,6 +50,7 @@ class RecordingCleanResult(BaseModel):
     stats: dict[str, Any] = Field(default_factory=dict)
     name: str | None = None
     creation: dict[str, Any] = Field(default_factory=dict)
+    input_validation: dict[str, Any] | None = None
 
 
 def events_from_payload(raw: list[Any] | None) -> list[RecordedEvent]:
@@ -362,7 +363,16 @@ async def clean_recording(
     tokens_in = int((extract_usage or {}).get("tokens_in") or 0) + int((llm_usage or {}).get("tokens_in") or 0)
     tokens_out = int((extract_usage or {}).get("tokens_out") or 0) + int((llm_usage or {}).get("tokens_out") or 0)
     review = _review_items(original, steps, removed, llm_dropped)
+    input_validation: dict[str, Any] | None = None
+    try:
+        from browser_platform.authoring.input_validate import validate_inputs
+        input_validation = await validate_inputs(definition, task=goal)
+        tokens_in += int((input_validation.get("usage") or {}).get("tokens_in") or 0)
+        tokens_out += int((input_validation.get("usage") or {}).get("tokens_out") or 0)
+    except Exception:
+        input_validation = {"findings": [], "blocks_publish": False, "error": "input validation skipped"}
     return RecordingCleanResult(
+
         review=review,
         parameters=[item.model_dump() for item in parameters],
         variables=resolved,
@@ -392,6 +402,7 @@ async def clean_recording(
             "steps_recorded": len(original),
             "steps_kept": len(steps),
         },
+        input_validation=input_validation,
     )
 
 

@@ -741,6 +741,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ ok: true, values: await loadLastInputs((message as { id: string }).id) });
         return;
       }
+      if (kind === "bp-run-definition") {
+        const payload = message as { definition: InstalledWorkflow["definition"]; values?: Record<string, string>; id?: string; name?: string };
+        if (!payload.definition) throw new Error("No workflow definition to run.");
+        const installed: InstalledWorkflow = {
+          id: payload.id || "adhoc",
+          name: payload.name || payload.definition.name || "workflow",
+          description: payload.definition.description || "",
+          type: "workflow-use",
+          version: String(payload.definition.version || "1"),
+          sha256: "",
+          installedAt: new Date().toISOString(),
+          source: "file",
+          definition: payload.definition,
+        };
+        const tabId = (message as { tabId?: number }).tabId || await targetTab();
+        const run = await runWorkflow(tabId, installed, payload.values || {});
+        sendResponse({ ok: run.status === "ok", run });
+        return;
+      }
       if (kind === "bp-run-workflow") {
         const { id, values } = message as { id: string; values: Record<string, string> };
         const installed = await getInstalled(id);

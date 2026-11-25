@@ -25,6 +25,8 @@ export type RecordState = {
   workflowId: string;
   listing: MarketListing | null;
   extensionReady: boolean | null;
+  definition: Record<string, unknown> | null;
+  inputValidation: import("./validation").InputValidation | null;
 };
 
 const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
@@ -47,6 +49,8 @@ export const recordState: RecordState = {
   workflowId: "",
   listing: null,
   extensionReady: null,
+  definition: null,
+  inputValidation: null,
 };
 
 let ws: WebSocket | null = null;
@@ -77,6 +81,8 @@ function applyCleanResult(result: {
   stats?: { steps_before?: number; steps_after?: number };
   creation?: { steps_recorded?: number; steps_kept?: number };
   name?: string;
+  definition?: Record<string, unknown> | null;
+  input_validation?: import("./validation").InputValidation | null;
 }): void {
   recordState.review = result.review || [];
   recordState.parameters = result.parameters || [];
@@ -93,6 +99,8 @@ function applyCleanResult(result: {
   const after = result.stats?.steps_after ?? result.creation?.steps_kept ?? recordState.review.filter((i) => i.kept).length;
   recordState.statsLine = `${before} recorded steps → ${after} kept.`;
   if (!recordState.name && result.name) recordState.name = result.name;
+  if (result.definition) recordState.definition = result.definition;
+  recordState.inputValidation = result.input_validation || null;
   recordState.phase = "review";
 }
 
@@ -234,7 +242,7 @@ export async function probeExtension(): Promise<boolean> {
   });
 }
 
-function extensionRequest<T>(kind: string, payload: Record<string, unknown> = {}): Promise<T & { ok: boolean; error?: string }> {
+export function extensionRequest<T>(kind: string, payload: Record<string, unknown> = {}): Promise<T & { ok: boolean; error?: string }> {
   return new Promise((resolve, reject) => {
     const id = `r-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const timer = window.setTimeout(() => {
@@ -259,6 +267,8 @@ export async function startRemote(): Promise<void> {
   recordState.phase = "live";
   recordState.review = [];
   recordState.parameters = [];
+  recordState.definition = null;
+  recordState.inputValidation = null;
   recordState.listing = null;
   recordState.workflowId = "";
   recordState.frame = "";

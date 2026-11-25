@@ -26,6 +26,7 @@ from browser_platform.config import Settings
 from browser_platform.executor import browser as browser_mod
 from browser_platform.executor.browser import CdpSession
 from browser_platform.executor.deterministic import StepFailed, run_step as run_deterministic_step
+from browser_platform.executor.output_validate import collect_sample, validate_output as validate_run_output
 from browser_platform.executor.selectors import SelectorAttempt, build_selector_plan
 from browser_platform.fuzzy.candidates import Candidate, apply_candidate, collect_candidates
 from browser_platform.fuzzy.config import find_alias, fuzzy_applies, make_alias, merge_fuzzy, merge_hitl
@@ -42,6 +43,31 @@ from browser_platform.store.file_store import FileStore
 
 ConnectFn = Callable[[str], Awaitable[CdpSession]]
 DisconnectFn = Callable[[CdpSession], Awaitable[None]]
+
+
+
+async def _page_meta(session: CdpSession | None) -> dict[str, Any]:
+    if session is None:
+        return {}
+    page = getattr(session, "page", None)
+    if page is None:
+        return {}
+    meta: dict[str, Any] = {}
+    try:
+        meta["url"] = page.url
+    except Exception:
+        pass
+    try:
+        meta["title"] = await page.title()
+    except Exception:
+        pass
+    try:
+        meta["text"] = await page.evaluate(
+            "() => (document.body && document.body.innerText ? document.body.innerText.slice(0, 2000) : '')"
+        )
+    except Exception:
+        pass
+    return meta
 
 
 class WorkflowRunner:
@@ -84,6 +110,9 @@ class WorkflowRunner:
         llm: LLMConfig | None = None,
         write_back_repairs: bool = True,
         run_id: str | None = None,
+        request_text: str | None = None,
+        validate_output: bool = True,
+        validation_attempt: int = 0,
     ) -> RunRecord:
         run = RunRecord(
             id=run_id or uuid.uuid4().hex,
@@ -188,11 +217,72 @@ class WorkflowRunner:
             run.status = "failed"
             run.error = str(exc)
         finally:
+            page_meta: dict[str, Any] = {}
+            if session is not None and run.status == "succeeded" and validate_output:
+                page_meta = await _page_meta(session)
             if session is not None:
                 await self._disconnect(session)
+            if run.status == "succeeded" and validate_output:
+                await self._attach_output_validation(
+                    run,
+                    stored,
+                    variables=variables or {},
+                    request_text=request_text,
+                    page_meta=page_meta,
+                    validation_attempt=validation_attempt,
+                )
             run.finished_at = datetime.now(timezone.utc)
             self.store.save_run(run)
+        if getattr(run, "retry_output_validation", False) and validation_attempt == 0:
+            return await self.run(
+                stored,
+                cdp_url=cdp_url,
+                variables=variables,
+                llm=llm,
+                write_back_repairs=write_back_repairs,
+                request_text=request_text,
+                validate_output=True,
+                validation_attempt=1,
+            )
         return run
+
+    async def _attach_output_validation(
+        self,
+        run: RunRecord,
+        stored: StoredWorkflow,
+        *,
+        variables: dict[str, Any],
+        request_text: str | None,
+        page_meta: dict[str, Any],
+        validation_attempt: int = 0,
+    ) -> None:
+        from browser_platform.authoring.tools import is_action_ending
+
+        sample = collect_sample(run.outputs, page_meta.get("text") or "")
+        request = (request_text or stored.definition.description or stored.definition.name or "").strip()
+        if variables:
+            request = f"{request} Inputs: {variables}".strip()
+        try:
+            result = await validate_run_output(
+                request=request,
+                inputs=variables,
+                outputs=run.outputs,
+                sample=sample,
+                url=str(page_meta.get("url") or "") ,
+                title=str(page_meta.get("title") or ""),
+                action_ending=is_action_ending(stored.definition),
+            )
+        except Exception as exc:
+            result = {"verdict": "suspect", "reason": f"Output validation failed: {exc}", "usage": {"used": False}}
+        run.validation = result
+        if result.get("verdict") == "wrong":
+            if validation_attempt == 0:
+                run.retry_output_validation = True
+            else:
+                run.status = "failed"
+                run.error = f"Output validation: {result.get('reason') or 'result did not match the request'}"
+
+
 
     async def _run_one_step(
         self,

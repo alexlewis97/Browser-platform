@@ -69,6 +69,7 @@ export type FromTaskJob = {
   suggestions?: FromTaskSuggestion[];
   parameters?: FromTaskParameter[];
   confirmation?: FromTaskConfirmation | null;
+  input_validation?: import("./validation").InputValidation | null;
   error?: string | null;
 };
 

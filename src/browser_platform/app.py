@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from browser_platform.api.record import router as record_router
 from browser_platform.api.rest import router as rest_router
+from browser_platform.api.chat import router as chat_router
 from browser_platform.api.ws import router as ws_router
 from browser_platform.cache.action_cache import ActionCache
 from browser_platform.fuzzy.hitl import ConfirmationBroker, EventHub
@@ -253,11 +254,15 @@ def create_app(
         allow_headers=["*"],
     )
     app.include_router(rest_router)
+    app.include_router(chat_router)
     app.include_router(record_router)
     app.include_router(ws_router)
     _mount_web_app(app, root)
     app.state.settings = settings
     app.state.store = store
+    from browser_platform.orchestrator.chat import ChatJobs, ChatOrchestrator
+    app.state.chat_jobs = ChatJobs()
+    app.state.chat = ChatOrchestrator(store, runner=runner, jobs=app.state.chat_jobs)
     app.state.runner = runner
     app.state.pomerado = pomerado
     app.state.event_hub = event_hub

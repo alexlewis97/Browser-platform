@@ -238,17 +238,17 @@ pre.output {
   border-top: 1px solid var(--line);
   padding: 6px 8px env(safe-area-inset-bottom);
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(8, 1fr);
   max-width: 640px;
   margin: 0 auto;
 }
 .nav a {
   color: var(--muted);
   text-align: center;
-  padding: 8px 2px 6px;
-  font-size: 10px;
+  padding: 6px 1px 5px;
+  font-size: 9px;
   font-weight: 600;
-  border-radius: 12px;
+  border-radius: 10px;
 }
 .nav a svg { display: block; margin: 0 auto 3px; }
 .nav a.active { color: var(--accent); background: var(--accent-dim); }
@@ -371,3 +371,18 @@ pre.output {
 .param-row { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 6px; }
 
 #record-save, #record-publish { position: relative; z-index: 2; scroll-margin-bottom: calc(var(--nav-h) + 16px); }
+
+.chat-thread { max-height: min(62vh, 640px); overflow: auto; }
+.chat-bubble { padding: 10px 12px; border-radius: 14px; margin: 8px 0; }
+.chat-bubble.user { background: var(--accent-dim); }
+.chat-bubble.assistant { background: var(--bg-input); }
+.tool-card { margin-top: 8px; padding: 10px; }
+.chat-answer { margin-top: 10px; line-height: 1.45; }
+.raw-result { margin-top: 8px; }
+.finding { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; margin-top: 10px; }
+.preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chat-composer { margin-top: 12px; }
+@media (max-width: 420px) {
+  .nav a svg { width: 18px; height: 18px; }
+  .nav a { font-size: 8px; padding: 5px 0 4px; }
+}
