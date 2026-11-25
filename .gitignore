@@ -1,0 +1,72 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data — keep only .gitkeep placeholders
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# Node host runtime output
+node_host/data/
+
+# Chrome / Chromium profiles
+**/chrome-profile*/
+**/chromium-profile*/
+**/*chromium-profile*/
+
+# Logs
+*.log
+
+# Dependencies
+**/node_modules/
+
+# Extension build output. To load unpacked:
+#   cd extension && npm install && npm run build
+# then select extension/dist in chrome://extensions.
+extension/dist/
+extension/test-results/
+extension/playwright-report/
+extension/blob-report/
+
+# Web build output
+web/.next/
+web/out/
+web/build/
+web/site/
+web/dist/
+.vercel/
+**/.vercel/
+
+# Caches
+.cache/
+**/.cache/
+.install-stamp
+
+# Archives and Windows installers
+*.zip
+*.exe
+*.msi
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Generated release stamp
+release-id.txt

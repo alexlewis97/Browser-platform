@@ -1,0 +1,43 @@
+{
+  "name": "local_search",
+  "description": "Fill a public-style search form and read the results (fixture page).",
+  "version": "1",
+  "input_schema": [
+    {"name": "query", "type": "string", "required": true, "default": "example"}
+  ],
+  "steps": [
+    {
+      "type": "navigation",
+      "description": "Open the search page",
+      "url": "http://127.0.0.1:PORT/search.html"
+    },
+    {
+      "type": "input",
+      "description": "Type the search query",
+      "target_text": "Query",
+      "value": "{query}",
+      "selectorStrategies": [
+        {"type": "placeholder", "value": "Search the catalog", "priority": 1, "metadata": {}},
+        {"type": "id", "value": "q", "priority": 2, "metadata": {}},
+        {"type": "css", "value": "#q", "priority": 3, "metadata": {}}
+      ]
+    },
+    {
+      "type": "click",
+      "description": "Click Search",
+      "target_text": "Search",
+      "selectorStrategies": [
+        {"type": "role_text", "value": "Search", "priority": 1, "metadata": {"role": "button"}},
+        {"type": "text_exact", "value": "Search", "priority": 2, "metadata": {}}
+      ]
+    },
+    {
+      "type": "extract",
+      "description": "Read the results",
+      "extractionGoal": "the search results text",
+      "cssSelector": "#results",
+      "expected_state": {"text_contains": "Results for"},
+      "output": "results"
+    }
+  ]
+}

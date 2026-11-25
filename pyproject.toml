@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "browser-platform"
+version = "0.1.0"
+description = "Deterministic-first browser subagent platform (Pomerado, workflow-use, browser-use)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Alex Lewis" }]
+dependencies = [
+  "fastapi>=0.143.0",
+  "uvicorn[standard]>=0.34.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.6.0",
+  "playwright>=1.49.0",
+  "httpx>=0.28.0",
+  "pyyaml>=6.0.0",
+  "websockets>=14.0",
+  "rapidfuzz>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+]
+workflowuse = [
+  "workflow-use==0.2.11",
+]
+browseruse = [
+  "browser-use==1.0.8",
+]
+
+[project.scripts]
+browser-platform = "browser_platform.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

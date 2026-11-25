@@ -1,0 +1,48 @@
+# Run from ~/browser-platform on the Oracle VM (compose context is this directory).
+# Attaches to docker_default so supabase-caddy can reach the container by name.
+# 8745 is published only on loopback. Do not open it on the public firewall.
+services:
+  backend:
+    container_name: browser-platform
+    image: browser-platform:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: "/app/src"
+      BROWSER_PLATFORM_HOST: "0.0.0.0"
+      BROWSER_PLATFORM_PORT: "8745"
+      BROWSER_PLATFORM_DATA_DIR: "/data"
+      BROWSER_PLATFORM_POMERADO_ENABLED: "false"
+      BROWSER_PLATFORM_AUTO_LAUNCH_CHROME: "true"
+      BROWSER_PLATFORM_CHROME_HEADLESS: "true"
+      BROWSER_PLATFORM_CHROME_PROFILE_DIR: "/data/chrome-profile"
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+    ports:
+      - "127.0.0.1:8745:8745"
+    shm_size: "1gb"
+    init: true
+    networks:
+      - caddy_net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8745/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+networks:
+  caddy_net:
+    name: docker_default
+    external: true

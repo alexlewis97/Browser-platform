@@ -1,0 +1,14 @@
+{
+  "name": "browser-platform-pomerado-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stock Pomerado (official pomerado-mcp) plus a long-lived Playwright Chromium for this platform.",
+  "license": "AGPL-3.0-or-later",
+  "bin": {
+    "browser-platform-pomerado-host": "./src/index.mjs"
+  },
+  "dependencies": {
+    "pomerado": "^0.4.0-canary.950"
+  }
+}

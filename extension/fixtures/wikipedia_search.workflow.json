@@ -1,0 +1,135 @@
+{
+  "name": "wikipedia_search",
+  "description": "Search Wikipedia for a term, open the first result, extract the first paragraph (read-only).",
+  "version": "1",
+  "input_schema": [
+    {
+      "name": "term",
+      "type": "string",
+      "required": true,
+      "default": "browser automation"
+    }
+  ],
+  "steps": [
+    {
+      "type": "navigation",
+      "description": "Open Wikipedia search",
+      "url": "https://en.wikipedia.org/wiki/Special:Search",
+      "expected_state": {
+        "url_includes": "wikipedia.org"
+      },
+      "wait_time": 1.0
+    },
+    {
+      "type": "input",
+      "description": "Type the search term",
+      "value": "{term}",
+      "target_text": "Search",
+      "selectorStrategies": [
+        {
+          "type": "css",
+          "value": "input#searchText",
+          "priority": 1,
+          "metadata": {}
+        },
+        {
+          "type": "css",
+          "value": "input[name='search']",
+          "priority": 2,
+          "metadata": {}
+        },
+        {
+          "type": "css",
+          "value": "input#searchInput",
+          "priority": 3,
+          "metadata": {}
+        },
+        {
+          "type": "placeholder",
+          "value": "Search Wikipedia",
+          "priority": 4,
+          "metadata": {}
+        }
+      ]
+    },
+    {
+      "type": "click",
+      "description": "Submit the search",
+      "target_text": "Search",
+      "selectorStrategies": [
+        {
+          "type": "role_text",
+          "value": "Search",
+          "priority": 1,
+          "metadata": {
+            "role": "button"
+          }
+        },
+        {
+          "type": "css",
+          "value": "button.oo-ui-inputWidget-input[type='submit']",
+          "priority": 2,
+          "metadata": {}
+        },
+        {
+          "type": "css",
+          "value": "button[type='submit']",
+          "priority": 3,
+          "metadata": {}
+        },
+        {
+          "type": "text_exact",
+          "value": "Search",
+          "priority": 4,
+          "metadata": {}
+        }
+      ]
+    },
+    {
+      "type": "click",
+      "description": "Open the first search result",
+      "target_text": "first result",
+      "selectorStrategies": [
+        {
+          "type": "css",
+          "value": ".mw-search-result-heading a",
+          "priority": 1,
+          "metadata": {}
+        },
+        {
+          "type": "css",
+          "value": "ul.mw-search-results li:first-child a",
+          "priority": 2,
+          "metadata": {}
+        },
+        {
+          "type": "css",
+          "value": ".mw-search-results a",
+          "priority": 3,
+          "metadata": {}
+        }
+      ]
+    },
+    {
+      "type": "extract",
+      "description": "Read the first paragraph",
+      "extractionGoal": "the first paragraph of the article",
+      "cssSelector": "#mw-content-text .mw-parser-output > p:not(.mw-empty-elt)",
+      "selectorStrategies": [
+        {
+          "type": "css",
+          "value": "#mw-content-text .mw-parser-output > p:not(.mw-empty-elt)",
+          "priority": 1,
+          "metadata": {}
+        },
+        {
+          "type": "css",
+          "value": "#mw-content-text p",
+          "priority": 2,
+          "metadata": {}
+        }
+      ],
+      "output": "first_paragraph"
+    }
+  ]
+}

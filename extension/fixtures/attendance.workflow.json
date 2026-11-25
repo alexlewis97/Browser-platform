@@ -1,0 +1,28 @@
+{
+  "name": "attendance_mark",
+  "description": "Pick one of ten people by {name} and set {status} on a local attendance table.",
+  "version": "1",
+  "input_schema": [
+    {"name": "name", "type": "string", "required": true},
+    {"name": "status", "type": "string", "required": true, "default": "Present"}
+  ],
+  "hitl": {"mode": "always_on_uncertain", "timeout_s": 300, "timeout_policy": "fail"},
+  "fuzzy": {"enabled": true, "threshold": 90, "margin": 8, "top_n": 5, "include_screenshot": false},
+  "steps": [
+    {"type": "navigation", "url": "{url}", "description": "Open the attendance roster"},
+    {
+      "type": "click",
+      "description": "Pick the attendee",
+      "fuzzy_query": "{name}",
+      "target_text": "{name}"
+    },
+    {
+      "type": "select_change",
+      "description": "Set attendance status",
+      "fuzzy_query": "{status}",
+      "selectedText": "{status}",
+      "container_hint": "tr.selected"
+    },
+    {"type": "extract", "extractionGoal": "result", "cssSelector": "#result"}
+  ]
+}

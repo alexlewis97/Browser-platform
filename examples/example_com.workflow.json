@@ -1,0 +1,27 @@
+{
+  "name": "example_com_heading",
+  "description": "Read the title and page text on example.com (read-only smoke workflow).",
+  "version": "1",
+  "input_schema": [],
+  "cache_results": true,
+  "steps": [
+    {
+      "type": "navigation",
+      "description": "Open example.com",
+      "url": "https://example.com",
+      "expected_state": {
+        "url_includes": "example.com",
+        "title_contains": "Example Domain"
+      }
+    },
+    {
+      "type": "extract",
+      "description": "Read the page title",
+      "extractionGoal": "the page title",
+      "expected_state": {
+        "title_contains": "Example Domain"
+      },
+      "output": "heading"
+    }
+  ]
+}

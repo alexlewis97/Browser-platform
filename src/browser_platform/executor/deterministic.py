@@ -1,0 +1,272 @@
+"""Run one workflow-use step on an attached Chrome tab (no LLM)."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any
+
+from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeout
+
+from browser_platform.executor.locators import locator_for
+from browser_platform.executor.selectors import SelectorAttempt
+from browser_platform.executor.verify import missing_parameters
+from browser_platform.interpolate import interpolate, interpolate_url
+from browser_platform.models.workflow import ExpectedState, WorkflowStep
+
+
+@dataclass
+class StepSuccess:
+    output: Any = None
+    attempt: SelectorAttempt | None = None
+
+
+class StepFailed(Exception):
+    def __init__(self, message: str, last_error: str | None = None):
+        super().__init__(message)
+        self.last_error = last_error or message
+
+
+async def _first_visible(locator: Locator, timeout_ms: int) -> Locator:
+    count = await locator.count()
+    if count == 0:
+        raise StepFailed("no matching elements")
+    # Prefer a visible match; fall back to the first.
+    for i in range(count):
+        item = locator.nth(i)
+        try:
+            if await item.is_visible():
+                await item.wait_for(state="visible", timeout=min(timeout_ms, 2000))
+                return item
+        except Exception:
+            continue
+    item = locator.first
+    await item.wait_for(state="attached", timeout=timeout_ms)
+    return item
+
+
+async def resolve_locator(page: Page, attempt: SelectorAttempt, timeout_ms: int) -> Locator:
+    loc = locator_for(page, attempt.strategy)
+    return await _first_visible(loc, timeout_ms)
+
+
+def _interpolate_expected(expected: ExpectedState, variables: dict[str, Any] | None) -> ExpectedState:
+    if not expected:
+        return expected
+    values = expected.parameter_values
+    if values:
+        values = [str(interpolate(item, variables) or item) for item in values]
+    return expected.model_copy(
+        update={
+            "url_includes": interpolate(expected.url_includes, variables),
+            "title_contains": interpolate(expected.title_contains, variables),
+            "text_contains": interpolate(expected.text_contains, variables),
+            "heading": interpolate(expected.heading, variables),
+            "parameter_values": values,
+        }
+    )
+
+
+async def assert_expected(
+    page: Page,
+    expected: ExpectedState | None,
+    element: Locator | None = None,
+    variables: dict[str, Any] | None = None,
+) -> None:
+    if not expected:
+        return
+    expected = _interpolate_expected(expected, variables)
+    if expected.url_includes and expected.url_includes not in page.url:
+        raise StepFailed(f"url did not include {expected.url_includes!r} (was {page.url})")
+    title = await page.title()
+    if expected.title_contains and expected.title_contains not in title:
+        raise StepFailed(f"title did not contain {expected.title_contains!r} (was {title!r})")
+    body = await page.locator("body").inner_text()
+    if expected.text_contains and expected.text_contains not in body:
+        raise StepFailed(f"page text did not contain {expected.text_contains!r}")
+    headings = await page.locator("h1, h2, [role=heading]").all_inner_texts()
+    if expected.heading:
+        if not any(expected.heading in h for h in headings):
+            raise StepFailed(f"heading {expected.heading!r} not found in {headings!r}")
+    if expected.parameter_values:
+        try:
+            selected = await page.locator("[aria-selected=true], [aria-current=page], option:checked").all_inner_texts()
+        except Exception:
+            selected = []
+        values = {f"param_{i}": value for i, value in enumerate(expected.parameter_values) if value}
+        missing = missing_parameters(url=page.url, title=title, headings=headings, text=body, selected=selected, values=values)
+        if missing:
+            names = ", ".join(item.split("=", 1)[-1] for item in missing)
+            raise StepFailed(
+                f"The page is not filtered for {names}. URL was {page.url}. "
+                "Apply the filter in the UI (dropdown, option, or team link), not only a search box."
+            )
+    if element is not None:
+        # Visibility is implied if we already acted on it; still check if attached.
+        try:
+            if not await element.count():
+                raise StepFailed("element disappeared after the action")
+        except StepFailed:
+            raise
+        except Exception:
+            pass
+
+
+
+def normalize_wikipedia_url(url: str | None) -> str | None:
+    """MediaWiki titles use underscores; a {term} with spaces would 404 in /wiki/{term}."""
+
+    if not url:
+        return url
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    if "wikipedia.org" not in host and "wikimedia.org" not in host:
+        return url
+    path = parsed.path or ""
+    if path.startswith("/wiki/") and " " in path:
+        parts = path.split("/")
+        parts = [part.replace(" ", "_") for part in parts]
+        parsed = parsed._replace(path="/".join(parts))
+        return urlunparse(parsed)
+    return url
+
+
+async def extract_content(page: Page, step: WorkflowStep) -> str:
+    goal = (step.extractionGoal or step.goal or step.description or "").lower()
+    if step.cssSelector:
+        loc = page.locator(step.cssSelector)
+        if await loc.count():
+            return (await loc.first.inner_text()).strip()
+    if "heading" in goal or "title" in goal or "h1" in goal:
+        h1 = page.locator("h1")
+        if await h1.count():
+            return (await h1.first.inner_text()).strip()
+        return (await page.title()).strip()
+    # Paragraph / article body: do not let a decorative h1 win over <main> or <p>.
+    if "paragraph" in goal or "article" in goal:
+        para = page.locator("main p, article p, #mw-content-text p, p")
+        if await para.count():
+            for i in range(min(await para.count(), 8)):
+                text = (await para.nth(i).inner_text()).strip()
+                if text:
+                    return text[:4000]
+        main = page.locator("main, article")
+        if await main.count():
+            text = (await main.first.inner_text()).strip()
+            if text:
+                return text[:4000]
+    main = page.locator("main, article")
+    if await main.count():
+        text = (await main.first.inner_text()).strip()
+        if text:
+            return text[:4000]
+    return (await page.locator("body").inner_text())[:4000].strip()
+
+
+async def run_step(
+    page: Page,
+    step: WorkflowStep,
+    *,
+    variables: dict[str, Any] | None,
+    plan: list[SelectorAttempt],
+    timeout_ms: int = 8000,
+) -> StepSuccess:
+    typ = step.type
+    variables = variables or {}
+    url = normalize_wikipedia_url(interpolate_url(step.url, variables))
+    value = interpolate(step.value if step.value is not None else step.default_value, variables)
+    selected = interpolate(step.selectedText, variables)
+    key = interpolate(step.key, variables)
+    interpolated_plan = []
+    for attempt in plan:
+        strategy_value = interpolate(attempt.strategy.value, variables)
+        strategy = attempt.strategy
+        if strategy_value != strategy.value:
+            strategy = strategy.model_copy(update={"value": strategy_value})
+        interpolated_plan.append(type(attempt)(kind=attempt.kind, strategy=strategy))
+    plan = interpolated_plan
+
+    if typ == "navigation":
+        if not url:
+            raise StepFailed("navigation step is missing url")
+        await page.goto(str(url), wait_until="domcontentloaded")
+        # Public sites (notably Wikipedia) may return a short rate-limit error page on the first hit.
+        for _ in range(2):
+            title = ""
+            body = ""
+            try:
+                title = await page.title()
+                body = (await page.locator("body").inner_text())[:800]
+            except Exception:
+                break
+            if "Wikimedia Error" not in title and "Too many requests" not in body:
+                break
+            await page.wait_for_timeout(2000)
+            await page.reload(wait_until="domcontentloaded")
+        wait_s = getattr(step, "wait_time", None) or 0
+        if wait_s:
+            await page.wait_for_timeout(int(float(wait_s) * 1000))
+        await assert_expected(page, step.expected_state, variables=variables)
+        return StepSuccess(output={"url": page.url})
+
+    if typ == "go_back":
+        await page.go_back(wait_until="domcontentloaded")
+        await assert_expected(page, step.expected_state, variables=variables)
+        return StepSuccess(output={"url": page.url})
+
+    if typ == "go_forward":
+        await page.go_forward(wait_until="domcontentloaded")
+        await assert_expected(page, step.expected_state, variables=variables)
+        return StepSuccess(output={"url": page.url})
+
+    if typ == "scroll":
+        dx = step.scrollX or 0
+        dy = step.scrollY or 0
+        await page.mouse.wheel(dx, dy)
+        await assert_expected(page, step.expected_state, variables=variables)
+        return StepSuccess(output={"scrollX": dx, "scrollY": dy})
+
+    if typ in {"extract", "extract_page_content"}:
+        output = await extract_content(page, step)
+        await assert_expected(page, step.expected_state, variables=variables)
+        return StepSuccess(output=output)
+
+    if typ == "agent":
+        raise StepFailed("agent steps are not executed in the deterministic path")
+
+    if typ not in {"click", "input", "select_change", "key_press"}:
+        raise StepFailed(f"unsupported step type: {typ}")
+
+    last_error = "no selector strategies to try"
+    for attempt in plan:
+        try:
+            loc = await resolve_locator(page, attempt, timeout_ms)
+            if typ == "click":
+                await loc.click(timeout=timeout_ms)
+            elif typ == "input":
+                if value is None:
+                    raise StepFailed("input step is missing value")
+                await loc.fill(str(value), timeout=timeout_ms)
+            elif typ == "select_change":
+                if selected is None:
+                    raise StepFailed("select_change step is missing selectedText")
+                await loc.select_option(label=str(selected), timeout=timeout_ms)
+            elif typ == "key_press":
+                if not key:
+                    raise StepFailed("key_press step is missing key")
+                await loc.press(str(key), timeout=timeout_ms)
+            await page.wait_for_timeout(50)
+            await assert_expected(page, step.expected_state, loc, variables=variables)
+            return StepSuccess(attempt=attempt)
+        except StepFailed as exc:
+            last_error = str(exc)
+        except PlaywrightTimeout as exc:
+            last_error = f"timeout on {attempt.type}:{attempt.value}: {exc}"
+        except Exception as exc:
+            last_error = f"{attempt.type}:{attempt.value}: {exc}"
+    raise StepFailed(f"all selector strategies failed for {typ}", last_error=last_error)
+
+
+_SAFE_GOAL = re.compile(r"[^\w\s-]+")

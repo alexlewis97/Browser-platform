@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Attendance</title>
+  <style>
+    body { font-family: sans-serif; margin: 1.5rem; }
+    table { border-collapse: collapse; width: 100%; max-width: 40rem; }
+    th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: start; }
+    tr.selected { outline: 2px solid #1a73e8; background: #e8f0fe; }
+    tr[data-name] { cursor: pointer; }
+    #result { margin-top: 1rem; font-weight: 600; }
+    .he { unicode-bidi: plaintext; }
+  </style>
+</head>
+<body>
+  <h1>Attendance</h1>
+  <p>Mark one of the ten people present, absent, late, or remote.</p>
+  <table id="roster">
+    <thead>
+      <tr><th>Name</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      <tr data-name="Alex Lewis"><td>Alex Lewis</td><td><label>Status <select aria-label="Status for Alex Lewis"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="John Smith"><td>John Smith</td><td><label>Status <select aria-label="Status for John Smith"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="John Smyth"><td>John Smyth</td><td><label>Status <select aria-label="Status for John Smyth"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="José García"><td>José García</td><td><label>Status <select aria-label="Status for José García"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="מריה לוי"><td class="he">מריה לוי</td><td><label>Status <select aria-label="Status for מריה לוי"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="יונתן כהן"><td class="he">יונתן כהן</td><td><label>Status <select aria-label="Status for יונתן כהן"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="Anna Cohen"><td>Anna Cohen</td><td><label>Status <select aria-label="Status for Anna Cohen"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="Anne Cohen"><td>Anne Cohen</td><td><label>Status <select aria-label="Status for Anne Cohen"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="Wei Zhang"><td>Wei Zhang</td><td><label>Status <select aria-label="Status for Wei Zhang"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+      <tr data-name="Sarah O'Connor"><td>Sarah O'Connor</td><td><label>Status <select aria-label="Status for Sarah O'Connor"><option value="">—</option><option>Present</option><option>Absent</option><option>Late</option><option>Remote</option></select></label></td></tr>
+    </tbody>
+  </table>
+  <p id="result">No one marked yet.</p>
+  <script>
+    const result = document.getElementById("result");
+    function rowName(row) { return row.getAttribute("data-name") || ""; }
+    function selectedRow() { return document.querySelector("tr.selected"); }
+    function updateResult() {
+      const row = selectedRow();
+      if (!row) { result.textContent = "No one marked yet."; return; }
+      const status = row.querySelector("select").value;
+      result.textContent = status ? (rowName(row) + ": " + status) : (rowName(row) + " selected");
+    }
+    document.querySelectorAll("tbody tr").forEach((row) => {
+      row.addEventListener("click", (ev) => {
+        if (ev.target.tagName === "SELECT" || ev.target.tagName === "OPTION") return;
+        document.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
+        row.classList.add("selected");
+        updateResult();
+      });
+      row.querySelector("select").addEventListener("change", () => {
+        document.querySelectorAll("tr.selected").forEach((r) => r.classList.remove("selected"));
+        row.classList.add("selected");
+        updateResult();
+      });
+    });
+  </script>
+</body>
+</html>

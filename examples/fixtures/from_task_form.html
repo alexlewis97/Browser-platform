@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>From-task form fixture</title>
+  </head>
+  <body>
+    <h1>Library search</h1>
+    <form id="search-form" action="#" method="get">
+      <label for="query">Query</label>
+      <input id="query" name="query" type="search" placeholder="Search" aria-label="Search" />
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="Email" aria-label="Email" />
+      <button id="go" type="submit">Search</button>
+    </form>
+    <main id="result" hidden></main>
+    <script>
+      document.getElementById("search-form").addEventListener("submit", function (event) {
+        event.preventDefault();
+        var query = document.getElementById("query").value || "";
+        var result = document.getElementById("result");
+        result.hidden = false;
+        result.innerHTML =
+          "<p>First paragraph about " +
+          query +
+          ": Browser automation is the use of software to control a web browser.</p>";
+      });
+    </script>
+  </body>
+</html>

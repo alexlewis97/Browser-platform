@@ -1,0 +1,2 @@
+# Optional HTTPS URL of the latest browser-platform-windows.zip.
+# Example: https://example.com/browser-platform-windows.zip

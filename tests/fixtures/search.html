@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Library Search</title>
+  </head>
+  <body>
+    <h1>Library Search</h1>
+    <form id="search-form">
+      <label for="q">Query</label>
+      <input id="q" name="q" placeholder="Search the catalog" />
+      <button type="submit">Search</button>
+    </form>
+    <div id="results" hidden></div>
+    <script>
+      document.getElementById("search-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const query = document.getElementById("q").value;
+        const results = document.getElementById("results");
+        results.hidden = false;
+        results.textContent = "Results for " + query;
+      });
+    </script>
+  </body>
+</html>
