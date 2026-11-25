@@ -1605,7 +1605,7 @@ async function onClick(event: Event): Promise<void> {
       recordState.definition = (result.definition || recordState.definition) as Record<string, unknown>;
       recordState.inputValidation = result;
       if (Array.isArray(result.definition?.input_schema)) {
-        recordState.parameters = result.definition.input_schema.map((item: { name: string; label?: string; default?: string; required?: boolean }) => ({
+        recordState.parameters = result.definition.input_schema.map((item) => ({
           name: item.name,
           label: item.label,
           example: item.default != null ? String(item.default) : "",

@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_orchestrator import FakePage, FakeSession, FakeRepair
 
 
+@pytest.mark.skipif(not browser_use_available(), reason="browser-use optional extra not installed")
 def test_browser_use_package_and_openrouter_construction():
     assert browser_use_available() is True
     llm = LLMConfig(api_key="sk-or-v1-fake-construction-only", model="qwen/qwen3.7-flash")
