@@ -119,6 +119,7 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                     label=proposal.get("label") or pretty_label(name),
                     description=proposal.get("description"),
                     format=proposal.get("format"),
+                    runtime_default=proposal.get("runtime_default"),
                 )
             )
             names.add(name)

@@ -7,7 +7,13 @@ from typing import Any
 
 from browser_platform.authoring.terminal import is_extract, is_submit_like
 from browser_platform.models.workflow import StoredWorkflow, WorkflowDefinition, WorkflowInput
-from browser_platform.workflow_inputs import ensure_definition_inputs, pretty_label
+from browser_platform.workflow_inputs import (
+    ensure_definition_inputs,
+    has_runtime_default,
+    input_is_required,
+    pretty_label,
+)
+from browser_platform.interpolate import is_placeholder_value
 
 _NAME = re.compile(r"[^a-zA-Z0-9_]+")
 
@@ -61,6 +67,13 @@ def parameter_schema(item: WorkflowInput) -> dict[str, Any]:
     label = pretty_label(item.name, label=item.label, description=item.description)
     desc = item.description or label
     example = item.default if item.default is not None else getattr(item, "example", None)
+    if is_placeholder_value(example):
+        example = None
+    if has_runtime_default(item) or item.required is False:
+        desc = (
+            f"{desc} Optional. Omit this unless the user named a specific value. "
+            "Do not send placeholders such as current, now, or default."
+        ).strip()
     if example is not None and str(example).strip():
         desc = f"{desc} (e.g. {example})"
         schema["examples"] = [example]
@@ -76,7 +89,7 @@ def tool_from_workflow(stored: StoredWorkflow, *, name: str | None = None) -> di
     definition = ensure_definition_inputs(stored.definition)
     inputs = list(definition.input_schema or [])
     properties = {item.name: parameter_schema(item) for item in inputs if item.name}
-    required = [item.name for item in inputs if item.name and item.required is not False]
+    required = [item.name for item in inputs if item.name and input_is_required(item)]
     action = is_action_ending(definition)
     description = (definition.description or definition.name or "Run this saved browser workflow.").strip()
     if action:

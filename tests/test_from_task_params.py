@@ -770,3 +770,73 @@ def test_is_action_ending_ignores_trailing_result_navigation():
     )
     assert is_action_ending(sauce) is True
     assert is_action_ending(httpbin) is True
+
+
+
+def test_runtime_default_resolved_or_omitted_before_call():
+    from browser_platform.authoring.tools import parameter_schema, tool_from_workflow
+    from browser_platform.interpolate import current_year_month, is_placeholder_value
+    from browser_platform.models.workflow import StoredWorkflow, WorkflowDefinition, WorkflowInput, WorkflowStep
+    from browser_platform.orchestrator.chat import resolve_prepared_defaults
+    from browser_platform.orchestrator.runner import apply_schema_defaults
+    from browser_platform.workflow_inputs import (
+        input_is_required,
+        inputs_for_output_validation,
+        missing_required_inputs,
+        resolve_input_values,
+    )
+
+    current = current_year_month()
+    definition = WorkflowDefinition(
+        name="football_fixtures",
+        version="1",
+        input_schema=[
+            WorkflowInput(name="team", type="string", required=True),
+            WorkflowInput(name="month", type="string", required=False, default=None, format="ym", runtime_default="current_month"),
+        ],
+        steps=[
+            WorkflowStep(type="navigation", url="https://example.com/{team|slug}/{month|ym}"),
+            WorkflowStep(type="extract", extractionGoal="result"),
+        ],
+    )
+    month = next(item for item in definition.input_schema if item.name == "month")
+    assert input_is_required(month) is False
+    assert missing_required_inputs(definition, {"team": "Arsenal"}) == []
+    assert missing_required_inputs(definition, {"team": "Arsenal", "month": "current"}) == []
+
+    resolved = apply_schema_defaults(definition, {"team": "Arsenal", "month": "current"})
+    assert resolved["team"] == "Arsenal"
+    assert resolved["month"] == current
+    assert not is_placeholder_value(resolved["month"])
+
+    omitted = apply_schema_defaults(definition, {"team": "Arsenal"})
+    assert omitted["month"] == current
+
+    stored = StoredWorkflow(id="wf1", path="football_fixtures.json", definition=definition)
+    tool = tool_from_workflow(stored)
+    params = tool["function"]["parameters"]
+    assert "month" not in (params.get("required") or [])
+    assert "team" in (params.get("required") or [])
+    desc = (params["properties"]["month"].get("description") or "").lower()
+    assert "omit" in desc
+    assert "current" in desc
+
+    prepared = [{"workflow_id": "wf1", "arguments": {"team": "Arsenal", "month": "current"}}]
+    resolve_prepared_defaults(prepared, {"wf1": definition})
+    assert prepared[0]["raw_arguments"]["month"] == "current"
+    assert prepared[0]["arguments"]["month"] == current
+
+    check = inputs_for_output_validation(
+        prepared[0]["arguments"],
+        definition=definition,
+        raw_inputs=prepared[0]["raw_arguments"],
+    )
+    assert "month" not in check
+    assert check["team"] == "Arsenal"
+
+    user_month = resolve_input_values(definition, {"team": "Arsenal", "month": "2026-12"})
+    assert user_month["month"] == "2026-12"
+    user_check = inputs_for_output_validation(
+        user_month, definition=definition, raw_inputs={"team": "Arsenal", "month": "2026-12"}
+    )
+    assert user_check["month"] == "2026-12"

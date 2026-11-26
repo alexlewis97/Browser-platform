@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from browser_platform.executor.verify import classify_parameter, is_not_found_page, parameter_reflected
+from browser_platform.interpolate import is_placeholder_value
 from browser_platform.llm.openrouter import chat_complete, env_api_key
 
 SAMPLE_LIMIT = 1500
@@ -140,6 +141,8 @@ def deterministic_verdict(
         value = str(raw or "").strip()
         if len(value) < 3:
             continue
+        if is_placeholder_value(value):
+            continue
         kind = classify_parameter(str(key))
         # Form fields and clicked locators (product, item) often do not appear on a
         # confirmation page or in an action-ending extract.
@@ -181,6 +184,11 @@ async def validate_output(
     action_ending: bool = False,
     use_llm: bool = True,
 ) -> dict[str, Any]:
+    inputs = {
+        key: value
+        for key, value in (inputs or {}).items()
+        if value not in (None, "") and not is_placeholder_value(value)
+    }
     full = sample if sample is not None else collect_sample(outputs)
     # Re-collect from outputs when a caller prepended a long page dump.
     extract_only = collect_sample(outputs)
@@ -239,7 +247,9 @@ async def _llm_verdict(
     }
     hint = (
         "Confirm the extract answers the user's request and matches the inputs "
-        "(for example fixtures are for the requested team and month). "
+        "(for example fixtures are for the requested team). "
+        "Do not require placeholders such as current, now, or default, or unstated runtime defaults "
+        "such as the current month, to appear in the extract. Only require values the user named. "
         "For action workflows, confirm the page shows the action succeeded."
         if not action_ending
         else "Confirm the page shows the action completed. Do not require form fields or product names to appear in a short confirmation extract (for example Swag Labs or Thank you for your order)."

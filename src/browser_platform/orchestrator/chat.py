@@ -21,7 +21,11 @@ from browser_platform.llm.openrouter import chat_complete, env_api_key, merge_us
 from browser_platform.models.workflow import StoredWorkflow
 from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
 from browser_platform.store.file_store import FileStore
-from browser_platform.workflow_inputs import missing_required_inputs
+from browser_platform.workflow_inputs import (
+    inputs_for_output_validation,
+    missing_required_inputs,
+    resolve_input_values,
+)
 
 BATCH_CONFIRM_AFTER = 5
 CONCURRENCY = 2
@@ -67,6 +71,21 @@ def compact_item(item: dict[str, Any], *, fact_limit: int = 800) -> dict[str, An
 
 def is_action_call(stored: StoredWorkflow | None) -> bool:
     return bool(stored and is_action_ending(stored.definition))
+
+
+
+def resolve_prepared_defaults(prepared: list[dict[str, Any]], definitions: dict[str, Any] | None) -> None:
+    """Resolve optional runtime defaults and drop placeholders before a tool is called."""
+
+    definitions = definitions or {}
+    for call in prepared or []:
+        args = dict(call.get("arguments") or {})
+        call.setdefault("raw_arguments", dict(call.get("raw_arguments") or args))
+        definition = definitions.get(call.get("workflow_id"))
+        if definition is None and call.get("workflow_id"):
+            # definitions is keyed by workflow id; also try identity
+            definition = definitions.get(call["workflow_id"])
+        call["arguments"] = resolve_input_values(definition, args)
 
 
 def _missing(stored: StoredWorkflow, arguments: dict[str, Any]) -> list[str]:
@@ -257,6 +276,7 @@ class ChatOrchestrator:
         system = (
             "You are a workflow tool router. Call one or more saved browser workflows to answer the user. "
             "Fill required arguments from values the user already stated (teams, names, terms, dates). Only ask a short question when a required input is not present in the user's message. Never invent values the user did not state. "
+            "Optional inputs such as month must be omitted unless the user named a specific value. Never send placeholders such as current, now, default, or auto. "
             "When the same workflow should run for several values (a list of teams, terms, dates), emit one function call per value, in parallel. "
             "Do not pack several values into one argument. Prefer the workflow that matches the request. "
             "Do not answer from memory when a tool can fetch the live result."
@@ -331,6 +351,7 @@ class ChatOrchestrator:
                 job["usage"] = merge_usage(job.get("usage"), norm_usage)
             except Exception:
                 pass
+            resolve_prepared_defaults(prepared, definitions)
         if missing:
             job["status"] = "needs_input"
             job["question"] = " ".join(missing) + " Please provide the missing value(s)."
@@ -374,16 +395,23 @@ class ChatOrchestrator:
         return job
 
     async def _run_call(self, job: dict[str, Any], call: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
+        stored = None
+        try:
+            stored = self.store.get_workflow(call["workflow_id"])
+        except Exception:
+            stored = None
         if not call.get("normalized"):
             try:
-                stored = self.store.get_workflow(call["workflow_id"])
-                usage = await normalize_prepared_calls(
-                    [call],
-                    definitions={stored.id: stored.definition},
-                )
-                job["usage"] = merge_usage(job.get("usage"), usage)
+                if stored is not None:
+                    usage = await normalize_prepared_calls(
+                        [call],
+                        definitions={stored.id: stored.definition},
+                    )
+                    job["usage"] = merge_usage(job.get("usage"), usage)
             except Exception:
                 call.setdefault("arguments", dict(call.get("raw_arguments") or call.get("arguments") or {}))
+        if stored is not None:
+            resolve_prepared_defaults([call], {stored.id: stored.definition})
         item: dict[str, Any] = {
             "id": call["id"],
             "tool": call["tool"],
@@ -406,6 +434,11 @@ class ChatOrchestrator:
             try:
                 isolated = await launch_isolated()
                 stored = self.store.get_workflow(call["workflow_id"])
+                check_inputs = inputs_for_output_validation(
+                    item["inputs"],
+                    definition=stored.definition,
+                    raw_inputs=item.get("raw_inputs"),
+                )
                 run = await self.runner.run(
                     stored,
                     cdp_url=isolated.cdp_url,
@@ -413,10 +446,13 @@ class ChatOrchestrator:
                     llm=None,
                     write_back_repairs=False,
                     request_text=(
-                        f"Check that this {call['workflow_name']} result matches the inputs {item['inputs']}. "
+                        f"Check that this {call['workflow_name']} result matches the inputs {check_inputs}. "
+                        "Do not require omitted optional inputs, placeholders such as current, or runtime defaults "
+                        "(for example the current month) to appear in the extract. "
                         "Do not require this single call to answer a comparison across other teams or workflows."
                     ),
                     validate_output=True,
+                    raw_inputs=item.get("raw_inputs"),
                 )
                 item["run_id"] = run.id
                 item["outputs"] = run.outputs or {}
@@ -450,6 +486,9 @@ class ChatOrchestrator:
                     alt_sig = repr(sorted((alt or {}).items()))
                     if alt and alt_sig not in tried and alt_sig != signature:
                         call["arguments"] = alt
+                        if stored is not None:
+                            resolve_prepared_defaults([call], {stored.id: stored.definition})
+                            alt = dict(call.get("arguments") or alt)
                         item["inputs"] = dict(alt)
                         continue
                 item["status"] = "failed"

@@ -538,3 +538,51 @@ async def test_validate_output_does_not_downgrade_fixture_extract(monkeypatch):
         use_llm=True,
     )
     assert result["verdict"] == "ok"
+
+
+
+def test_validator_skips_placeholder_and_runtime_default_month():
+    from browser_platform.executor.output_validate import deterministic_verdict, validate_output
+    from browser_platform.interpolate import current_year_month
+    from browser_platform.models.workflow import WorkflowDefinition, WorkflowInput
+    from browser_platform.workflow_inputs import inputs_for_output_validation
+
+    current = current_year_month()
+    sample = "Arsenal fixtures: Chelsea (H) 15:00, Liverpool (A) 17:30. Premier League."
+    url = f"https://www.bbc.com/sport/football/teams/arsenal/scores-fixtures/{current}"
+    title = "Arsenal - Scores & Fixtures"
+    from browser_platform.models.workflow import WorkflowStep
+    definition = WorkflowDefinition(
+        name="football_fixtures",
+        version="1",
+        input_schema=[
+            WorkflowInput(name="team", type="string", required=True),
+            WorkflowInput(name="month", type="string", required=False, runtime_default="current_month"),
+        ],
+        steps=[
+            WorkflowStep(type="navigation", url="https://example.com/{team}/{month}"),
+            WorkflowStep(type="extract", extractionGoal="result"),
+        ],
+    )
+    # Planner placeholder must never be required in the extract.
+    raw = deterministic_verdict(
+        inputs={"team": "Arsenal", "month": "current"},
+        sample=sample,
+        url=url,
+        title=title,
+    )
+    assert raw["verdict"] == "ok"
+
+    resolved = {"team": "Arsenal", "month": current}
+    check = inputs_for_output_validation(resolved, definition=definition, raw_inputs={"team": "Arsenal", "month": "current"})
+    assert "month" not in check
+    skipped = deterministic_verdict(inputs=check, sample=sample, url=url, title=title)
+    assert skipped["verdict"] == "ok"
+
+    # A month the user actually named must still be passed to the validator.
+    stated = inputs_for_output_validation(
+        {"team": "Arsenal", "month": "2026-12"},
+        definition=definition,
+        raw_inputs={"team": "Arsenal", "month": "2026-12"},
+    )
+    assert stated["month"] == "2026-12"

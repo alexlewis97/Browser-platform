@@ -68,17 +68,30 @@ def item_field_values(item: dict[str, Any], key: str) -> set[str]:
     return values
 
 
+# Nicknames the planner may already have resolved to a canonical club name.
+_NAME_ALIASES = {
+    "spurs": {"tottenham", "tottenham hotspur", "tottenham-hotspur"},
+    "man utd": {"manchester united", "manchester-united"},
+    "man united": {"manchester united", "manchester-united"},
+    "wolves": {"wolverhampton wanderers", "wolverhampton-wanderers"},
+}
+
+
 def names_cover(requested: str, items: list[dict[str, Any]], key: str = "team") -> bool:
     """True when a requested entity appears as typed or as its canonical form."""
 
     want = (requested or "").strip().lower()
     want_slug = want.replace(" ", "-")
+    accepted = {want, want_slug} | _NAME_ALIASES.get(want, set())
     found: set[str] = set()
     for item in items:
         found |= item_field_values(item, key)
     for value in found:
         have = value.strip().lower()
-        if have == want or have.replace(" ", "-") == want_slug:
+        have_slug = have.replace(" ", "-")
+        if have in accepted or have_slug in accepted:
+            return True
+        if any(alias in have or have in alias for alias in accepted if len(alias) >= 4):
             return True
     return False
 

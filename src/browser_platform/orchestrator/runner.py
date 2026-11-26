@@ -72,17 +72,11 @@ async def _page_meta(session: CdpSession | None) -> dict[str, Any]:
 
 
 def apply_schema_defaults(definition, variables: dict[str, Any] | None) -> dict[str, Any]:
-    """Fill missing inputs from the workflow schema so optional defaults actually run."""
+    """Fill missing inputs and resolve placeholders / runtime defaults to concrete values."""
 
-    out = dict(variables or {})
-    for item in getattr(definition, "input_schema", None) or []:
-        name = getattr(item, "name", None)
-        if not name or out.get(name) not in (None, ""):
-            continue
-        default = getattr(item, "default", None)
-        if default not in (None, ""):
-            out[name] = default
-    return out
+    from browser_platform.workflow_inputs import resolve_input_values
+
+    return resolve_input_values(definition, variables)
 
 
 class WorkflowRunner:
@@ -128,6 +122,7 @@ class WorkflowRunner:
         request_text: str | None = None,
         validate_output: bool = True,
         validation_attempt: int = 0,
+        raw_inputs: dict[str, Any] | None = None,
     ) -> RunRecord:
         run = RunRecord(
             id=run_id or uuid.uuid4().hex,
@@ -144,6 +139,7 @@ class WorkflowRunner:
         self.store.save_run(run)
         session: CdpSession | None = None
         definition = stored.definition
+        raw_variables = dict(raw_inputs if raw_inputs is not None else (variables or {}))
         variables = apply_schema_defaults(definition, variables)
         outputs: dict[str, Any] = {}
         original_version = definition.version
@@ -248,6 +244,7 @@ class WorkflowRunner:
                     request_text=request_text,
                     page_meta=page_meta,
                     validation_attempt=validation_attempt,
+                    raw_inputs=raw_variables,
                 )
             run.finished_at = datetime.now(timezone.utc)
             self.store.save_run(run)
@@ -261,6 +258,7 @@ class WorkflowRunner:
                 request_text=request_text,
                 validate_output=True,
                 validation_attempt=1,
+                raw_inputs=raw_variables,
             )
         return run
 
@@ -273,17 +271,22 @@ class WorkflowRunner:
         request_text: str | None,
         page_meta: dict[str, Any],
         validation_attempt: int = 0,
+        raw_inputs: dict[str, Any] | None = None,
     ) -> None:
         from browser_platform.authoring.tools import is_action_ending
+        from browser_platform.workflow_inputs import inputs_for_output_validation
 
         sample = collect_sample(run.outputs, page_meta.get("text") or "")
         request = (request_text or stored.definition.description or stored.definition.name or "").strip()
-        if variables:
-            request = f"{request} Inputs: {variables}".strip()
+        check_inputs = inputs_for_output_validation(
+            variables, definition=stored.definition, raw_inputs=raw_inputs
+        )
+        if check_inputs:
+            request = f"{request} Inputs: {check_inputs}".strip()
         try:
             result = await validate_run_output(
                 request=request,
-                inputs=variables,
+                inputs=check_inputs,
                 outputs=run.outputs,
                 sample=sample,
                 url=str(page_meta.get("url") or "") ,

@@ -16,6 +16,18 @@ _MONTH_NAMES = {
 }
 
 
+_PLACEHOLDER_VALUES = frozenset({
+    "current", "current_month", "now", "$current_month", "default", "auto", "none", "null",
+})
+
+
+def is_placeholder_value(value: object) -> bool:
+    """True for tokens like 'current' that are not a real user-stated value."""
+
+    text = str(value or "").strip().lower()
+    return text in _PLACEHOLDER_VALUES
+
+
 def current_year_month() -> str:
     """Calendar month in Asia/Jerusalem, as YYYY-MM."""
     from datetime import datetime
