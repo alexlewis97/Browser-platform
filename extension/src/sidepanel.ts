@@ -1,3 +1,4 @@
+import { he } from "./copy/he.ts";
 import { deriveInputs, missingRequired, prettyLabel } from "./lib/inputs.ts";
 import { listingIdForName } from "./lib/market.ts";
 import type { Candidate, ExtensionSettings, InstalledWorkflow, MarketListing, RunState, WorkflowInput } from "./lib/types.ts";
@@ -52,7 +53,7 @@ async function send<T = Record<string, unknown>>(kind: string, payload: Record<s
 
 async function refreshState(): Promise<void> {
   const res = await send<{ settings: ExtensionSettings; workflows: InstalledWorkflow[]; run: RunState | null; recording?: { active: boolean; count: number } }>("bp-get-state");
-  if (!res.ok) throw new Error(res.error || "Failed to read extension state");
+  if (!res.ok) throw new Error(res.error || he.flash.stateFailed);
   settings = res.settings;
   workflows = res.workflows;
   run = res.run;
@@ -70,14 +71,14 @@ function shell(title: string, body: string): string {
   const tab = (name: View, label: string) =>
     `<button type="button" data-view="${name}" class="${view === name || (view === "run" && name === "installed" && selectedId) ? "active" : ""}">${label}</button>`;
   return `
-    <header class="top"><div><p class="eyebrow">Browser Platform</p><h1>${title}</h1></div></header>
+    <header class="top"><div><p class="eyebrow">${he.brand}</p><h1>${title}</h1></div></header>
     <nav class="tabs">
-      ${tab("installed", "Installed")}
-      ${tab("record", "Record")}
-      ${tab("market", "Market")}
-      ${tab("chat", "Chat")}
-      ${tab("run", "Run")}
-      ${tab("settings", "Settings")}
+      ${tab("installed", he.tabs.installed)}
+      ${tab("market", he.tabs.market)}
+      ${tab("record", he.tabs.record)}
+      ${tab("run", he.tabs.run)}
+      ${tab("chat", he.tabs.chat)}
+      ${tab("settings", he.tabs.settings)}
     </nav>
     <div class="page">${banner()}${body}</div>
   `;
@@ -89,22 +90,22 @@ function renderInstalled(): string {
         .map(
           (w) => `<article class="card">
             <h2 style="margin:0 0 4px;font-size:1rem">${escapeHtml(w.name)}</h2>
-            <div class="mono muted">v${escapeHtml(w.version)} · ${escapeHtml(w.type)} · ${w.source === "market" ? "marketplace" : w.source === "record" ? "recorded" : "imported"}</div>
+            <div class="mono muted">v${escapeHtml(w.version)} · ${escapeHtml(w.type)} · ${w.source === "market" ? he.installed.sourceMarket : w.source === "record" ? he.installed.sourceRecord : he.installed.sourceImport}</div>
             <p class="sub">${escapeHtml(w.description || "")}</p>
             <div class="btn-row">
-              <button class="btn primary" data-action="open-run" data-id="${escapeHtml(w.id)}">Run</button>
-              <button class="btn" data-action="goto-publish" data-id="${escapeHtml(w.id)}">Publish</button>
-              <button class="btn danger" data-action="remove" data-id="${escapeHtml(w.id)}">Remove</button>
+              <button class="btn primary" data-action="open-run" data-id="${escapeHtml(w.id)}">${he.installed.run}</button>
+              <button class="btn" data-action="goto-publish" data-id="${escapeHtml(w.id)}">${he.installed.publish}</button>
+              <button class="btn danger" data-action="remove" data-id="${escapeHtml(w.id)}">${he.installed.remove}</button>
             </div>
           </article>`,
         )
         .join("")
-    : `<div class="card"><p class="sub" style="margin:0">No workflows yet. Record a flow, import JSON, or install one from the Marketplace tab.</p></div>`;
+    : `<div class="card"><p class="sub" style="margin:0">${he.installed.empty}</p></div>`;
   return shell(
-    "Installed",
+    he.installed.title,
     `${cards}
     <div class="card">
-      <h2 style="margin:0 0 8px;font-size:1rem">Import workflow JSON</h2>
+      <h2 style="margin:0 0 8px;font-size:1rem">${he.installed.importTitle}</h2>
       <input type="file" accept="application/json,.json,.workflow.json" id="import-file" />
     </div>`,
   );
@@ -113,40 +114,42 @@ function renderInstalled(): string {
 function renderMarket(): string {
   if (!settings.marketToken) {
     return shell(
-      "Marketplace",
-      `<div class="card"><p class="sub" style="margin:0">Listings are private. Add the site access token in Settings, then refresh this tab.</p>
-      <div class="btn-row"><button class="btn primary wide" data-view="settings">Open settings</button></div></div>`,
+      he.market.title,
+      `<div class="card"><p class="sub" style="margin:0">${he.market.tokenRequired}</p>
+      <div class="btn-row"><button class="btn primary wide" data-view="settings">${he.market.openSettings}</button></div></div>`,
     );
   }
   const cards = listings.length
     ? listings
         .map((l) => {
           const warning = l.contains_code
-            ? `<div class="banner info">This package contains executable automation code. Review it before running.</div>`
+            ? `<div class="banner info">${he.market.codeWarning}</div>`
             : "";
-          const update = l.updateAvailable ? `<div class="banner info">Update available (installed v${escapeHtml(l.installedVersion || "")} → v${escapeHtml(l.version)}).</div>` : "";
+          const update = l.updateAvailable
+            ? `<div class="banner info">${escapeHtml(he.market.updateAvailable(l.installedVersion || "", l.version))}</div>`
+            : "";
           const unsupported = l.type === "pomerado";
           return `<article class="card">
             <h2 style="margin:0 0 4px;font-size:1rem">${escapeHtml(l.name)}</h2>
             <div class="mono muted">${escapeHtml(l.type)} · v${escapeHtml(l.version)} · ${escapeHtml(l.created_at)}</div>
             <p class="sub">${escapeHtml(l.description || "")}</p>
-            <p class="muted">Inputs: ${escapeHtml(l.inputs.length ? l.inputs.map((i) => i.label || i.name).join(", ") : "none declared")}</p>
-            <p class="mono muted">sha256 ${escapeHtml(l.sha256)}</p>
+            <p class="muted">${he.market.inputs} ${escapeHtml(l.inputs.length ? l.inputs.map((i) => i.label || i.name).join(", ") : he.market.inputsNone)}</p>
+            <p class="mono muted">${he.common.sha256} ${escapeHtml(l.sha256)}</p>
             ${warning}${update}
-            ${unsupported ? `<p class="muted">Pomerado packages are not supported in this extension (workflow-use only).</p>` : ""}
+            ${unsupported ? `<p class="muted">${he.market.pomeradoUnsupported}</p>` : ""}
             <div class="btn-row">
-              <button class="btn primary wide" data-action="install" data-id="${escapeHtml(l.id)}" ${unsupported ? "disabled" : ""}>${l.updateAvailable ? "Update" : l.installed ? "Reinstall" : "Install"}</button>
+              <button class="btn primary wide" data-action="install" data-id="${escapeHtml(l.id)}" ${unsupported ? "disabled" : ""}>${l.updateAvailable ? he.market.update : l.installed ? he.market.reinstall : he.market.install}</button>
             </div>
           </article>`;
         })
         .join("")
-    : `<div class="card"><p class="sub" style="margin:0">No listings (or the marketplace is empty). Publish workflow-use packages from the website, then refresh.</p></div>`;
+    : `<div class="card"><p class="sub" style="margin:0">${he.market.empty}</p></div>`;
   const publishedFor = (w: InstalledWorkflow) =>
     listings.find((l) => l.id === w.listingId || l.id === listingIdForName(w.name) || l.name === w.name);
   const options = workflows
     .map((w) => {
       const published = publishedFor(w);
-      const label = `${w.name}${published ? ` (published v${published.version} — Update)` : ""}`;
+      const label = published ? he.market.publishedOption(w.name, published.version) : w.name;
       return `<option value="${escapeHtml(w.id)}" ${w.id === publishId ? "selected" : ""}>${escapeHtml(label)}</option>`;
     })
     .join("");
@@ -165,34 +168,34 @@ function renderMarket(): string {
       )
     : "";
   const form = `<form id="ext-publish-form" class="card">
-      <h2 style="margin:0 0 8px;font-size:1rem">Publish</h2>
-      <p class="muted">Select an installed or imported workflow, edit the details if you want, then publish. Learned HITL aliases are included. Republishing bumps the version.</p>
+      <h2 style="margin:0 0 8px;font-size:1rem">${he.market.publishTitle}</h2>
+      <p class="muted">${he.market.publishHint}</p>
       ${
         workflows.length
-          ? `<label class="field"><span>Your automations</span>
+          ? `<label class="field"><span>${he.market.yourAutomations}</span>
         <select name="workflowId" id="ext-market-source">
-          <option value="">Choose a workflow…</option>
+          <option value="">${he.market.chooseWorkflow}</option>
           ${options}
         </select>
       </label>`
-          : `<p class="muted">Import or install a workflow first, then you can publish it here.</p>`
+          : `<p class="muted">${he.market.importFirst}</p>`
       }
       ${
         selected
-          ? `<label class="field"><span>Name</span><input name="name" required value="${escapeHtml(selected.name)}" /></label>
-      <label class="field"><span>Description</span><textarea name="description" rows="3">${escapeHtml(selected.description || "")}</textarea></label>
-      <label class="field"><span>Declared inputs (editable)</span><textarea name="inputs" rows="3">${escapeHtml(selectedInputs)}</textarea></label>
-      <div class="btn-row"><button class="btn primary wide" type="submit">${published ? "Update" : "Publish"}</button></div>`
+          ? `<label class="field"><span>${he.market.name}</span><input name="name" required value="${escapeHtml(selected.name)}" /></label>
+      <label class="field"><span>${he.market.description}</span><textarea name="description" rows="3">${escapeHtml(selected.description || "")}</textarea></label>
+      <label class="field"><span>${he.market.declaredInputs}</span><textarea name="inputs" rows="3">${escapeHtml(selectedInputs)}</textarea></label>
+      <div class="btn-row"><button class="btn primary wide" type="submit">${published ? he.market.update : he.installed.publish}</button></div>`
           : ""
       }
     </form>`;
-  return shell("Marketplace", `${form}<div class="btn-row" style="margin-bottom:10px"><button class="btn wide" data-action="refresh-market">Refresh listings</button></div>${cards}`);
+  return shell(he.market.title, `${form}<div class="btn-row" style="margin-bottom:10px"><button class="btn wide" data-action="refresh-market">${he.market.refresh}</button></div>${cards}`);
 }
 
 function renderRun(): string {
   const wf = workflows.find((w) => w.id === selectedId);
   if (!wf) {
-    return shell("Run", `<div class="card"><p class="sub" style="margin:0">Choose an installed workflow first.</p></div>`);
+    return shell(he.tabs.run, `<div class="card"><p class="sub" style="margin:0">${he.run.chooseFirst}</p></div>`);
   }
   const inputs = deriveInputs(wf.definition);
   const missing = missingRequired(inputs, inputValues);
@@ -219,19 +222,19 @@ function renderRun(): string {
     .join("");
   const hitl = run?.status === "hitl" && run.hitl
     ? `<div class="card">
-        <h2 style="margin:0 0 6px;font-size:1rem">Choose a match</h2>
-        <p class="sub">Query “${escapeHtml(run.hitl.query)}” was ${escapeHtml(run.hitl.reason.replaceAll("_", " "))}. Pick one to continue. The selector is saved on this workflow for next time.</p>
+        <h2 style="margin:0 0 6px;font-size:1rem">${he.run.hitlTitle}</h2>
+        <p class="sub">${escapeHtml(he.run.hitlBody(run.hitl.query, run.hitl.reason))}</p>
         ${run.hitl.candidates
           .map(
             (c: Candidate) => `<button type="button" class="candidate ${hitlChoice === c.id ? "selected" : ""}" data-action="hitl-select" data-id="${escapeHtml(c.id)}">
               <strong>${escapeHtml(c.text)}</strong>
-              <div class="mono muted">${escapeHtml(c.role || "")} · score ${c.score ?? "?"} · ${escapeHtml(c.selector || "")}</div>
+              <div class="mono muted">${escapeHtml(c.role || "")} · ${he.run.hitlScore(c.score ?? "?")} · ${escapeHtml(c.selector || "")}</div>
             </button>`,
           )
           .join("")}
         <div class="btn-row">
-          <button class="btn danger" data-action="hitl-cancel">Cancel</button>
-          <button class="btn primary" data-action="hitl-confirm" ${hitlChoice ? "" : "disabled"}>Use this match</button>
+          <button class="btn danger" data-action="hitl-cancel">${he.run.hitlCancel}</button>
+          <button class="btn primary" data-action="hitl-confirm" ${hitlChoice ? "" : "disabled"}>${he.run.hitlConfirm}</button>
         </div>
       </div>`
     : "";
@@ -239,17 +242,17 @@ function renderRun(): string {
   return shell(
     escapeHtml(wf.name),
     `<form id="run-form" class="card" data-id="${escapeHtml(wf.id)}" novalidate>
-      <p class="sub" style="margin-top:0">Plays back in your current Chrome tab. Required fields must be filled.</p>
-      ${fields || `<p class="muted">This workflow has no inputs.</p>`}
+      <p class="sub" style="margin-top:0">${he.run.playbackHint}</p>
+      ${fields || `<p class="muted">${he.run.noInputs}</p>`}
       ${missing.length && busy === false ? "" : ""}
       <div class="btn-row">
-        <button class="btn primary wide" type="submit" ${running ? "disabled" : ""}>Run in current tab</button>
+        <button class="btn primary wide" type="submit" ${running ? "disabled" : ""}>${he.run.runInTab}</button>
       </div>
     </form>
     ${hitl}
     <div class="card">
-      <h2 style="margin:0 0 6px;font-size:1rem">Trace</h2>
-      <div class="trace">${traces || `<p class="muted">No steps yet.</p>`}</div>
+      <h2 style="margin:0 0 6px;font-size:1rem">${he.run.trace}</h2>
+      <div class="trace">${traces || `<p class="muted">${he.run.noSteps}</p>`}</div>
     </div>`,
   );
 }
@@ -257,47 +260,56 @@ function renderRun(): string {
 
 function stepSummary(step: Record<string, unknown>): string {
   const typ = String(step.type || "");
-  if (typ === "navigation") return `Go to ${String(step.url || "")}`;
-  if (typ === "input") return `Type ${String(step.value || "")} in ${String(step.cssSelector || step.target_text || "field")}`;
-  if (typ === "select_change" || typ === "select") return `Choose ${String(step.value || step.target_text || "")}`;
-  if (typ === "key_press" || typ === "key") return `Press ${String(step.value || "Enter")}`;
-  if (typ === "click") return `Click ${String(step.target_text || step.cssSelector || "element")}`;
-  if (typ === "extract") return `Extract ${String(step.extractionGoal || "result")}`;
-  return typ || "step";
+  if (typ === "navigation") return he.record.stepNav(String(step.url || ""));
+  if (typ === "input") return he.record.stepType(String(step.value || ""), String(step.cssSelector || step.target_text || "field"));
+  if (typ === "select_change" || typ === "select") return he.record.stepChoose(String(step.value || step.target_text || ""));
+  if (typ === "key_press" || typ === "key") return he.record.stepKey(String(step.value || "Enter"));
+  if (typ === "click") return he.record.stepClick(String(step.target_text || step.cssSelector || "element"));
+  if (typ === "extract") return he.record.stepExtract(String(step.extractionGoal || "result"));
+  return typ || he.record.stepGeneric;
 }
 
 function renderRecord(): string {
   const tokenReady = Boolean(settings.marketToken && (settings.backendUrl || DEFAULT_BACKEND_URL));
   const setup = tokenReady
     ? ""
-    : `<div class="banner info">Add the site access token (and backend URL if needed) in Settings so a recording can be cleaned and saved to your library.</div>`;
+    : `<div class="banner info">${he.record.tokenBanner}</div>`;
   const controls = `<div class="card">
-      <p class="sub" style="margin-top:0">Do the task yourself in this Chrome window. Start recording, click and type as you normally would, then stop. Redundant clicks are removed; you can restore or delete steps before saving.</p>
-      <label class="field"><span>Goal (optional, one line)</span>
-        <input id="record-goal" value="${escapeHtml(recordGoal)}" placeholder="Find the fixtures for a football team" ${recordingActive || recordBusy ? "disabled" : ""} />
+      <p class="sub" style="margin-top:0">${he.record.intro}</p>
+      <label class="field"><span>${he.record.goal}</span>
+        <input id="record-goal" value="${escapeHtml(recordGoal)}" placeholder="${he.record.goalPh}" ${recordingActive || recordBusy ? "disabled" : ""} />
       </label>
-      <label class="field"><span>Name</span>
-        <input id="record-name" value="${escapeHtml(recordName)}" placeholder="football_fixtures" ${recordingActive || recordBusy ? "disabled" : ""} />
+      <label class="field"><span>${he.record.name}</span>
+        <input id="record-name" value="${escapeHtml(recordName)}" placeholder="${he.record.namePh}" ${recordingActive || recordBusy ? "disabled" : ""} />
       </label>
       <div class="btn-row">
         ${
           recordingActive
-            ? `<button class="btn danger wide" data-action="record-stop" ${recordBusy ? "disabled" : ""}>Stop recording${recordingCount ? ` (${recordingCount})` : ""}</button>`
-            : `<button class="btn primary wide" data-action="record-start" ${recordBusy ? "disabled" : ""}>Start recording</button>`
+            ? `<button class="btn danger wide" data-action="record-stop" ${recordBusy ? "disabled" : ""}>${recordingCount ? he.record.stopCount(recordingCount) : he.record.stop}</button>`
+            : `<button class="btn primary wide" data-action="record-start" ${recordBusy ? "disabled" : ""}>${he.record.start}</button>`
         }
       </div>
-      ${recordingActive ? `<p class="muted" data-record-status="recording">Recording in your current tab… ${recordingCount} event${recordingCount === 1 ? "" : "s"} captured.</p>` : ""}
-      ${recordBusy && !recordingActive ? `<p class="muted" data-record-status="${recordEvents.length ? "cleaning" : "starting"}">${recordEvents.length ? "Cleaning the recording…" : "Starting…"}</p>` : ""}
+      ${recordingActive ? `<p class="muted" data-record-status="recording">${he.record.recording(recordingCount)}</p>` : ""}
+      ${recordBusy && !recordingActive ? `<p class="muted" data-record-status="${recordEvents.length ? "cleaning" : "starting"}">${recordEvents.length ? he.record.cleaning : he.record.starting}</p>` : ""}
     </div>`;
   const usage = recordUsage
-    ? `<p class="muted">${escapeHtml(recordUsage.label || (recordUsage.prune_used ? `LLM prune used ${recordUsage.tokens_in || 0} in / ${recordUsage.tokens_out || 0} out tokens.` : recordUsage.extract_used ? `Parameter extract used ${recordUsage.tokens_in || 0} in / ${recordUsage.tokens_out || 0} out tokens (deterministic prune only).` : recordUsage.used ? `LLM used ${recordUsage.tokens_in || 0} in / ${recordUsage.tokens_out || 0} out tokens.` : "Deterministic prune only (no LLM tokens)."))}</p>`
+    ? `<p class="muted">${escapeHtml(
+        recordUsage.label ||
+          (recordUsage.prune_used
+            ? he.record.usagePrune(recordUsage.tokens_in || 0, recordUsage.tokens_out || 0)
+            : recordUsage.extract_used
+              ? he.record.usageExtract(recordUsage.tokens_in || 0, recordUsage.tokens_out || 0)
+              : recordUsage.used
+                ? he.record.usageLlm(recordUsage.tokens_in || 0, recordUsage.tokens_out || 0)
+                : he.record.usageDeterministic),
+      )}</p>`
     : "";
   const stats = recordStats
-    ? `<p class="muted">${escapeHtml(String(recordStats.steps_before || 0))} recorded steps → ${escapeHtml(String(recordStats.steps_after || reviewItems.filter((i) => i.kept).length))} kept.</p>`
+    ? `<p class="muted">${escapeHtml(he.record.stats(String(recordStats.steps_before || 0), String(recordStats.steps_after || reviewItems.filter((i) => i.kept).length)))}</p>`
     : "";
   const steps = reviewItems.length
     ? `<div class="card">
-        <h2 style="margin:0 0 8px;font-size:1rem">Review steps</h2>
+        <h2 style="margin:0 0 8px;font-size:1rem">${he.record.reviewTitle}</h2>
         ${usage}${stats}
         <div class="trace">${reviewItems
           .map((item, i) => {
@@ -308,7 +320,7 @@ function renderRecord(): string {
               <div>
                 <div>${escapeHtml(stepSummary(item.step))}</div>
                 ${reason}
-                <button type="button" class="btn" data-action="${dropped ? "record-restore" : "record-drop"}" data-rec-id="${escapeHtml(item.id)}">${dropped ? "Restore" : "Delete"}</button>
+                <button type="button" class="btn" data-action="${dropped ? "record-restore" : "record-drop"}" data-rec-id="${escapeHtml(item.id)}">${dropped ? he.record.restore : he.record.delete}</button>
               </div>
             </div>`;
           })
@@ -317,49 +329,49 @@ function renderRecord(): string {
     : "";
   const params = reviewItems.length
     ? `<div class="card">
-        <h2 style="margin:0 0 8px;font-size:1rem">Inputs</h2>
-        <p class="muted">These become required labelled fields when you run the workflow. Confirm or edit them.</p>
+        <h2 style="margin:0 0 8px;font-size:1rem">${he.record.inputsTitle}</h2>
+        <p class="muted">${he.record.inputsHint}</p>
         ${
           recordParams.length
             ? recordParams
                 .map(
                   (p, i) => `<div class="param-row" data-param-index="${i}">
-                    <label class="field"><span>Name</span><input data-param="${i}" data-field="name" value="${escapeHtml(p.name)}" /></label>
-                    <label class="field"><span>Label</span><input data-param="${i}" data-field="label" value="${escapeHtml(p.label || p.name)}" /></label>
-                    <label class="field"><span>Example</span><input data-param="${i}" data-field="example" value="${escapeHtml(p.example || "")}" /></label>
-                    <label class="field check"><span><input type="checkbox" data-param="${i}" data-field="required" ${p.required === false ? "" : "checked"} /> Required</span></label>
+                    <label class="field"><span>${he.record.paramName}</span><input data-param="${i}" data-field="name" value="${escapeHtml(p.name)}" /></label>
+                    <label class="field"><span>${he.record.paramLabel}</span><input data-param="${i}" data-field="label" value="${escapeHtml(p.label || p.name)}" /></label>
+                    <label class="field"><span>${he.record.paramExample}</span><input data-param="${i}" data-field="example" value="${escapeHtml(p.example || "")}" /></label>
+                    <label class="field check"><span><input type="checkbox" data-param="${i}" data-field="required" ${p.required === false ? "" : "checked"} /> ${he.record.required}</span></label>
                   </div>`,
                 )
                 .join("")
-            : `<p class="muted">No parameters detected. You can still save a fixed workflow, or add a name like team in the goal and record again.</p>`
+            : `<p class="muted">${he.record.noParams}</p>`
         }
-        <div class="btn-row"><button class="btn" data-action="record-add-param">Add input</button></div>
+        <div class="btn-row"><button class="btn" data-action="record-add-param">${he.record.addInput}</button></div>
       </div>`
     : "";
   const save = reviewItems.some((i) => i.kept)
-    ? `<div class="btn-row"><button class="btn primary wide" data-action="record-save" ${recordBusy || !tokenReady ? "disabled" : ""}>Save workflow</button></div>`
+    ? `<div class="btn-row"><button class="btn primary wide" data-action="record-save" ${recordBusy || !tokenReady ? "disabled" : ""}>${he.record.save}</button></div>`
     : "";
-  return shell("Record", `${setup}${controls}${steps}${params}${save}`);
+  return shell(he.record.title, `${setup}${controls}${steps}${params}${save}`);
 }
 
 function renderSettings(): string {
   return shell(
-    "Settings",
+    he.settings.title,
     `<form id="settings-form" class="card">
-      <label class="field"><span>Marketplace origin</span>
+      <label class="field"><span>${he.settings.marketOrigin}</span>
         <input name="marketOrigin" value="${escapeHtml(settings.marketOrigin || DEFAULT_MARKET_ORIGIN)}" placeholder="${DEFAULT_MARKET_ORIGIN}" />
       </label>
-      <label class="field"><span>Backend URL</span>
+      <label class="field"><span>${he.settings.backendUrl}</span>
         <input name="backendUrl" value="${escapeHtml(settings.backendUrl || DEFAULT_BACKEND_URL)}" placeholder="${DEFAULT_BACKEND_URL}" />
       </label>
-      <label class="field"><span>Site access token</span>
+      <label class="field"><span>${he.settings.accessToken}</span>
         <div class="secret-wrap">
           <input name="marketToken" type="password" autocomplete="off" value="${escapeHtml(settings.marketToken)}" />
-          <button type="button" class="btn peek" data-action="peek">Show</button>
+          <button type="button" class="btn peek" data-action="peek">${he.settings.show}</button>
         </div>
       </label>
-      <p class="muted">Same shared token as the phone website. Stored only in this browser profile (chrome.storage.local). Needed to list and install marketplace packages, and to clean and save a recording to the library.</p>
-      <div class="btn-row"><button class="btn primary wide" type="submit">Save</button></div>
+      <p class="muted">${he.settings.hint}</p>
+      <div class="btn-row"><button class="btn primary wide" type="submit">${he.settings.save}</button></div>
     </form>`,
   );
 }
@@ -371,22 +383,23 @@ async function backendChat(payload: Record<string, unknown>): Promise<Record<str
   if (settings.marketToken) headers["X-Browser-Platform-Token"] = settings.marketToken;
   const res = await fetch(`${base}/api/chat`, { method: "POST", body: JSON.stringify(payload), headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || res.statusText || "Chat failed"));
+  if (!res.ok) throw new Error(String((data as { detail?: string }).detail || res.statusText || he.chat.failed));
   return data as Record<string, unknown>;
 }
 
 function renderChat(): string {
-  const history = chatLog.map((msg) => `<div class="card"><strong>${escapeHtml(msg.role)}</strong><p style="white-space:pre-wrap">${escapeHtml(msg.content)}</p></div>`).join("")
-    || `<p class="muted">Ask a saved workflow, several at once, or the same one over a list. Planning runs on the backend; the tools run in this tab.</p>`;
+  const roleLabel = (role: "user" | "assistant") => (role === "user" ? he.chat.roleUser : he.chat.roleAssistant);
+  const history = chatLog.map((msg) => `<div class="card"><strong>${escapeHtml(roleLabel(msg.role))}</strong><p style="white-space:pre-wrap">${escapeHtml(msg.content)}</p></div>`).join("")
+    || `<p class="muted">${he.chat.empty}</p>`;
   return shell(
-    "Chat",
+    he.chat.title,
     `${history}
     ${chatStatus ? `<p class="muted">${escapeHtml(chatStatus)}</p>` : ""}
     <form id="ext-chat-form" class="card">
-      <label class="field"><span>Message</span>
+      <label class="field"><span>${he.chat.message}</span>
         <textarea name="message" required style="min-height:80px">${escapeHtml(chatDraft)}</textarea>
       </label>
-      <button class="btn primary wide" type="submit" ${chatBusy ? "disabled" : ""}>Send</button>
+      <button class="btn primary wide" type="submit" ${chatBusy ? "disabled" : ""}>${he.chat.send}</button>
     </form>`,
   );
 }
@@ -404,7 +417,7 @@ function render(): void {
 
 async function loadMarket(): Promise<void> {
   const res = await send<{ listings: MarketItem[] }>("bp-list-market");
-  if (!res.ok) throw new Error(res.error || "Could not list marketplace");
+  if (!res.ok) throw new Error(res.error || he.flash.marketFailed);
   listings = res.listings;
 }
 
@@ -417,7 +430,7 @@ document.addEventListener("submit", (event) => {
   chatDraft = "";
   chatLog.push({ role: "user", content: message });
   chatBusy = true;
-  chatStatus = "Planning…";
+  chatStatus = he.chat.planning;
   render();
   void (async () => {
     try {
@@ -425,19 +438,19 @@ document.addEventListener("submit", (event) => {
       let job = await backendChat({ message, history, target: "extension", stream: false });
       if (job.status === "needs_input" || job.status === "needs_confirmation") {
         if (job.status === "needs_confirmation") {
-          if (!confirm(String(job.confirm_reason || "Run these workflows?"))) {
-            chatLog.push({ role: "assistant", content: String(job.confirm_reason || "Cancelled.") });
+          if (!confirm(String(job.confirm_reason || he.chat.confirmRun))) {
+            chatLog.push({ role: "assistant", content: String(job.confirm_reason || he.chat.cancelled) });
             return;
           }
           job = await backendChat({ message, job_id: job.id, confirm: true, target: "extension", stream: false });
         } else {
-          chatLog.push({ role: "assistant", content: String(job.question || job.answer || "Missing required inputs.") });
+          chatLog.push({ role: "assistant", content: String(job.question || job.answer || he.chat.missingInputs) });
           return;
         }
       }
       if (job.status === "awaiting_results" || Array.isArray(job.calls)) {
         const calls = (job.calls || []) as Array<{ id: string; definition?: unknown; arguments?: Record<string, string>; workflow_id?: string; workflow_name?: string; tool?: string; action_ending?: boolean }>;
-        chatStatus = `Running ${calls.length} tool call(s) in this tab…`;
+        chatStatus = he.chat.runningTools(calls.length);
         render();
         const results = [];
         for (const call of calls) {
@@ -461,7 +474,7 @@ document.addEventListener("submit", (event) => {
         }
         job = await backendChat({ message, job_id: job.id, results, stream: false });
       }
-      chatLog.push({ role: "assistant", content: String(job.answer || job.question || job.error || "Done.") });
+      chatLog.push({ role: "assistant", content: String(job.answer || job.question || job.error || he.chat.done) });
     } catch (err) {
       flash = { kind: "err", text: err instanceof Error ? err.message : String(err) };
     } finally {
@@ -494,7 +507,7 @@ document.addEventListener("click", (event) => {
     const input = document.querySelector<HTMLInputElement>('input[name="marketToken"]');
     if (!input) return;
     input.type = input.type === "password" ? "text" : "password";
-    (target.closest("button") as HTMLElement).textContent = input.type === "password" ? "Show" : "Hide";
+    (target.closest("button") as HTMLElement).textContent = input.type === "password" ? he.settings.show : he.settings.hide;
     return;
   }
   if (action === "open-run") {
@@ -520,7 +533,7 @@ document.addEventListener("click", (event) => {
   }
   if (action === "remove") {
     const id = (target.closest("[data-id]") as HTMLElement).dataset.id || "";
-    if (!id || !confirm("Remove this installed workflow from the extension?")) return;
+    if (!id || !confirm(he.flash.removeConfirm)) return;
     void send("bp-remove", { id }).then(async () => {
       if (selectedId === id) selectedId = "";
       await refreshState();
@@ -531,7 +544,7 @@ document.addEventListener("click", (event) => {
   if (action === "refresh-market") {
     void loadMarket()
       .then(() => {
-        flash = { kind: "ok", text: "Listings refreshed." };
+        flash = { kind: "ok", text: he.flash.listingsRefreshed };
       })
       .catch((err) => {
         flash = { kind: "err", text: err instanceof Error ? err.message : String(err) };
@@ -542,13 +555,13 @@ document.addEventListener("click", (event) => {
   if (action === "install") {
     const id = (target.closest("[data-id]") as HTMLElement).dataset.id || "";
     const listing = listings.find((l) => l.id === id);
-    if (listing?.contains_code && !confirm("This package contains executable automation code. Review it before running. Install anyway?")) return;
+    if (listing?.contains_code && !confirm(he.flash.codeInstallConfirm)) return;
     const btn = target.closest("button") as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
     void send("bp-install", { id })
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.error || "Install failed");
-        flash = { kind: "ok", text: listing?.updateAvailable ? "Updated." : "Installed. Open it from the Installed tab to run." };
+        if (!res.ok) throw new Error(res.error || he.flash.installFailed);
+        flash = { kind: "ok", text: listing?.updateAvailable ? he.flash.updated : he.flash.installedRun };
         await refreshState();
         await loadMarket().catch(() => undefined);
         render();
@@ -572,11 +585,11 @@ document.addEventListener("click", (event) => {
     render();
     void send("bp-record-start")
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.error || "Could not start recording");
+        if (!res.ok) throw new Error(res.error || he.flash.recordStartFailed);
         recordingActive = true;
         recordingCount = Number((res as { count?: number }).count || 0);
         recordBusy = false;
-        flash = { kind: "info", text: "Recording. Use this Chrome window to do the task, then stop." };
+        flash = { kind: "info", text: he.flash.recordingInfo };
         render();
       })
       .catch((err) => {
@@ -592,7 +605,7 @@ document.addEventListener("click", (event) => {
     render();
     void send<{ events: Record<string, unknown>[] }>("bp-record-stop")
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.error || "Could not stop recording");
+        if (!res.ok) throw new Error(res.error || he.flash.recordStopFailed);
         recordingActive = false;
         recordEvents = res.events || [];
         recordingCount = recordEvents.length;
@@ -607,7 +620,7 @@ document.addEventListener("click", (event) => {
           goal: recordGoal,
           name: recordName,
         });
-        if (!clean.ok) throw new Error(clean.error || "Could not clean recording");
+        if (!clean.ok) throw new Error(clean.error || he.flash.recordCleanFailed);
         const result = clean.result;
         reviewItems = result.review || [];
         recordParams = result.parameters || [];
@@ -615,7 +628,7 @@ document.addEventListener("click", (event) => {
         recordStats = result.stats || null;
         if (!recordName && result.name) recordName = result.name;
         recordBusy = false;
-        flash = { kind: "ok", text: "Recording cleaned. Review the steps, then save." };
+        flash = { kind: "ok", text: he.flash.recordCleaned };
         render();
       })
       .catch((err) => {
@@ -633,16 +646,16 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (action === "record-add-param") {
-    recordParams = [...recordParams, { name: "value", label: "Value", example: "", required: true }];
+    recordParams = [...recordParams, { name: he.record.defaultParamName, label: he.record.defaultParamLabel, example: "", required: true }];
     render();
     return;
   }
   if (action === "record-save") {
-    recordName = (document.getElementById("record-name") as HTMLInputElement | null)?.value || recordName || "Recorded workflow";
+    recordName = (document.getElementById("record-name") as HTMLInputElement | null)?.value || recordName || he.record.defaultName;
     recordGoal = (document.getElementById("record-goal") as HTMLInputElement | null)?.value || recordGoal;
     const kept = reviewItems.filter((i) => i.kept);
     if (!kept.length) {
-      flash = { kind: "err", text: "Keep at least one step before saving." };
+      flash = { kind: "err", text: he.flash.keepOneStep };
       render();
       return;
     }
@@ -650,16 +663,16 @@ document.addEventListener("click", (event) => {
     render();
     void send<{ workflow?: InstalledWorkflow }>("bp-record-save", {
       payload: {
-        name: recordName || "Recorded workflow",
+        name: recordName || he.record.defaultName,
         goal: recordGoal,
         review: reviewItems,
         parameters: recordParams,
       },
     })
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.error || "Save failed");
+        if (!res.ok) throw new Error(res.error || he.flash.saveFailed);
         recordBusy = false;
-        flash = { kind: "ok", text: "Saved to your library. It also appears in the Publish dropdown." };
+        flash = { kind: "ok", text: he.flash.savedLibrary };
         await refreshState();
         if (res.workflow?.id) {
           selectedId = res.workflow.id;
@@ -703,8 +716,8 @@ document.addEventListener("change", (event) => {
     const file = input.files[0];
     void file.text().then(async (json) => {
       const res = await send("bp-import", { json });
-      if (!res.ok) throw new Error(res.error || "Import failed");
-      flash = { kind: "ok", text: "Imported. You can run it from this list." };
+      if (!res.ok) throw new Error(res.error || he.flash.importFailed);
+      flash = { kind: "ok", text: he.flash.imported };
       await refreshState();
       render();
     }).catch((err) => {
@@ -753,9 +766,9 @@ document.addEventListener("submit", (event) => {
     if (inputsRaw) {
       try {
         inputs = JSON.parse(inputsRaw);
-        if (!Array.isArray(inputs)) throw new Error("inputs must be a JSON array");
+        if (!Array.isArray(inputs)) throw new Error(he.flash.inputsMustBeArray);
       } catch (err) {
-        flash = { kind: "err", text: err instanceof Error ? err.message : "inputs must be a JSON array" };
+        flash = { kind: "err", text: err instanceof Error ? err.message : he.flash.inputsMustBeArray };
         render();
         return;
       }
@@ -768,9 +781,9 @@ document.addEventListener("submit", (event) => {
       description: String(data.get("description") || ""),
       inputs,
     }).then(async (res) => {
-      if (!res.ok) throw new Error(res.error || "Publish failed");
+      if (!res.ok) throw new Error(res.error || he.flash.publishFailed);
       const listing = (res as { listing?: { name?: string; version?: string } }).listing;
-      flash = { kind: "ok", text: `Published ${listing?.name || "workflow"} v${listing?.version || ""}.` };
+      flash = { kind: "ok", text: he.flash.published(listing?.name || "workflow", listing?.version || "") };
       await refreshState();
       await loadMarket().catch(() => undefined);
       render();
@@ -789,9 +802,9 @@ document.addEventListener("submit", (event) => {
         backendUrl: String(data.get("backendUrl") || DEFAULT_BACKEND_URL),
       },
     }).then(async (res) => {
-      if (!res.ok) throw new Error(res.error || "Save failed");
+      if (!res.ok) throw new Error(res.error || he.flash.settingsSaveFailed);
       await refreshState();
-      flash = { kind: "ok", text: "Saved on this computer only." };
+      flash = { kind: "ok", text: he.flash.settingsSaved };
       render();
     });
     return;
@@ -804,7 +817,7 @@ document.addEventListener("submit", (event) => {
     for (const [k, v] of data.entries()) inputValues[k] = String(v);
     const missing = missingRequired(inputs, inputValues);
     if (missing.length) {
-      flash = { kind: "err", text: `Fill required fields: ${missing.map((n) => prettyLabel(n)).join(", ")}` };
+      flash = { kind: "err", text: he.run.fillRequired(missing.map((n) => prettyLabel(n)).join(", ")) };
       render();
       return;
     }
