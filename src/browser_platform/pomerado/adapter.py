@@ -82,6 +82,11 @@ class PomeradoAdapter:
     def _stock_run_path(self) -> Path:
         return self._stock_mcp_path().with_name(STOCK_RUN)
 
+    def _jail_directory(self, directory: str | Path | None) -> Path:
+        from browser_platform.pomerado.register import jail_integration_directory
+
+        return Path(jail_integration_directory(str(directory or ""), self.root))
+
     def _command(self) -> list[str]:
         return ["node", str(self._stock_mcp_path()), "mint", "--root", str(self.root)]
 
@@ -344,10 +349,14 @@ class PomeradoAdapter:
         run_js = self._stock_run_path()
         if not run_js.is_file():
             return {"ok": False, "status": "failed", "error": f"missing {run_js}", "tokens_in": 0, "tokens_out": 0}
+        try:
+            artifact_path = self._jail_directory(artifact)
+        except ValueError as exc:
+            return {"ok": False, "status": "failed", "error": str(exc), "tokens_in": 0, "tokens_out": 0}
         env = self._env(None)
         # A run makes no model request; drop the mint key from the child just in case.
         env.pop("OPENAI_API_KEY", None)
-        args = ["node", str(run_js), "--artifact", str(artifact), "--timeout-seconds", str(int(timeout))]
+        args = ["node", str(run_js), "--artifact", str(artifact_path), "--timeout-seconds", str(int(timeout))]
         if url:
             args.extend(["--url", url])
         if intent:
@@ -393,18 +402,20 @@ class PomeradoAdapter:
             return
         request = job.get("request") or {}
         try:
+            jailed = str(self._jail_directory(directory))
             registered = register_published_tool(
                 self.store,
-                name=request.get("name") or Path(directory).name,
+                name=request.get("name") or Path(jailed).name,
                 url=request.get("url") or (job.get("pomerado_input") or {}).get("url") or "",
                 intent=request.get("intent") or "",
                 effect=request.get("effect") or "read",
-                directory=directory,
+                directory=jailed,
                 input_values=request.get("input") or {},
                 mint_job_id=str(job.get("job_id") or "") or None,
+                integrations_root=self.root,
             )
             job["workflow"] = registered
-            job["directory"] = directory
+            job["directory"] = jailed
         except Exception:
             # Registration failure must not fail the mint job itself.
             job.setdefault("workflow_error", "failed to register workflow")

@@ -1,5 +1,6 @@
 import { backendFetch } from "./api";
 import { probeExtension } from "./record";
+import { loadSettings } from "./storage";
 import { escapeHtml, formatUsage } from "./validation";
 
 export type ChatCall = {
@@ -215,11 +216,14 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
   chatState.job = { status: "planning", message, calls: [], items: [], target: chatState.target };
   rerenderChat();
   try {
+    // Exclude the current user turn from history (it is sent as `message`).
     const history = chatState.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(0, -1)
       .slice(-8)
       .map((m) => ({ role: m.role, content: m.content }));
-    const body = {
+    const settings = loadSettings();
+    const body: Record<string, unknown> = {
       message,
       history,
       target: chatState.target,
@@ -228,6 +232,9 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
       job_id: opts?.jobId,
       results: opts?.results,
     };
+    if (settings.openrouterKey) {
+      body.llm = { api_key: settings.openrouterKey, model: settings.model || undefined };
+    }
     const response = await backendFetch("/api/chat", { method: "POST", body: JSON.stringify(body) });
     if (!response.ok) {
       const text = await response.text();
@@ -245,8 +252,13 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
       chatState.job = job;
     }
     if (!job) throw new Error("Chat returned no job.");
-    if (job.status === "awaiting_results" && chatState.target === "extension") {
-      const results = await runCallsInExtension(job.calls || []);
+    if (
+      job.status === "awaiting_results" &&
+      chatState.target === "extension" &&
+      Array.isArray(job.calls) &&
+      job.calls.length > 0
+    ) {
+      const results = await runCallsInExtension(job.calls);
       await sendChat(message, { jobId: job.id, results });
       return;
     }

@@ -13,6 +13,11 @@ from urllib.parse import urlparse
 DEFAULT_CDP_PORT = 9222
 
 
+def is_loopbackish(host: str | None) -> bool:
+    value = (host or "").strip().lower()
+    return value in {"127.0.0.1", "localhost", "::1", "[::1]", ""}
+
+
 def cdp_port(url: str | None) -> tuple[str, int]:
     parsed = urlparse(url or f"http://127.0.0.1:{DEFAULT_CDP_PORT}")
     host = parsed.hostname or "127.0.0.1"
@@ -45,7 +50,6 @@ def _windows_chrome_candidates() -> list[Path]:
         Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe",
         Path(pf86) / "Google" / "Chrome" / "Application" / "chrome.exe",
         Path(local) / "Google" / "Chrome" / "Application" / "chrome.exe",
-        Path(pf) / "Google" / "Chrome" / "Application" / "chrome.exe",
     ]
 
 
@@ -162,13 +166,19 @@ def launch_chrome_cdp(
     _, port = cdp_port(cdp_url)
     profile = Path(profile_dir) if profile_dir else default_profile_dir()
     profile.mkdir(parents=True, exist_ok=True)
+    host, _ = cdp_port(cdp_url)
+    # Always pin the DevTools server to loopback and an explicit origin allowlist.
+    # Never use --remote-allow-origins=* (any web page could drive the profile).
+    debug_host = host if is_loopbackish(host) else "127.0.0.1"
+    allow_origin = os.environ.get("BROWSER_PLATFORM_CDP_ALLOW_ORIGIN") or f"http://127.0.0.1:8745"
     args = [
         str(binary),
         f"--remote-debugging-port={port}",
+        f"--remote-debugging-address={debug_host}",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--remote-allow-origins=*",
+        f"--remote-allow-origins={allow_origin}",
         *container_chrome_args(),
     ]
     creationflags = 0

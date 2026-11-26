@@ -64,6 +64,17 @@ declare global {
     return "//" + parts.join("/");
   }
 
+  function isSecretField(el: Element | null): boolean {
+    if (!el || el.nodeType !== 1) return false;
+    const input = el as HTMLInputElement;
+    const type = String(input.type || "").toLowerCase();
+    if (type === "password") return true;
+    const autocomplete = String(input.autocomplete || input.getAttribute("autocomplete") || "").toLowerCase();
+    if (/(password|one-time-code|cc-|card|cvv|ssn|secret)/i.test(autocomplete)) return true;
+    const name = String(input.name || input.id || input.getAttribute("aria-label") || "").toLowerCase();
+    return /(password|passwd|secret|api[_-]?key|token|cvv|ssn)/i.test(name);
+  }
+
   function describe(el: Element | null) {
     if (!el || el.nodeType !== 1) return null;
     const html = el as HTMLElement;
@@ -74,7 +85,8 @@ declare global {
       ({ a: "link", button: "button", input: "textbox", select: "combobox", textarea: "textbox" } as Record<string, string>)[tag] ||
       tag;
     const name = el.getAttribute("aria-label") || el.getAttribute("name") || el.getAttribute("placeholder") || text;
-    const value = "value" in html ? String((html as HTMLInputElement).value ?? "") : null;
+    const secret = isSecretField(el);
+    const value = secret ? null : "value" in html ? String((html as HTMLInputElement).value ?? "") : null;
     return {
       tag,
       id: html.id || null,
@@ -252,11 +264,27 @@ declare global {
   };
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.kind !== "bp-record-drain") return;
+    if (!message) return;
+    if (message.kind === "bp-record-ping") {
+      sendResponse({ ok: true });
+      return true;
+    }
+    if (message.kind !== "bp-record-drain") return;
     const wait = pending > 0 ? 400 : 0;
     window.setTimeout(() => {
       snapshotFields();
-      const out = events.slice();
+      // Filter secret field values before leaving the page.
+      const out = events
+        .map((ev) => {
+          if (ev.element && isSecretField(document.querySelector(String((ev.element as { css?: string }).css || "")) as Element)) {
+            return { ...ev, value: null };
+          }
+          if (ev.value != null && /(password|passwd|secret)/i.test(String((ev.element as { name?: string } | null)?.name || ""))) {
+            return { ...ev, value: null };
+          }
+          return ev;
+        })
+        .slice();
       events.length = 0;
       sendResponse({ ok: true, events: out });
     }, wait);

@@ -1,18 +1,18 @@
-# Run from ~/browser-platform on the Oracle VM (compose context is this directory).
+# Run from the repo root: docker compose -f deploy/oracle-docker-compose.yml up -d --build
 # Attaches to docker_default so supabase-caddy can reach the container by name.
 # 8745 is published only on loopback. Do not open it on the public firewall.
+# Set BROWSER_PLATFORM_ACCESS_TOKEN in deploy/.env (required for HOST=0.0.0.0).
 services:
   backend:
     container_name: browser-platform
     image: browser-platform:local
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      PYTHONPATH: "/app/src"
       BROWSER_PLATFORM_HOST: "0.0.0.0"
       BROWSER_PLATFORM_PORT: "8745"
       BROWSER_PLATFORM_DATA_DIR: "/data"
@@ -20,13 +20,15 @@ services:
       BROWSER_PLATFORM_AUTO_LAUNCH_CHROME: "true"
       BROWSER_PLATFORM_CHROME_HEADLESS: "true"
       BROWSER_PLATFORM_CHROME_PROFILE_DIR: "/data/chrome-profile"
+      BROWSER_PLATFORM_REQUIRE_TOKEN_ON_LOCALHOST: "true"
     volumes:
-      - ./data:/data
-      - ./src:/app/src
+      - ../data:/data
     ports:
       - "127.0.0.1:8745:8745"
     shm_size: "1gb"
     init: true
+    security_opt:
+      - no-new-privileges:true
     networks:
       - caddy_net
     healthcheck:

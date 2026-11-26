@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
+import signal
 import socket
 import tempfile
 import time
@@ -30,7 +32,8 @@ def _free_port() -> int:
 
 def launch_isolated_sync(*, wait: float = 12.0) -> IsolatedBrowser:
     port = _free_port()
-    profile = Path(tempfile.mkdtemp(prefix="bp-iso-", dir="/tmp"))
+    # Portable temp dir (do not hardcode /tmp — breaks on Windows).
+    profile = Path(tempfile.mkdtemp(prefix="bp-iso-"))
     cdp_url = f"http://127.0.0.1:{port}"
     proc = launch_chrome_cdp(cdp_url=cdp_url, profile_dir=profile)
     if proc is None:
@@ -54,11 +57,23 @@ def close_isolated_sync(browser: IsolatedBrowser | None) -> None:
     proc = browser.proc
     if proc is not None:
         try:
-            proc.terminate()
+            if os.name != "nt" and hasattr(os, "killpg"):
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except Exception:
+                    proc.terminate()
+            else:
+                proc.terminate()
             try:
                 proc.wait(timeout=4)
             except Exception:
-                proc.kill()
+                try:
+                    if os.name != "nt" and hasattr(os, "killpg"):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except Exception:
+                    proc.kill()
                 proc.wait(timeout=3)
         except Exception:
             try:

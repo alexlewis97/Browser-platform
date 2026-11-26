@@ -12,7 +12,7 @@ ACTION_TYPES = frozenset({"click", "input", "select_change", "key_press"})
 TERMINAL_TYPES = EXTRACT_TYPES | ACTION_TYPES
 
 _SUBMIT_TEXT = re.compile(
-    r"\b(submit|send|sign[\s-]?in|log[\s-]?in|login|save|confirm|continue|next|apply|search|go|register|sign[\s-]?up|post|checkout|pay)\b",
+    r"\b(submit|send|sign[\s-]?in|log[\s-]?in|login|save|confirm|continue|next|apply|search|go|register|sign[\s-]?up|post|checkout|pay|delete|remove|transfer|revoke|cancel|unsubscribe|buy|purchase)\b",
     re.I,
 )
 _ACTION_GOAL = re.compile(
@@ -138,6 +138,9 @@ def protect_last_action(after: list[WorkflowStep], before: list[WorkflowStep]) -
     """If a prune pass dropped the final action, put it back."""
     needed = last_action(before)
     if needed is None:
+        return after
+    # Do not revive clicks that the recorder marked as no-ops (changed=False).
+    if getattr(needed, "changed", None) is False:
         return after
     ident = rec_id(needed)
     if ident and any(rec_id(step) == ident for step in after):

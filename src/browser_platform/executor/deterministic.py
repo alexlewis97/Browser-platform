@@ -191,7 +191,14 @@ async def run_step(
     if typ == "navigation":
         if not url:
             raise StepFailed("navigation step is missing url")
-        await page.goto(str(url), wait_until="domcontentloaded")
+        from browser_platform.nav_policy import assert_safe_navigation_url
+
+        # Local user Chrome may hit intranet hosts; still block file:// and odd schemes.
+        try:
+            safe = assert_safe_navigation_url(str(url), allow_private=True)
+        except ValueError as exc:
+            raise StepFailed(str(exc)) from exc
+        await page.goto(safe, wait_until="domcontentloaded")
         # Public sites (notably Wikipedia) may return a short rate-limit error page on the first hit.
         for _ in range(2):
             title = ""

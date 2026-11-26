@@ -34,12 +34,36 @@ export function isNetworkError(err: unknown): boolean {
   );
 }
 
+function isAllowedDiscoveryUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    if (host === "localhost" || host === "127.0.0.1" || host === "[::1]") return true;
+    if (host.endsWith(".trycloudflare.com") || host === "trycloudflare.com") return true;
+    const allowed = (import.meta as { env?: { VITE_ALLOWED_BACKEND_HOSTS?: string } }).env?.VITE_ALLOWED_BACKEND_HOSTS;
+    if (allowed) {
+      const set = new Set(
+        allowed
+          .split(",")
+          .map((item) => item.trim().toLowerCase())
+          .filter(Boolean),
+      );
+      if (set.has(host)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function parseDiscovery(response: Response): Promise<string | null> {
   if (!response.ok) return null;
   const data = (await response.json()) as BackendDiscovery | string;
   const raw = typeof data === "string" ? data : data.backendUrl || data.url || "";
   const url = trimSlash(String(raw));
   if (!url || !/^https?:\/\//i.test(url)) return null;
+  if (!isAllowedDiscoveryUrl(url)) return null;
   return url;
 }
 

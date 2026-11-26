@@ -72,12 +72,13 @@ def test_extension_websocket_stub(data_dir: Path):
     with client.websocket_connect("/ws/extension") as ws:
         hello = ws.receive_json()
         assert hello["type"] == "hello_ack"
-        assert "cdp_relay" in hello["features"]
+        assert "cdp_relay" not in hello["features"]
+        assert "run_events" in hello["features"] or "needs_confirmation" in hello["features"]
         ws.send_json({"type": "ping"})
         assert ws.receive_json()["type"] == "pong"
         ws.send_json({"type": "cdp_relay"})
         stub = ws.receive_json()
-        assert stub["type"] == "stub"
+        assert stub["type"] == "error"
 
 
 def test_pomerado_mint_via_node_host(data_dir: Path):

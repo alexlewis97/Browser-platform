@@ -4,9 +4,9 @@
  *  - post-process src/tool.mjs so a bare default export becomes defineOperation
  *  - never leave apply_patch as an unregistered function_call
  */
-import { readdir, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, extname } from "node:path";
+import { join, relative, extname, resolve, sep } from "node:path";
 
 export const LIST_WORKSPACE_NAME = "list_workspace";
 
@@ -177,6 +177,19 @@ function indent(text, n) {
   return text.split("\n").map((line) => (line ? pad + line : line)).join("\n");
 }
 
+function assertUnderRoot(root, candidate) {
+  const rootResolved = resolve(root);
+  const full = resolve(rootResolved, candidate);
+  const rel = relative(rootResolved, full);
+  if (rel.startsWith("..") || rel.includes(`..${sep}`) || resolve(full) === resolve(rootResolved, "..")) {
+    throw new Error("path escapes mint workspace");
+  }
+  if (!full.startsWith(rootResolved + sep) && full !== rootResolved) {
+    throw new Error("path escapes mint workspace");
+  }
+  return full;
+}
+
 export async function listMintWorkspace(pathHint = ".") {
   const roots = await findWorkspaceRoots();
   if (!roots.length) {
@@ -185,7 +198,18 @@ export async function listMintWorkspace(pathHint = ".") {
   const trees = [];
   for (const root of roots) {
     const rel = String(pathHint || ".").replace(/^\/workspace\/?/, "").replace(/^\//, "") || ".";
-    const start = rel === "." ? root : join(root, rel);
+    let start;
+    try {
+      start = rel === "." ? root : assertUnderRoot(root, rel);
+      // Resolve symlinks and re-check.
+      const realRoot = await realpath(root).catch(() => root);
+      const realStart = await realpath(start).catch(() => start);
+      assertUnderRoot(realRoot, relative(realRoot, realStart) || ".");
+      start = realStart;
+    } catch (err) {
+      trees.push({ root, path: rel, error: String(err?.message || err), files: [] });
+      continue;
+    }
     trees.push({
       root,
       path: rel,
