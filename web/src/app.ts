@@ -1474,19 +1474,19 @@ function startFromTaskPolling(id: string): void {
 async function seedExample(): Promise<void> {
   const created = await api.createWorkflow({
     name: "example_com_heading",
-    description: "Read the title and page text on example.com (read-only smoke workflow).",
+    description: "קריאת הכותרת וטקסט העמוד ב־example.com (זרימת בדיקה לקריאה בלבד).",
     version: "1",
     cache_results: true,
     steps: [
       {
         type: "navigation",
-        description: "Open example.com",
+        description: "פתיחת example.com",
         url: "https://example.com",
         expected_state: { url_includes: "example.com", title_contains: "Example Domain" },
       },
       {
         type: "extract",
-        description: "Read the page title",
+        description: "קריאת כותרת העמוד",
         extractionGoal: "the page title",
         expected_state: { title_contains: "Example Domain" },
         output: "heading",
