@@ -7,6 +7,34 @@ import socket
 from urllib.parse import urlparse
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
+# RFC 2544 benchmarking range. Some sandboxes resolve public hostnames here
+# through a transparent proxy; that is not an SSRF target.
+_INTERCEPTOR_NETS = (ipaddress.ip_network("198.18.0.0/15"),)
+
+
+def _is_literal_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _ip_is_dangerous(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, hostname_is_ip: bool) -> bool:
+    # Python 3.13 treats 198.18.0.0/15 as private; sandboxes often resolve
+    # public names there through a proxy, which is not an SSRF target.
+    if not hostname_is_ip and any(ip in net for net in _INTERCEPTOR_NETS):
+        return False
+    if (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_private
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        return True
+    return False
 
 
 def _host_is_blocked(hostname: str) -> bool:
@@ -17,6 +45,7 @@ def _host_is_blocked(hostname: str) -> bool:
         return True
     if host.endswith(".localhost") or host.endswith(".local"):
         return True
+    hostname_is_ip = _is_literal_ip(host)
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except OSError:
@@ -28,14 +57,7 @@ def _host_is_blocked(hostname: str) -> bool:
             ip = ipaddress.ip_address(raw)
         except ValueError:
             continue
-        if (
-            ip.is_loopback
-            or ip.is_link_local
-            or ip.is_private
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
+        if _ip_is_dangerous(ip, hostname_is_ip=hostname_is_ip):
             return True
     return False
 

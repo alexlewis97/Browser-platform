@@ -53,20 +53,27 @@ def is_nav_footer_only(sample: str | None, *, action_ending: bool = False) -> bo
         return False
     lowered = text.lower()
     stripped = lowered
+    phrase_hits = 0
     for phrase in _CHROME_PHRASES:
-        stripped = stripped.replace(phrase, " ")
+        if phrase in stripped:
+            phrase_hits += 1
+            stripped = stripped.replace(phrase, " ")
     tokens = [
         tok
         for tok in _re.findall(r"[a-z0-9]+", stripped)
         if tok not in _WEAK_CHROME and not tok.isdigit() and len(tok) > 1
     ]
     leftover = " ".join(tokens)
+    raw_tokens = [tok for tok in _re.findall(r"[a-z0-9]+", lowered) if not tok.isdigit()]
+    # A short unique heading such as "Example Domain" is real content.
+    if tokens and phrase_hits == 0:
+        return False
+    if not tokens and raw_tokens and set(raw_tokens) <= _WEAK_CHROME:
+        return True
     generic_only = set(tokens) <= {"scores", "fixtures", "football", "soccer", "rugby", "cricket"}
-    if len(tokens) <= 8 or generic_only or len(leftover) < 40:
+    if phrase_hits >= 3 and (len(tokens) <= 8 or generic_only or len(leftover) < 40):
         return True
     return False
-
-
 
 
 def trim_sample(text: str | None, limit: int = SAMPLE_LIMIT) -> str:

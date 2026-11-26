@@ -54,7 +54,8 @@ def test_junk_fingerprint_suggestion_is_dropped():
     assert not is_junk_suggestion({"suggested_name": "query", "value": "Arsenal"})
 
 
-def test_fill_plus_extract_is_not_action_ending():
+def test_fill_plus_extract_is_action_ending():
+    # P0 hardening: an input/fill is a mutating step and needs confirmation.
     definition = WorkflowDefinition(
         name="fixtures",
         version="1",
@@ -64,7 +65,7 @@ def test_fill_plus_extract_is_not_action_ending():
             WorkflowStep(type="extract", extractionGoal="result"),
         ],
     )
-    assert is_action_ending(definition) is False
+    assert is_action_ending(definition) is True
 
 
 def test_validator_flags_generic_fixtures_url_with_team_input():

@@ -326,6 +326,7 @@ def test_nav_footer_only_extract_is_wrong_even_when_slug_is_in_url():
     assert is_nav_footer_only(fixtures) is False
     assert is_nav_footer_only("You have selected Yes") is False
     assert is_nav_footer_only("Thank you for your order", action_ending=True) is False
+    assert is_nav_footer_only("Example Domain") is False
     ok = deterministic_verdict(
         inputs={"team": "Tottenham Hotspur"},
         sample=fixtures,
