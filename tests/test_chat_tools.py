@@ -9,7 +9,7 @@ from browser_platform.app import create_app
 from browser_platform.authoring.input_validate import apply_patch, deterministic_findings
 from browser_platform.authoring.tools import is_action_ending, tools_from_workflows
 from browser_platform.config import Settings
-from browser_platform.executor.output_validate import deterministic_verdict
+from browser_platform.executor.output_validate import deterministic_verdict, is_nav_footer_only
 from browser_platform.models.workflow import StoredWorkflow, WorkflowDefinition, WorkflowInput, WorkflowStep
 from browser_platform.orchestrator.chat import (
     ChatOrchestrator,
@@ -17,6 +17,14 @@ from browser_platform.orchestrator.chat import (
     public_job,
     _fallback_answer,
 )
+from browser_platform.orchestrator.normalize_inputs import (
+    is_entity_parameter,
+    match_canonical_example,
+    normalize_arguments,
+    normalize_prepared_calls,
+)
+from types import SimpleNamespace
+import json
 from browser_platform.store.file_store import FileStore
 
 
@@ -254,8 +262,32 @@ async def test_plan_asks_for_missing_inputs_and_confirms_action(data_dir: Path, 
             return {"role": "assistant", "content": "", "tool_calls": calls}, {"tokens_in": 20, "tokens_out": 12, "cost_usd": 0, "used": True}
         return {"role": "assistant", "content": "ok"}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0, "used": True}
 
+    async def fake_normalize(messages, **kwargs):
+        user = messages[-1]["content"]
+        values = []
+        try:
+            payload = json.loads(user)
+            for item in payload.get("inputs") or []:
+                raw = str(item.get("value") or "")
+                canonical = {
+                    "Spurs": "Tottenham Hotspur",
+                    "Man Utd": "Manchester United",
+                    "Man United": "Manchester United",
+                }.get(raw, raw)
+                values.append({
+                    "call": item.get("call"),
+                    "param": item.get("param") or item.get("name"),
+                    "canonical": canonical,
+                    "slug": canonical.lower().replace(" ", "-"),
+                })
+        except Exception:
+            pass
+        return {"role": "assistant", "content": json.dumps({"values": values})}, {"tokens_in": 2, "tokens_out": 8, "cost_usd": 0, "used": True}
+
     monkeypatch.setattr("browser_platform.orchestrator.chat.chat_complete", fake_complete)
     monkeypatch.setattr("browser_platform.orchestrator.chat.env_api_key", lambda: "sk-test")
+    monkeypatch.setattr("browser_platform.orchestrator.normalize_inputs.chat_complete", fake_normalize)
+    monkeypatch.setattr("browser_platform.orchestrator.normalize_inputs.env_api_key", lambda: "sk-test")
 
     missing = await orch.plan("Get fixtures for a team", history=[], target="cloud")
     assert missing["status"] == "needs_input"
@@ -269,6 +301,239 @@ async def test_plan_asks_for_missing_inputs_and_confirms_action(data_dir: Path, 
     assert fan["status"] == "planned"
     assert len(fan["calls"]) == 3
     teams = {c["arguments"]["team"] for c in fan["calls"]}
-    assert teams == {"Arsenal", "Chelsea", "Spurs"}
+    assert teams == {"Arsenal", "Chelsea", "Tottenham Hotspur"}
+    raw_teams = {c["raw_arguments"]["team"] for c in fan["calls"]}
+    assert raw_teams == {"Arsenal", "Chelsea", "Spurs"}
     public = public_job(fan)
     assert "definition" not in (public["calls"][0] or {}) or public["calls"][0].get("definition") in (None, {})
+
+
+def test_nav_footer_only_extract_is_wrong_even_when_slug_is_in_url():
+    chrome = (
+        "Skip to content Home News Sport Weather Menu Search Sign in "
+        "Cookie settings Privacy policy Terms of use Copyright BBC "
+        "All rights reserved Scores & Fixtures Football Premier League"
+    )
+    assert is_nav_footer_only(chrome) is True
+    result = deterministic_verdict(
+        inputs={"team": "Spurs"},
+        sample=chrome,
+        url="https://www.bbc.com/sport/football/teams/spurs/scores-fixtures",
+        title="Scores & Fixtures - Football - BBC Sport",
+    )
+    assert result["verdict"] == "wrong"
+    fixtures = "Tottenham Hotspur vs Chelsea, 29 November 2026, 16:30. Kick-off 16:30."
+    assert is_nav_footer_only(fixtures) is False
+    assert is_nav_footer_only("You have selected Yes") is False
+    assert is_nav_footer_only("Thank you for your order", action_ending=True) is False
+    ok = deterministic_verdict(
+        inputs={"team": "Tottenham Hotspur"},
+        sample=fixtures,
+        url="https://www.bbc.com/sport/football/teams/tottenham-hotspur/scores-fixtures",
+        title="Tottenham Hotspur - Scores & Fixtures",
+    )
+    assert ok["verdict"] == "ok"
+
+
+def test_entity_parameter_and_example_match():
+    definition = _fixtures_def(
+        steps=[
+            WorkflowStep(type="navigation", url="https://www.bbc.com/sport/football/teams/{team|slug}/scores-fixtures"),
+            WorkflowStep(type="extract", extractionGoal="upcoming fixtures", output="extract"),
+        ]
+    )
+    assert is_entity_parameter("team", definition) is True
+    assert is_entity_parameter("first_name", definition) is False
+    assert is_entity_parameter("month", definition) is False
+    assert is_entity_parameter("product", definition) is False
+    named = WorkflowDefinition(
+        name="club_page",
+        version="1",
+        steps=[
+            WorkflowStep(type="navigation", url="https://example.com/clubs/{name|slug}"),
+            WorkflowStep(type="extract", extractionGoal="club page", output="extract"),
+        ],
+        input_schema=[WorkflowInput(name="name", type="string", required=True)],
+    )
+    assert is_entity_parameter("name", named) is True
+    assert match_canonical_example("arsenal", ["Arsenal", "Chelsea"]) == "Arsenal"
+    assert match_canonical_example("tottenham-hotspur", ["Tottenham Hotspur"]) == "Tottenham Hotspur"
+
+
+@pytest.mark.asyncio
+async def test_llm_normalizes_nicknames_to_official_names():
+    definition = _fixtures_def(
+        steps=[
+            WorkflowStep(type="navigation", url="https://www.bbc.com/sport/football/teams/{team|slug}/scores-fixtures"),
+            WorkflowStep(type="extract", extractionGoal="upcoming fixtures", output="extract"),
+        ]
+    )
+
+    async def fake_complete(messages, **kwargs):
+        return {
+            "role": "assistant",
+            "content": json.dumps({
+                "values": [
+                    {"call": "c1", "param": "team", "canonical": "Tottenham Hotspur", "slug": "tottenham-hotspur"},
+                    {"call": "c2", "param": "team", "canonical": "Manchester United", "slug": "manchester-united"},
+                ]
+            }),
+        }, {"tokens_in": 3, "tokens_out": 10, "cost_usd": 0, "used": True}
+
+    spurs, _ = await normalize_arguments(definition, {"team": "Spurs"}, call_id="c1", complete=fake_complete)
+    assert spurs["team"] == "Tottenham Hotspur"
+    man, _ = await normalize_arguments(definition, {"team": "Man Utd"}, call_id="c2", complete=fake_complete)
+    assert man["team"] == "Manchester United"
+    arsenal, _ = await normalize_arguments(definition, {"team": "Arsenal", "month": ""}, call_id="c3", complete=fake_complete)
+    assert arsenal["team"] == "Arsenal"
+    form = WorkflowDefinition(
+        name="checkout",
+        version="1",
+        input_schema=[
+            WorkflowInput(name="first_name", type="string", required=True),
+            WorkflowInput(name="product", type="string", required=True),
+        ],
+        steps=[
+            WorkflowStep(type="navigation", url="https://www.saucedemo.com/"),
+            WorkflowStep(type="input", cssSelector="#first-name", value="{first_name}"),
+            WorkflowStep(type="click", cssSelector="#add-to-cart-{product|slug}"),
+        ],
+    )
+    kept, _ = await normalize_arguments(form, {"first_name": "Sam", "product": "Sauce Labs Bike Light"}, call_id="c9", complete=fake_complete)
+    assert kept == {"first_name": "Sam", "product": "Sauce Labs Bike Light"}
+
+
+@pytest.mark.asyncio
+async def test_run_call_retries_chrome_only_extract_with_canonical_name(data_dir: Path, monkeypatch):
+    store = FileStore(data_dir)
+    stored = store.create_workflow(_fixtures_def(
+        steps=[
+            WorkflowStep(type="navigation", url="https://www.bbc.com/sport/football/teams/{team|slug}/scores-fixtures"),
+            WorkflowStep(type="extract", extractionGoal="upcoming fixtures", output="extract"),
+        ]
+    ))
+
+    class FakeRunner:
+        def __init__(self):
+            self.seen: list[str] = []
+
+        async def run(self, _stored, **kwargs):
+            team = (kwargs.get("variables") or {}).get("team")
+            self.seen.append(team)
+            if team == "Spurs":
+                outputs = {"extract": "Home News Sport Menu Cookie settings Privacy Terms Copyright All rights reserved"}
+                validation = {"verdict": "suspect", "reason": "only navigation and footer text", "usage": {"used": False}}
+            else:
+                outputs = {"extract": "Tottenham Hotspur vs Fulham, 29 November 2026, 16:30. Kick-off 16:30."}
+                validation = {"verdict": "ok", "reason": "fixtures match", "usage": {"used": False}}
+            return SimpleNamespace(
+                id="run-" + str(len(self.seen)),
+                status="succeeded",
+                outputs=outputs,
+                validation=validation,
+                error=None,
+                model_dump=lambda: {"validation": validation},
+            )
+
+    runner = FakeRunner()
+    orch = ChatOrchestrator(store, runner=runner)
+
+    async def fake_launch():
+        return SimpleNamespace(cdp_url="http://127.0.0.1:9")
+
+    async def fake_close(_isolated):
+        return None
+
+    async def fake_normalize(messages, **kwargs):
+        return {
+            "role": "assistant",
+            "content": json.dumps({"values": [{"call": "c3", "param": "team", "canonical": "Tottenham Hotspur", "slug": "tottenham-hotspur"}]}),
+        }, {"tokens_in": 1, "tokens_out": 4, "cost_usd": 0, "used": True}
+
+    monkeypatch.setattr("browser_platform.orchestrator.chat.launch_isolated", fake_launch)
+    monkeypatch.setattr("browser_platform.orchestrator.chat.close_isolated", fake_close)
+    monkeypatch.setattr("browser_platform.orchestrator.normalize_inputs.chat_complete", fake_normalize)
+    monkeypatch.setattr("browser_platform.orchestrator.normalize_inputs.env_api_key", lambda: "sk-test")
+
+    job = {"id": "job1", "usage": {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0, "used": False}, "flagged": []}
+    # Simulate a planned call that was not normalised yet (raw nickname).
+    call = {
+        "id": "c3",
+        "tool": "football_fixtures",
+        "workflow_id": stored.id,
+        "workflow_name": stored.definition.name,
+        "arguments": {"team": "Spurs"},
+        "raw_arguments": {"team": "Spurs"},
+        "action_ending": False,
+    }
+    item = await orch._run_call(job, call)
+    assert runner.seen[0] == "Tottenham Hotspur" or runner.seen == ["Spurs", "Tottenham Hotspur"]
+    # Because _run_call normalises before the first attempt when not marked normalized,
+    # the first run should already use Tottenham Hotspur.
+    assert item["status"] == "succeeded"
+    assert item["inputs"]["team"] == "Tottenham Hotspur"
+    assert (item.get("validation") or {}).get("verdict") == "ok"
+    assert not job.get("flagged")
+
+    # And if the first attempt already ran with the raw nickname, retry once.
+    runner.seen.clear()
+    job2 = {"id": "job2", "usage": {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0, "used": False}, "flagged": []}
+    call2 = {
+        "id": "c3",
+        "tool": "football_fixtures",
+        "workflow_id": stored.id,
+        "workflow_name": stored.definition.name,
+        "arguments": {"team": "Spurs"},
+        "raw_arguments": {"team": "Spurs"},
+        "action_ending": False,
+        "normalized": True,  # skip pre-call rewrite so the first run uses Spurs
+    }
+    item2 = await orch._run_call(job2, call2)
+    assert runner.seen == ["Spurs", "Tottenham Hotspur"]
+    assert item2["status"] == "succeeded"
+    assert item2["inputs"]["team"] == "Tottenham Hotspur"
+    assert item2["attempts"] == 2
+    assert not job2.get("flagged")
+
+
+def test_collect_sample_prefers_extract_over_page_chrome():
+    from browser_platform.executor.output_validate import collect_sample, trim_sample, has_strong_content
+
+    extract = (
+        "Tottenham Hotspur Scores & Fixtures\n"
+        "Sunday 29th November\nPremier League\n"
+        "Sunderland versus Tottenham Hotspur kick off 14:05\n"
+        "Sunderland 14:05 plays Spurs Tottenham Hotspur"
+    )
+    chrome = ("BBC Homepage Skip to content Home News Sport " * 80) + "Nov 2025 Dec 2025 Jan 2026"
+    sample = collect_sample({"extract": extract}, chrome)
+    assert "versus Tottenham Hotspur kick off 14:05" in sample
+    assert has_strong_content(sample)
+    # Head-only trim of chrome+extract would drop the fixtures; head+tail keeps them.
+    dumped = chrome + " " + extract
+    trimmed = trim_sample(dumped, limit=400)
+    assert "kick off 14:05" in trimmed
+
+
+@pytest.mark.asyncio
+async def test_validate_output_does_not_downgrade_fixture_extract(monkeypatch):
+    from browser_platform.executor.output_validate import validate_output
+
+    extract = "Sunday 29th November Premier League Sunderland versus Tottenham Hotspur kick off 14:05"
+    chrome = ("BBC Homepage Skip to content Home News Sport Menu Cookie settings " * 40) + "Nov 2025 Dec 2025"
+
+    async def fake_llm(**kwargs):
+        return {"verdict": "suspect", "reason": "only navigation and header text"}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0, "used": True}
+
+    monkeypatch.setattr("browser_platform.executor.output_validate.env_api_key", lambda: "sk-test")
+    monkeypatch.setattr("browser_platform.executor.output_validate._llm_verdict", fake_llm)
+    result = await validate_output(
+        request="fixtures for Tottenham Hotspur",
+        inputs={"team": "Tottenham Hotspur"},
+        outputs={"extract": extract},
+        sample=chrome + " Tottenham Hotspur Scores & Fixtures " + extract,
+        url="https://www.bbc.com/sport/football/teams/tottenham-hotspur/scores-fixtures/2026-11",
+        title="Tottenham Hotspur - Scores & Fixtures",
+        use_llm=True,
+    )
+    assert result["verdict"] == "ok"

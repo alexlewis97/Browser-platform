@@ -54,6 +54,35 @@ def usage_of(payload: dict[str, Any] | None) -> dict[str, Any]:
 
 
 
+def item_field_values(item: dict[str, Any], key: str) -> set[str]:
+    """Collect a field from normalised and original (pre-canonical) inputs."""
+
+    values: set[str] = set()
+    for src in (item.get("inputs"), item.get("raw_inputs"), item.get("arguments"), item.get("raw_arguments")):
+        if not isinstance(src, dict):
+            continue
+        raw = src.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        values.add(str(raw).strip())
+    return values
+
+
+def names_cover(requested: str, items: list[dict[str, Any]], key: str = "team") -> bool:
+    """True when a requested entity appears as typed or as its canonical form."""
+
+    want = (requested or "").strip().lower()
+    want_slug = want.replace(" ", "-")
+    found: set[str] = set()
+    for item in items:
+        found |= item_field_values(item, key)
+    for value in found:
+        have = value.strip().lower()
+        if have == want or have.replace(" ", "-") == want_slug:
+            return True
+    return False
+
+
 def items_genuinely_passed(case: dict[str, Any]) -> bool:
     """True only when every workflow item succeeded and was not flagged."""
 
@@ -194,6 +223,7 @@ def main() -> None:
                     {
                         "workflow": i.get("workflow_name"),
                         "inputs": i.get("inputs"),
+                        "raw_inputs": i.get("raw_inputs") or i.get("raw_arguments") or {},
                         "status": i.get("status"),
                         "validation": (i.get("validation") or {}).get("verdict"),
                         "reason": (i.get("validation") or {}).get("reason"),
@@ -377,11 +407,11 @@ def main() -> None:
         )
         single["ok"] = bool(single_ok) and items_genuinely_passed(single)
         fan = report["cases"]["fanout_compare"]
-        teams = {(i.get("inputs") or {}).get("team") for i in fan.get("items") or []}
+        fan_items = fan.get("items") or []
         fan["ok"] = bool(
             items_genuinely_passed(fan)
             and fan.get("answer")
-            and {"Arsenal", "Chelsea", "Spurs"} <= teams
+            and all(names_cover(name, fan_items) for name in ("Arsenal", "Chelsea", "Spurs"))
         )
         month_chat = report["cases"].get("month_chat") or {}
         if month_chat:

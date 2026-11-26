@@ -16,9 +16,10 @@ from browser_platform.authoring.tools import (
     tools_from_workflows,
 )
 from browser_platform.executor.isolated import IsolatedBrowser, close_isolated, launch_isolated
-from browser_platform.executor.output_validate import collect_sample, validate_output
+from browser_platform.executor.output_validate import collect_sample, is_nav_footer_only
 from browser_platform.llm.openrouter import chat_complete, env_api_key, merge_usage, message_text
 from browser_platform.models.workflow import StoredWorkflow
+from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
 from browser_platform.store.file_store import FileStore
 from browser_platform.workflow_inputs import missing_required_inputs
 
@@ -50,6 +51,7 @@ def compact_item(item: dict[str, Any], *, fact_limit: int = 800) -> dict[str, An
         "workflow": item.get("workflow_name") or item.get("tool"),
         "workflow_id": item.get("workflow_id"),
         "inputs": item.get("inputs") or item.get("arguments") or {},
+        "raw_inputs": item.get("raw_inputs") or item.get("raw_arguments") or {},
         "status": item.get("status"),
         "validation": {
             "verdict": validation.get("verdict"),
@@ -287,6 +289,20 @@ class ChatOrchestrator:
                 }
             )
         job["calls"] = prepared
+        if prepared:
+            definitions = {}
+            for call in prepared:
+                try:
+                    stored = self.store.get_workflow(call["workflow_id"])
+                except Exception:
+                    stored = None
+                if stored is not None:
+                    definitions[stored.id] = stored.definition
+            try:
+                norm_usage = await normalize_prepared_calls(prepared, definitions=definitions)
+                job["usage"] = merge_usage(job.get("usage"), norm_usage)
+            except Exception:
+                pass
         if missing:
             job["status"] = "needs_input"
             job["question"] = " ".join(missing) + " Please provide the missing value(s)."
@@ -330,20 +346,34 @@ class ChatOrchestrator:
         return job
 
     async def _run_call(self, job: dict[str, Any], call: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
+        if not call.get("normalized"):
+            try:
+                stored = self.store.get_workflow(call["workflow_id"])
+                usage = await normalize_prepared_calls(
+                    [call],
+                    definitions={stored.id: stored.definition},
+                )
+                job["usage"] = merge_usage(job.get("usage"), usage)
+            except Exception:
+                call.setdefault("arguments", dict(call.get("raw_arguments") or call.get("arguments") or {}))
         item: dict[str, Any] = {
             "id": call["id"],
             "tool": call["tool"],
             "workflow_id": call["workflow_id"],
             "workflow_name": call["workflow_name"],
             "inputs": dict(call.get("arguments") or {}),
+            "raw_inputs": dict(call.get("raw_arguments") or call.get("arguments") or {}),
             "action_ending": bool(call.get("action_ending")),
             "status": "running",
             "attempts": 0,
         }
         await _emit(emit, {"type": "item_start", "item": public_item(item), "job_id": job["id"]})
         last_error = "Workflow run failed."
+        tried: list[str] = []
         for attempt in (1, 2):
             item["attempts"] = attempt
+            item["inputs"] = dict(call.get("arguments") or item.get("inputs") or {})
+            signature = repr(sorted((item.get("inputs") or {}).items()))
             isolated: IsolatedBrowser | None = None
             try:
                 isolated = await launch_isolated()
@@ -368,21 +398,35 @@ class ChatOrchestrator:
                     item["validation"] = run.get("validation")
                 usage = _run_validation_usage(item.get("validation"))
                 job["usage"] = merge_usage(job.get("usage"), usage)
-                if run.status == "succeeded":
+                sample = collect_sample(item.get("outputs"))
+                chrome_only = is_nav_footer_only(sample, action_ending=bool(item.get("action_ending")))
+                if chrome_only:
+                    reason = "The extract contains only navigation or footer text, not the requested content."
+                    validation = dict(item.get("validation") or {})
+                    validation.update({"verdict": "wrong", "reason": reason, "source": "deterministic"})
+                    item["validation"] = validation
+                    last_error = reason
+                if run.status == "succeeded" and not chrome_only:
                     item["status"] = "succeeded"
-                    item["facts"] = collect_sample(item["outputs"])
+                    item["facts"] = sample
                     if item.get("action_ending"):
                         item["facts"] = "Action completed. " + (item.get("facts") or "")
                     break
-                last_error = run.error or f"Workflow ended with status {run.status}."
-                # Do not retry a validation-wrong failure; the runner already retried once.
-                if (item.get("validation") or {}).get("verdict") == "wrong":
-                    item["status"] = "failed"
-                    item["error"] = last_error
-                    break
-                if attempt == 2:
-                    item["status"] = "failed"
-                    item["error"] = last_error
+                if not chrome_only:
+                    last_error = run.error or f"Workflow ended with status {run.status}."
+                tried.append(signature)
+                # Retry once only when a different normalised value is available.
+                should_retry = chrome_only or (item.get("validation") or {}).get("verdict") == "wrong"
+                if should_retry and attempt == 1:
+                    alt = await self._retry_normalized_arguments(call, stored, complete_failed=chrome_only)
+                    alt_sig = repr(sorted((alt or {}).items()))
+                    if alt and alt_sig not in tried and alt_sig != signature:
+                        call["arguments"] = alt
+                        item["inputs"] = dict(alt)
+                        continue
+                item["status"] = "failed"
+                item["error"] = last_error
+                break
             except Exception as exc:
                 last_error = str(exc)
                 if attempt == 2:
@@ -406,6 +450,29 @@ class ChatOrchestrator:
             )
         await _emit(emit, {"type": "item_done", "item": public_item(item), "job_id": job["id"]})
         return item
+
+    async def _retry_normalized_arguments(self, call: dict[str, Any], stored: StoredWorkflow, *, complete_failed: bool) -> dict[str, Any] | None:
+        """Return a different canonical argument map to retry, or None."""
+
+        raw = dict(call.get("raw_arguments") or call.get("arguments") or {})
+        current = dict(call.get("arguments") or raw)
+        # Re-run normalisation from the original user values.
+        probe = {
+            "id": call.get("id") or "c1",
+            "arguments": dict(raw),
+            "raw_arguments": dict(raw),
+            "workflow_id": call.get("workflow_id"),
+        }
+        try:
+            await normalize_prepared_calls([probe], definitions={stored.id: stored.definition})
+        except Exception:
+            return None
+        alt = dict(probe.get("arguments") or {})
+        if alt and alt != current:
+            return alt
+        if complete_failed and alt == current and raw != current:
+            return None
+        return alt if alt != current else None
 
 
     async def synthesize(self, job: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
@@ -500,6 +567,7 @@ def public_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "workflow_id": call.get("workflow_id"),
             "workflow_name": call.get("workflow_name"),
             "arguments": call.get("arguments") or {},
+            "raw_arguments": call.get("raw_arguments") or {},
             "action_ending": bool(call.get("action_ending")),
         }
         if call.get("definition") is not None:
@@ -515,6 +583,7 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
         "workflow_id": item.get("workflow_id"),
         "workflow_name": item.get("workflow_name"),
         "inputs": item.get("inputs") or {},
+        "raw_inputs": item.get("raw_inputs") or item.get("raw_arguments") or {},
         "status": item.get("status"),
         "error": item.get("error"),
         "validation": item.get("validation"),

@@ -12,29 +12,100 @@ from browser_platform.llm.openrouter import chat_complete, env_api_key
 
 SAMPLE_LIMIT = 1500
 
+_CHROME_PHRASES = (
+    "skip to content", "skip to main content", "skip to navigation", "skip to",
+    "cookie settings", "manage cookies", "cookie policy", "cookies", "cookie",
+    "privacy policy", "privacy notice", "privacy",
+    "terms of use", "terms and conditions", "terms of service", "terms",
+    "all rights reserved", "copyright",
+    "sign in", "log in", "sign up", "log out", "register",
+    "subscribe", "newsletter", "back to top", "accessibility",
+    "follow us", "share this", "related links", "main menu", "navigation",
+    "footer", "header",
+)
+
+_WEAK_CHROME = {
+    "home", "news", "sport", "sports", "weather", "menu", "search", "more",
+    "watch", "listen", "account", "settings", "help", "about", "contact",
+    "bbc", "cnn", "edition", "sign", "login", "logout", "content", "main",
+    "page", "site", "skip", "top", "links", "related",
+}
+
+_STRONG_CONTENT_RE = _re.compile(
+    r"\bvs\.?\b|versus|kick-?off|"
+    r"thank you|you have selected|order (?:complete|confirmed|number)|"
+    r"[£$€]\s?\d|"
+    r"\b(?:20\d{2})\b|"
+    r"\b\d{1,2}:\d{2}\b",
+    _re.I,
+)
+
+
+def is_nav_footer_only(sample: str | None, *, action_ending: bool = False) -> bool:
+    """True when an extract is only navigation / footer chrome, not page content."""
+
+    if action_ending:
+        return False
+    text = " ".join(str(sample or "").split())
+    if not text:
+        return False
+    if _STRONG_CONTENT_RE.search(text):
+        return False
+    lowered = text.lower()
+    stripped = lowered
+    for phrase in _CHROME_PHRASES:
+        stripped = stripped.replace(phrase, " ")
+    tokens = [
+        tok
+        for tok in _re.findall(r"[a-z0-9]+", stripped)
+        if tok not in _WEAK_CHROME and not tok.isdigit() and len(tok) > 1
+    ]
+    leftover = " ".join(tokens)
+    generic_only = set(tokens) <= {"scores", "fixtures", "football", "soccer", "rugby", "cricket"}
+    if len(tokens) <= 8 or generic_only or len(leftover) < 40:
+        return True
+    return False
+
+
+
 
 def trim_sample(text: str | None, limit: int = SAMPLE_LIMIT) -> str:
     raw = " ".join(str(text or "").split())
     if len(raw) <= limit:
         return raw
-    return raw[: limit - 1].rstrip() + "…"
+    # Keep the start and the end so late fixtures or confirmations are not cut off.
+    head = max(200, (limit * 3) // 5)
+    tail = max(200, limit - head - 1)
+    if head + tail + 1 > limit:
+        tail = limit - head - 1
+    return raw[:head].rstrip() + "…" + raw[-tail:].lstrip()
+
+
+def has_strong_content(sample: str | None) -> bool:
+    return bool(_STRONG_CONTENT_RE.search(" ".join(str(sample or "").split())))
 
 
 def collect_sample(outputs: dict[str, Any] | None, extra: str = "") -> str:
     parts: list[str] = []
-    if extra:
-        parts.append(str(extra))
     for key, value in (outputs or {}).items():
         if value is None:
             continue
         if isinstance(value, (dict, list)):
             try:
-                parts.append(f"{key}: {json.dumps(value, ensure_ascii=False)[:800]}")
+                parts.append(f"{key}: {json.dumps(value, ensure_ascii=False)[:1200]}")
             except Exception:
-                parts.append(f"{key}: {str(value)[:800]}")
+                parts.append(f"{key}: {str(value)[:1200]}")
         else:
             parts.append(f"{key}: {value}")
-    return trim_sample("\n".join(parts))
+    body = "\n".join(parts)
+    extra_text = str(extra or "").strip()
+    # Page chrome is a fallback only. Prefer the workflow extract so fixtures
+    # at the end of a long homepage dump are not trimmed away.
+    if extra_text and extra_text not in body:
+        if not body.strip() or not has_strong_content(body):
+            parts.append(extra_text)
+            body = "\n".join(parts)
+    return trim_sample(body)
 
 
 def deterministic_verdict(
@@ -50,6 +121,12 @@ def deterministic_verdict(
         return {
             "verdict": "wrong",
             "reason": "The page looks like a not-found or error result.",
+            "source": "deterministic",
+        }
+    if is_nav_footer_only(sample, action_ending=action_ending):
+        return {
+            "verdict": "wrong",
+            "reason": "The extract contains only navigation or footer text, not the requested content.",
             "source": "deterministic",
         }
     for key, raw in (inputs or {}).items():
@@ -97,11 +174,17 @@ async def validate_output(
     action_ending: bool = False,
     use_llm: bool = True,
 ) -> dict[str, Any]:
-    text = trim_sample(sample if sample is not None else collect_sample(outputs))
+    full = sample if sample is not None else collect_sample(outputs)
+    # Re-collect from outputs when a caller prepended a long page dump.
+    extract_only = collect_sample(outputs)
+    if extract_only and has_strong_content(extract_only) and not has_strong_content(full[:400]):
+        full = extract_only
+    text = trim_sample(full)
     result = deterministic_verdict(inputs=inputs, sample=text, url=url, title=title, headings=headings, action_ending=action_ending)
     usage = {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
     if result["verdict"] == "wrong":
         return {**result, "usage": usage, "sample": text[:400]}
+    content_ok = has_strong_content(full) or has_strong_content(extract_only)
     if use_llm and env_api_key() and (text or request):
         try:
             llm_result, usage = await _llm_verdict(
@@ -117,9 +200,9 @@ async def validate_output(
                 # already reflects the inputs, a picky LLM may only mark it suspect.
                 if result["verdict"] == "ok" and llm_result["verdict"] == "ok":
                     result = {**result, "reason": llm_result.get("reason") or result["reason"], "source": "llm"}
-                elif result["verdict"] == "ok" and action_ending:
-                    # Receipts often omit form fields and product names. Deterministic
-                    # already skipped those; do not let the LLM fail the job.
+                elif result["verdict"] == "ok" and (action_ending or content_ok):
+                    # Receipts often omit form fields. Content-bearing extracts (fixtures,
+                    # kick-off times) must not be failed because a trimmed sample hid them.
                     pass
                 elif result["verdict"] == "ok" and llm_result["verdict"] == "wrong":
                     result = {**llm_result, "verdict": "suspect", "source": "llm"}
@@ -160,7 +243,7 @@ async def _llm_verdict(
                 "role": "system",
                 "content": (
                     f"{hint} Reply JSON only: {{\"verdict\":\"ok|suspect|wrong\",\"reason\":\"one line\"}}. "
-                    "Use wrong when the result is clearly about something else or empty/error. "
+                    "Use wrong when the result is clearly about something else, empty/error, or only navigation/footer text. "
                     "Use suspect when you cannot be sure."
                 ),
             },
