@@ -269,7 +269,11 @@ def constraint_prompt(task: str, parameters: list[TaskParameter], variables: dic
     else:
         lines.append("- If the task names a specific entity (a team, competition, person, or search term), apply that as a filter in the UI.")
     lines += [
-        "- Finish the whole task. If it includes login, add-to-cart, checkout, or submit, do not stop on an earlier page such as a catalogue or an unsubmitted form.",
+        "- Finish the whole task. If it includes login, add-to-cart, checkout, or submit, do not stop on an earlier page such as a catalogue, cart, checkout-step-one, or an unsubmitted form.",
+        "- For checkout, click Continue and Finish and stop only on the confirmation (checkout-complete or Thank you), never on inventory.html, cart.html, or checkout.html.",
+        "- For a form submit, click Submit and extract the confirmation modal or echoed result.",
+        "- Navigate only to http(s) URLs. Never pass a CSS selector, XPath, or attribute such as [id=...] or id=... to goto/navigate.",
+        "- Prefer fill, click, and type on page elements. If a CDP call fails, retry with fill/click instead of inventing a URL from a selector.",
         "- Do not stop on a generic unfiltered list that happens to mention a filter value among many others.",
         "- For filters, typing into a search box or adding ?q= is not enough: confirm the matching suggestion, dropdown option, or entity link so the page or URL is clearly scoped to that value.",
         "- Form fields do not need to appear in the URL; they must be filled and then submitted so the confirmation or echo contains them.",
@@ -285,10 +289,13 @@ def retry_constraint_prompt(base: str, missing: list[str], url: str) -> str:
     detail = ", ".join(missing) or "the required parameters"
     return (
         f"{base}\n\n"
-        f"Your previous attempt did not actually apply the filter for {detail}. "
+        f"Your previous attempt did not finish the task: {detail}. "
         f"The page ended at {url or '(unknown URL)'}. "
-        "Go back and select the exact matching option, chip, or entity page so the URL path or heading reflects each value. "
-        "Then extract the filtered result."
+        "If form fields are still unfilled, type them now. If this is checkout, continue through Finish until the confirmation page. "
+        "If this is a form, submit it and extract the confirmation or echo. "
+        "Never navigate to a CSS selector. Use fill or click. "
+        "For filters, select the exact matching option, chip, or entity page so the URL path or heading reflects each value. "
+        "Then extract the result."
     )
 
 

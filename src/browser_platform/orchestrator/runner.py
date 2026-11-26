@@ -32,7 +32,7 @@ from browser_platform.fuzzy.candidates import Candidate, apply_candidate, collec
 from browser_platform.fuzzy.config import find_alias, fuzzy_applies, make_alias, merge_fuzzy, merge_hitl
 from browser_platform.fuzzy.hitl import ConfirmationBroker, ConfirmationDecision, EventHub
 from browser_platform.fuzzy.score import query_for_step, score_candidates
-from browser_platform.models.llm import LLMConfig
+from browser_platform.models.llm import LLMConfig, resolve_llm
 from browser_platform.models.run import RunRecord, StepTelemetry
 from browser_platform.models.workflow import SelectorStrategy, StoredWorkflow, WorkflowDefinition, WorkflowStep
 from browser_platform.pomerado.adapter import PomeradoAdapter, McpError
@@ -139,6 +139,8 @@ class WorkflowRunner:
             model=llm.model if llm else None,
             do_write_back=write_back_repairs,
         )
+        llm = resolve_llm(llm)
+        run.model = llm.model if llm else run.model
         self.store.save_run(run)
         session: CdpSession | None = None
         definition = stored.definition
@@ -550,7 +552,8 @@ class WorkflowRunner:
                 pass
 
         try:
-            snapshot = await page.accessibility.snapshot()
+            from browser_platform.a11y import snapshot_ax
+            snapshot = await snapshot_ax(page)
             ax = compress_ax_tree(snapshot if isinstance(snapshot, dict) else None)
             messages = repair_messages(step, error=det_error, ax_tree=ax, url=page.url)
             repaired = await self.repair_client.complete(messages=messages, llm=llm)

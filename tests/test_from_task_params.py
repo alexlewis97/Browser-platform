@@ -341,3 +341,47 @@ def test_explore_sample_urls_fill_default_page():
     assert default_url.endswith("page-1.html"), default_url
     assert alt_url.endswith("page-2.html"), alt_url
     assert "{" not in default_url and "{" not in alt_url
+
+
+
+def test_selector_is_not_parsed_as_url():
+    from browser_platform.interpolate import is_navigable_url
+    from browser_platform.authoring.generalize import apply_variables_to_url
+
+    assert not is_navigable_url('[id="query"]')
+    assert not is_navigable_url('id="firstName"]')
+    assert not is_navigable_url('#userName')
+    assert not is_navigable_url('https://[id="firstName"]/')
+    assert is_navigable_url("https://www.saucedemo.com/inventory.html")
+    assert is_navigable_url("http://127.0.0.1:8000/")
+    # Python 3.13 urlparse would raise; this must stay a no-op.
+    assert apply_variables_to_url('[id="query"]', {"browser automation": "query"}) == '[id="query"]'
+    assert apply_variables_to_url('https://www.saucedemo.com/inventory.html', {"Sauce Labs Backpack": "product"}) == (
+        "https://www.saucedemo.com/inventory.html"
+    )
+
+
+
+def test_resolve_llm_uses_env_when_missing(monkeypatch):
+    from browser_platform.models.llm import LLMConfig, resolve_llm
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-env-key")
+    assert resolve_llm(None).key() == "test-env-key"
+    empty = LLMConfig(api_key="", model="qwen/qwen3.7-flash")
+    assert resolve_llm(empty).key() == "test-env-key"
+    provided = LLMConfig(api_key="client-key", model="qwen/qwen3.7-flash")
+    assert resolve_llm(provided).key() == "client-key"
+
+
+
+def test_checkout_complete_does_not_require_product():
+    from browser_platform.executor.verify import missing_parameters
+
+    missing = missing_parameters(
+        url="https://www.saucedemo.com/checkout-complete.html",
+        title="Checkout: Complete!",
+        text="Thank you for your order",
+        values={"product": "Sauce Labs Backpack", "first_name": "Alex"},
+        task="Add the product {product} and check out, then finish.",
+    )
+    assert missing == []

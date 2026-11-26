@@ -158,19 +158,24 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                 selectorStrategies=strategies_for_element(element, for_fill=True) or None,
             )
             extract_at = next((i for i, item in enumerate(steps) if item.type in {"extract", "extract_page_content"}), len(steps))
-            insert_at = min(max((index or 0) + 1, 1), extract_at)
-            steps.insert(insert_at, fill)
-        elif kind in {"click", "tab"}:
+            # After login/actions, immediately before extract — not after the first nav.
+            steps.insert(extract_at, fill)
+        elif kind in {"click", "tab", "radio"}:
             from browser_platform.models.workflow import WorkflowStep
             click = WorkflowStep(
                 type="click",
                 description="Open {" + name + "}",
                 target_text="{" + name + "}",
-                cssSelector=binding.get("css"),
+                # Prefer visible label text; raw radio inputs are often not clickable.
+                cssSelector=None if kind in {"radio", "tab", "click"} else binding.get("css"),
+                selectorStrategies=[
+                    {"type": "text_exact", "value": "{" + name + "}", "priority": 20},
+                    {"type": "text_fuzzy", "value": "{" + name + "}", "priority": 40},
+                    *([{"type": "css", "value": binding.get("css"), "priority": 80}] if binding.get("css") else []),
+                ],
             )
             extract_at = next((i for i, item in enumerate(steps) if item.type in {"extract", "extract_page_content"}), len(steps))
-            insert_at = min(max((index or 0) + 1, 1), extract_at)
-            steps.insert(insert_at, click)
+            steps.insert(extract_at, click)
         updated.steps = steps
     return updated
 
@@ -256,11 +261,10 @@ async def verify_proposal(
         "verified": False,
         "dropped_reason": None,
     }
-    if proposal.get("verify_mode") == "browser" and (not default_url or default_url == alt_url):
-        # Select/tab/radio bindings need a browser replay; URL fetch cannot prove them.
-        result["dropped_reason"] = "needs_browser_verify"
-        result["needs_browser"] = True
-        return result
+    if proposal.get("verify_mode") == "browser":
+        from browser_platform.authoring.explore_verify import verify_proposal_browser
+
+        return await verify_proposal_browser(definition, proposal, variables=variables)
     if not default_url or not alt_url or default_url == alt_url:
         result["dropped_reason"] = "default and alternate URLs did not differ"
         return result
@@ -407,6 +411,23 @@ async def explore_definition(
                 html = fetched.text
         except Exception:
             html = html
+    needs_render = bool(
+        any(step.type in {"input", "click", "select_change", "key_press"} for step in (definition.steps or []))
+    )
+    from browser_platform.authoring.explore_verify import _looks_like_js_shell, fetch_rendered_html, snapshot_workflow
+    if start_url and (needs_render or _looks_like_js_shell(html)):
+        try:
+            if needs_render:
+                shot = await snapshot_workflow(definition, variables)
+                if shot.get("ok") and shot.get("html"):
+                    html = shot["html"]
+                    start_url = shot.get("url") or start_url
+            elif start_url:
+                rendered = await fetch_rendered_html(str(start_url))
+                if rendered:
+                    html = rendered
+        except Exception:
+            pass
     if html:
         seen = {p["name"] for p in proposals}
         for item in propose_from_html(html, str(start_url or ""), existing=existing):
@@ -425,7 +446,14 @@ async def explore_definition(
     verified: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     if verify:
+        browser_used = 0
         for proposal in proposals:
+            if proposal.get("verify_mode") == "browser" and browser_used >= 3:
+                skipped = {**proposal, "verified": False, "dropped_reason": "browser verify cap reached"}
+                dropped.append(skipped)
+                continue
+            if proposal.get("verify_mode") == "browser":
+                browser_used += 1
             checked = await verify_proposal(definition, proposal, variables=variables)
             (verified if checked.get("verified") else dropped).append(checked)
     else:

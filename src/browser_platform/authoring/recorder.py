@@ -9,6 +9,7 @@ from playwright.async_api import Browser, BrowserContext, Page, Playwright, asyn
 
 from browser_platform.authoring.elements import RECORDER_JS, is_label_element, resolve_fill_element, strategies_for_element
 from browser_platform.models.workflow import SelectorStrategy
+from browser_platform.interpolate import is_navigable_url
 
 
 @dataclass
@@ -82,7 +83,9 @@ async def _bind_page(session: RecorderSession, page: Page) -> None:
     def on_nav(frame) -> None:
         try:
             if frame == page.main_frame:
-                session.events.append(RecordedEvent(type="navigation", url=frame.url or page.url))
+                target = frame.url or page.url
+                if is_navigable_url(target):
+                    session.events.append(RecordedEvent(type="navigation", url=target))
         except Exception:
             pass
 

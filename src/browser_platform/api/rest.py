@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from browser_platform.api.schemas import FromRecordingRequest, FromRecordingSaveRequest, ConfirmationRequest, FromTaskConfirmation, FromTaskRequest, MintRequest, RunRequest, WorkflowCreate, WorkflowReplace
 from browser_platform.fuzzy.hitl import ConfirmationDecision
+from browser_platform.models.llm import resolve_llm
 from browser_platform.models.workflow import WorkflowDefinition
 from browser_platform.workflow_inputs import missing_required_inputs
 from browser_platform.local_secrets import key_status, save_openai_key
@@ -119,7 +120,7 @@ async def create_workflow_from_task_endpoint(payload: FromTaskRequest, request: 
             state.settings,
             task=payload.task,
             cdp_url=cdp_url,
-            llm=payload.llm,
+            llm=resolve_llm(payload.llm),
             variables=payload.variables,
             start_url=payload.start_url,
             name=payload.name,

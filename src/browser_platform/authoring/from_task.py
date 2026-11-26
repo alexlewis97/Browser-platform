@@ -37,8 +37,9 @@ from browser_platform.authoring.recorder import (
     poll_field_changes,
 )
 from browser_platform.config import Settings
-from browser_platform.models.llm import LLMConfig
+from browser_platform.models.llm import LLMConfig, resolve_llm
 from browser_platform.workflow_inputs import pretty_label
+from browser_platform.interpolate import is_navigable_url
 from browser_platform.models.workflow import ExpectedState, WorkflowDefinition, WorkflowInput, WorkflowStep
 from browser_platform.orchestrator.runner import WorkflowRunner
 from browser_platform.repair.browser_use_agent import build_cdp_browser, build_chat_openai, browser_use_available
@@ -286,7 +287,7 @@ async def _open_demo_tab(recorder, start_url: str | None) -> None:
         return
     try:
         page = await recorder.context.new_page()
-        if start_url:
+        if start_url and is_navigable_url(start_url):
             await page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
         else:
             await page.goto("about:blank")
@@ -313,7 +314,7 @@ async def _run_browser_use_task(
     llm: LLMConfig,
     start_url: str | None = None,
     variables: dict[str, Any] | None = None,
-    max_steps: int = 25,
+    max_steps: int = 40,
     timeout: float = 300,
     parameters: list[TaskParameter] | None = None,
     prompt_override: str | None = None,
@@ -323,8 +324,24 @@ async def _run_browser_use_task(
     chat = build_chat_openai(llm)
     browser = build_cdp_browser(cdp_url)
     prompt = prompt_override or demonstration_task(task, variables, start_url, parameters)
+    guide = (
+        " Navigate only to http(s) URLs, never to a CSS selector or id=...]. "
+        "If a CDP or DOM call fails, retry with fill or click. "
+        "Finish the terminal goal (submit, checkout confirmation, or echoed result)."
+    )
     agent = Agent(task=prompt, llm=chat, browser=browser, judge=False, web_search=False)
-    return await agent.run(max_steps=max_steps, timeout=timeout)
+    try:
+        return await agent.run(max_steps=max_steps, timeout=timeout)
+    except Exception as exc:
+        message = str(exc).lower()
+        transient = any(
+            token in message
+            for token in ("ipv4", "ipv6", "does not appear to be", "cdp", "websocket", "target closed", "node is not", "wasn't found")
+        )
+        if not transient:
+            raise
+        agent = Agent(task=prompt + guide, llm=chat, browser=build_cdp_browser(cdp_url), judge=False, web_search=False)
+        return await agent.run(max_steps=max_steps, timeout=timeout)
 
 
 async def create_workflow_from_task(
@@ -341,7 +358,7 @@ async def create_workflow_from_task(
     replay: bool = True,
     job_id: str | None = None,
     agent_runner: AgentRunner | None = None,
-    max_steps: int = 25,
+    max_steps: int = 40,
     timeout: float = 300,
     confirm_variables: bool | None = None,
     confirmation_broker=None,
@@ -352,6 +369,7 @@ async def create_workflow_from_task(
 ) -> FromTaskResult:
     """Demonstrate the task with browser-use, save a workflow, and optionally replay it."""
 
+    llm = resolve_llm(llm)
     job = FromTaskResult(
         id=job_id or uuid.uuid4().hex,
         status="running",
@@ -769,7 +787,7 @@ async def create_workflow_from_task(
                 stored,
                 cdp_url=cdp_url,
                 variables=replay_vars,
-                llm=None,
+                llm=llm,
                 write_back_repairs=write_back,
             )
             job.replay = {

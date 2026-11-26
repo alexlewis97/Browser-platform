@@ -99,7 +99,16 @@ def token() -> str:
 
 
 def llm_key() -> str:
-    return (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    value = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if not value:
+        env = Path("/workspace/browser-platform/.env")
+        if env.exists():
+            for line in env.read_text().splitlines():
+                key, _, raw = line.partition("=")
+                if key.strip() == "OPENROUTER_API_KEY":
+                    value = raw.strip().strip('"')
+                    break
+    return value
 
 
 def now_label() -> str:
@@ -161,11 +170,7 @@ def main() -> int:
                 report["previous_started"] = previous.get("started")
         except Exception:
             pass
-    if not key:
-        report["error"] = "OPENROUTER_API_KEY is not set"
-        REPORT.parent.mkdir(parents=True, exist_ok=True)
-        REPORT.write_text(json.dumps(report, indent=2) + "\n")
-        raise SystemExit("OPENROUTER_API_KEY is not set")
+    # The Oracle backend holds the LLM key. A missing local key is not a reason to skip the live cases.
     timeout = httpx.Timeout(60.0, connect=30.0)
     with httpx.Client(timeout=timeout, headers=headers(), follow_redirects=True) as client:
         health = client.get(f"{BACKEND}/health")
@@ -211,10 +216,13 @@ def run_case(client: httpx.Client, case: dict[str, Any], key: str) -> dict[str, 
         "wait": False,
         "replay": True,
         "write_back": True,
-        "max_steps": 25,
+        "max_steps": 40,
         "timeout": 300,
-        "llm": {"api_key": key, "model": MODEL},
     }
+    # Use the Oracle server's LLM key. Never send a client api_key (an empty one would disable it).
+    if key:
+        payload["llm"] = {"api_key": key, "model": MODEL}
+    # When the local key is absent, omit llm so the server uses its environment key.
     res = client.post(f"{BACKEND}/api/workflows/from-task", json=payload, timeout=60)
     body = res.json() if res.headers.get("content-type", "").startswith("application/json") else {"error": res.text[:300]}
     if res.status_code != 200:

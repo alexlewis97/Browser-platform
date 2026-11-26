@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from browser_platform.executor.verify import is_not_found_page, parameter_reflected
+from browser_platform.executor.verify import classify_parameter, is_not_found_page, parameter_reflected
 from browser_platform.llm.openrouter import chat_complete, env_api_key
 
 SAMPLE_LIMIT = 1500
@@ -52,6 +52,9 @@ def deterministic_verdict(
     for key, raw in (inputs or {}).items():
         value = str(raw or "").strip()
         if len(value) < 3:
+            continue
+        # Form-entry values were typed into a field; they often will not appear in the extract.
+        if classify_parameter(str(key)) == "form":
             continue
         if parameter_reflected(url=url, title=title, headings=headings, text=sample, value=value):
             continue

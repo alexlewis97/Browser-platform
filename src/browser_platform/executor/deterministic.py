@@ -11,7 +11,7 @@ from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeou
 from browser_platform.executor.locators import locator_for
 from browser_platform.executor.selectors import SelectorAttempt
 from browser_platform.executor.verify import classify_parameter, missing_parameters, value_echoed
-from browser_platform.interpolate import interpolate, interpolate_url
+from browser_platform.interpolate import interpolate, interpolate_url, is_navigable_url
 from browser_platform.models.workflow import ExpectedState, WorkflowStep
 
 
@@ -193,6 +193,37 @@ async def extract_content(page: Page, step: WorkflowStep) -> str:
     return (await page.locator("body").inner_text())[:4000].strip()
 
 
+async def _apply_input_value(loc, value: str, timeout_ms: int) -> None:
+    """Fill text boxes; click radios, checkboxes, and labels that wrap them."""
+
+    info = await loc.evaluate(
+        """el => {
+            const tag = (el.tagName || "").toLowerCase();
+            const typ = (el.getAttribute("type") || "").toLowerCase();
+            if (tag === "select") return {kind: "select"};
+            if (tag === "input" && (typ === "radio" || typ === "checkbox")) return {kind: typ};
+            if (tag === "label") {
+              const inner = el.querySelector("input, select, textarea");
+              if (inner) {
+                const it = (inner.getAttribute("type") || inner.tagName || "").toLowerCase();
+                return {kind: it === "radio" || it === "checkbox" || it === "select" ? it : "text"};
+              }
+              return {kind: "label"};
+            }
+            return {kind: "text"};
+        }"""
+    )
+    kind = str((info or {}).get("kind") or "text")
+    if kind in {"radio", "checkbox", "label"}:
+        await loc.click(timeout=timeout_ms)
+        return
+    if kind == "select":
+        await loc.select_option(label=str(value), timeout=timeout_ms)
+        return
+    await loc.fill(str(value), timeout=timeout_ms)
+
+
+
 async def run_step(
     page: Page,
     step: WorkflowStep,
@@ -219,6 +250,8 @@ async def run_step(
     if typ == "navigation":
         if not url:
             raise StepFailed("navigation step is missing url")
+        if not is_navigable_url(str(url)):
+            raise StepFailed(f"navigation step is not an http(s) URL: {url!r}")
         await page.goto(str(url), wait_until="domcontentloaded")
         # Public sites (notably Wikipedia) may return a short rate-limit error page on the first hit.
         for _ in range(2):
@@ -264,6 +297,7 @@ async def run_step(
     if typ == "agent":
         raise StepFailed("agent steps are not executed in the deterministic path")
 
+
     if typ not in {"click", "input", "select_change", "key_press"}:
         raise StepFailed(f"unsupported step type: {typ}")
 
@@ -276,7 +310,7 @@ async def run_step(
             elif typ == "input":
                 if value is None:
                     raise StepFailed("input step is missing value")
-                await loc.fill(str(value), timeout=timeout_ms)
+                await _apply_input_value(loc, str(value), timeout_ms)
             elif typ == "select_change":
                 if selected is None:
                     raise StepFailed("select_change step is missing selectedText")

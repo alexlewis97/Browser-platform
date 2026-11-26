@@ -8,6 +8,8 @@ recorder schema used by the Chrome extension, then cleaned by from-recording.
 
 from __future__ import annotations
 
+from browser_platform.interpolate import is_navigable_url
+
 import asyncio
 import logging
 import time
@@ -225,9 +227,11 @@ class RecordSession:
     async def navigate(self, url: str) -> None:
         if self.page is None:
             raise RuntimeError("session is not running")
-        target = url.strip()
-        if target and "://" not in target:
+        target = (url or "").strip()
+        if target and "://" not in target and is_navigable_url("https://" + target):
             target = "https://" + target
+        if not is_navigable_url(target):
+            raise RuntimeError(f"refusing to navigate to a non-URL: {url!r}")
         self.touch()
         await self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
         self.latest_url = self.page.url

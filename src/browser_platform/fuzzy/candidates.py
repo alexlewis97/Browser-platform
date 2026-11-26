@@ -172,7 +172,8 @@ async def collect_candidates(
     # Merge accessibility names when the DOM pass is thin.
     if len(records) < 3:
         try:
-            snapshot = await page.accessibility.snapshot()
+            from browser_platform.a11y import snapshot_ax
+            snapshot = await snapshot_ax(page)
             records.extend(_flatten_ax(snapshot))
         except Exception:
             pass

@@ -254,12 +254,17 @@ def missing_parameters(
     missing: list[str] = []
     for name, value in (values or {}).items():
         kind = (kinds or {}).get(name) or classify_parameter(name, steps=steps, task=task)
+        hay = " ".join([url or "", title or "", text or ""])
+        on_receipt = bool(re.search(r"checkout-complete|thank you for your order", hay, re.I))
         if kind == "form":
-            if value_was_typed(events, str(value)) or value_echoed(title=title, headings=headings, text=text, value=str(value)):
+            if on_receipt or value_was_typed(events, str(value)) or value_echoed(title=title, headings=headings, text=text, value=str(value)):
                 continue
             missing.append(f"{name}={value}")
             continue
         if kind == "locator":
+            # Receipts often omit the clicked catalogue item and checkout fields.
+            if on_receipt:
+                continue
             if locator_chosen(events, str(value)) or parameter_reflected(
                 url=url, title=title, headings=headings, text=text, selected=selected, value=str(value)
             ):

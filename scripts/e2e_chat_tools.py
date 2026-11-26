@@ -60,7 +60,7 @@ def main() -> None:
         "site": SITE,
         "cases": {},
     }
-    timeout = httpx.Timeout(300.0, connect=30.0)
+    timeout = httpx.Timeout(360.0, connect=30.0)
     with httpx.Client(timeout=timeout, headers=headers(), follow_redirects=True) as client:
         health = client.get(f"{BACKEND}/health")
         report["health"] = {"status": health.status_code, "body": health.json() if health.headers.get("content-type", "").startswith("application/json") else health.status_code}
@@ -139,6 +139,7 @@ def main() -> None:
             job = res.json()
             return {
                 "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                "id": job.get("id"),
                 "status": job.get("status"),
                 "answer": job.get("answer"),
                 "question": job.get("question"),
@@ -231,6 +232,31 @@ def main() -> None:
             "month_chat",
         )
 
+
+        def confirm_if_needed(case_name: str, message: str) -> None:
+            case = report["cases"].get(case_name) or {}
+            if case.get("status") != "needs_confirmation":
+                return
+            job_id = case.get("id") or case.get("job_id")
+            t0 = time.perf_counter()
+            payload = {"message": message, "target": "cloud", "stream": False, "confirm": True}
+            if job_id:
+                payload["job_id"] = job_id
+            res = client.post(f"{BACKEND}/api/chat", json=payload, timeout=240)
+            job = res.json() if res.headers.get("content-type", "").startswith("application/json") else {"error": res.text[:300]}
+            report["cases"][case_name] = {
+                "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                "id": job.get("id") or job_id,
+                "status": job.get("status"),
+                "answer": job.get("answer"),
+                "confirm_reason": job.get("confirm_reason"),
+                "items": job.get("items") or [],
+                "usage": usage_of(job),
+                "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
+                "error": job.get("error"),
+                "confirmed": True,
+            }
+
         catalog_names = {((t.get("function") or {}).get("name") or "") + " " + str(t.get("workflow_name") or "") for t in catalog}
         def has_tool(*needles: str) -> bool:
             blob = " ".join(catalog_names).lower()
@@ -245,22 +271,10 @@ def main() -> None:
             # redo with confirm if the first call asked for confirmation
             if report["cases"]["saucedemo_chat"].get("confirm_reason") or report["cases"]["saucedemo_chat"].get("status") != "succeeded":
                 t0 = time.perf_counter()
-                res = client.post(
-                    f"{BACKEND}/api/chat",
-                    json={"message": "On SauceDemo, add Sauce Labs Bike Light to the cart and check out as Sam Taylor, zip 10001.", "target": "cloud", "stream": False, "confirm": True},
+                confirm_if_needed(
+                    "saucedemo_chat",
+                    "On SauceDemo, add Sauce Labs Bike Light to the cart and check out as Sam Taylor, zip 10001.",
                 )
-                job = res.json()
-                report["cases"]["saucedemo_chat"] = {
-                    "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
-                    "status": job.get("status"),
-                    "answer": job.get("answer"),
-                    "confirm_reason": job.get("confirm_reason"),
-                    "items": job.get("items") or [],
-                    "usage": usage_of(job),
-                    "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
-                    "error": job.get("error"),
-                    "confirmed": True,
-                }
 
         if has_tool("demoqa") or has_tool("practice_form"):
             t0 = time.perf_counter()
@@ -271,6 +285,7 @@ def main() -> None:
             job = res.json()
             report["cases"]["demoqa_chat"] = {
                 "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                "id": job.get("id"),
                 "status": job.get("status"),
                 "answer": job.get("answer"),
                 "items": job.get("items") or [],
@@ -279,6 +294,10 @@ def main() -> None:
                 "error": job.get("error"),
                 "confirmed": True,
             }
+            confirm_if_needed(
+                "demoqa_chat",
+                "Submit the DemoQA practice form for Sam Taylor, email sam@example.com, gender Female, mobile 9123456789.",
+            )
 
         if has_tool("httpbin"):
             t0 = time.perf_counter()
@@ -289,6 +308,7 @@ def main() -> None:
             job = res.json()
             report["cases"]["httpbin_chat"] = {
                 "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                "id": job.get("id"),
                 "status": job.get("status"),
                 "answer": job.get("answer"),
                 "items": job.get("items") or [],
@@ -297,6 +317,10 @@ def main() -> None:
                 "error": job.get("error"),
                 "confirmed": True,
             }
+            confirm_if_needed(
+                "httpbin_chat",
+                "Submit the httpbin pizza form for Jane Roe, size medium, toppings mushroom.",
+            )
 
         single = report["cases"]["single"]
         single_ok = (

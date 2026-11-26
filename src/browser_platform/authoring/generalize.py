@@ -282,8 +282,16 @@ def apply_variables_to_url(url: str | None, by_value: dict[str, str]) -> str | N
     if not url or not by_value:
         return url
     from urllib.parse import parse_qsl, urlparse, urlunparse, unquote
+    from browser_platform.interpolate import is_navigable_url
 
-    parsed = urlparse(url)
+    # Selector strategies (e.g. [id="query"]) are not URLs. Python 3.13 urlparse
+    # treats a leading [ as an IPv6 host and raises ValueError.
+    if not is_navigable_url(url) and "://" not in url:
+        return url
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
 
     def bind_piece(piece: str) -> str:
         if not piece or piece.startswith("{"):

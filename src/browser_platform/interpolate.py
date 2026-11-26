@@ -155,3 +155,33 @@ def interpolate_url(url: Any, variables: dict[str, Any] | None) -> Any:
     if not changed:
         return updated
     return urlunparse(parsed._replace(path="/".join(parts)))
+
+
+
+def is_navigable_url(url: str | None) -> bool:
+    """True when `url` is a real http(s)/about URL, never a CSS selector or XPath."""
+
+    text = (url or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith(("about:", "data:")):
+        return True
+    if text.startswith(("#", ".", "[", "/", "(")) or lowered.startswith(("xpath=", "css=", "text=", "//")):
+        return False
+    if "id=" in text and "://" not in text:
+        return False
+    if "://" not in text:
+        return False
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or parsed.netloc or "").strip()
+    if not host or "id=" in host or '"' in host or "'" in host:
+        return False
+    return True

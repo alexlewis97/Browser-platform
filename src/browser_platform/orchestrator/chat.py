@@ -146,6 +146,18 @@ class ChatOrchestrator:
                 return job
         job = await self.plan(message, history=history or [], target=target, emit=emit)
         needs = job.get("status")
+        if needs == "needs_confirmation" and confirm:
+            job["confirmed"] = True
+            if target == "extension" or job.get("target") == "extension":
+                job["status"] = "awaiting_results"
+                job["target"] = "extension"
+                await _emit(emit, {"type": "planned", "job": public_job(job)})
+                job["elapsed_ms"] = round((_now() - started) * 1000, 1)
+                return job
+            await self.execute(job, emit=emit)
+            await self.synthesize(job, emit=emit)
+            job["elapsed_ms"] = round((_now() - started) * 1000, 1)
+            return job
         if needs in {"needs_input", "needs_confirmation"}:
             job["elapsed_ms"] = round((_now() - started) * 1000, 1)
             return job
