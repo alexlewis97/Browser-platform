@@ -148,8 +148,14 @@ def _is_junk_input(step: WorkflowStep) -> bool:
     for strategy in step.selectorStrategies or []:
         typ = typ + " " + str((strategy.metadata or {}).get("type") or "")
     typ = typ + " " + (step.cssSelector or "") + " " + (step.xpath or "")
-    if re.search(r"checkbox|radio|dropdown-checkbox", typ, re.I):
+    if re.search(r"dropdown-checkbox", typ, re.I):
         return True
+    # Accidental fill of a submit/login/continue control (recorded as input instead of click).
+    css = (step.cssSelector or "").strip()
+    blob = f"{css} {step.xpath or ''} {typ}"
+    if step.type == "input" and str(value).strip().lower() in {"login", "submit", "continue", "search", "finish", "next"}:
+        if re.search(r"login-button|type=['\"]?submit|name=['\"]?(login-button|continue|finish|submit)", blob, re.I) or css in {"input", "#login-button", "#continue", "#finish", "input[type=submit]", "input[type='submit']"}:
+            return True
     return len(str(value).strip()) <= 2
 
 
@@ -184,8 +190,136 @@ def merge_consecutive_fills(steps: list[WorkflowStep]) -> list[WorkflowStep]:
     return out
 
 
+
+def drop_leading_pre_navigation(steps: list[WorkflowStep]) -> list[WorkflowStep]:
+    """Drop fills/clicks recorded before the first real navigation."""
+
+    idx = next((i for i, step in enumerate(steps) if step.type == "navigation" and step.url), None)
+    if not idx:
+        return steps
+    return steps[idx:]
+
+
+def drop_spurious_query_navigations(steps: list[WorkflowStep]) -> list[WorkflowStep]:
+    """Drop same-path navigations that only add form-field query params (not real filters)."""
+
+    out: list[WorkflowStep] = []
+    prev = None
+    for step in steps:
+        if step.type == "navigation" and step.url and prev:
+            before, after = urlparse(prev), urlparse(step.url)
+            if (
+                before.netloc == after.netloc
+                and before.path == after.path
+                and after.query
+                and after.query != (before.query or "")
+                and not re.search(r"\b(page|q|query|month|filter|category|team|sort)=", after.query, re.I)
+            ):
+                continue
+        out.append(step)
+        if step.type == "navigation" and step.url:
+            prev = step.url
+    return out
+
+
+
+
+def drop_broken_navigations(steps: list[WorkflowStep]) -> list[WorkflowStep]:
+    """Drop navigations whose URL is clearly malformed (query that starts with a path)."""
+
+    out: list[WorkflowStep] = []
+    for step in steps:
+        if step.type == "navigation" and step.url:
+            try:
+                parsed = urlparse(step.url)
+            except Exception:
+                continue
+            if parsed.query.startswith("/") or (parsed.path in {"", "/"} and parsed.query.endswith("=") and "=" not in parsed.query[:-1] and "/" in parsed.query):
+                continue
+        out.append(step)
+    return protect_last_action(out, steps)
+
+
+def drop_stale_after_navigation(steps: list[WorkflowStep]) -> list[WorkflowStep]:
+    """Drop fills/clicks reused after a path-changing navigation (ghost snapshots)."""
+
+    def _field_key(step: WorkflowStep) -> str:
+        css = (step.cssSelector or "").strip()
+        if css:
+            return css
+        for strategy in step.selectorStrategies or []:
+            val = str(getattr(strategy, "value", "") or "")
+            if val:
+                return val
+        return (step.target_text or "").strip()
+
+    def _path(url: str | None) -> str:
+        if not url:
+            return ""
+        try:
+            return urlparse(url).path.rstrip("/") or "/"
+        except Exception:
+            return ""
+
+    seen: dict[str, str] = {}
+    current_path = ""
+    out: list[WorkflowStep] = []
+    for step in steps:
+        if step.type == "navigation" and step.url:
+            new_path = _path(step.url)
+            if new_path and new_path != current_path:
+                current_path = new_path
+            out.append(step)
+            continue
+        if step.type in {"input", "select_change", "click"}:
+            key = _field_key(step)
+            if key and key in seen and seen[key] and current_path and seen[key] != current_path:
+                continue
+            if key and current_path:
+                seen[key] = current_path
+        out.append(step)
+    return protect_last_action(out, steps)
+
+
+def drop_repeated_start_navigations(steps: list[WorkflowStep]) -> list[WorkflowStep]:
+    """Keep only the last return to the original start URL (duplicate login loops)."""
+
+    def _canon(url: str) -> str:
+        try:
+            parsed = urlparse(url)
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/') or '/'}"
+        except Exception:
+            return url.split("?")[0].rstrip("/") or url
+
+    first = next((i for i, step in enumerate(steps) if step.type == "navigation" and step.url), None)
+    if first is None:
+        return steps
+    start = _canon(steps[first].url)
+    last = first
+    for i, step in enumerate(steps):
+        if step.type != "navigation" or not step.url or _canon(step.url) != start:
+            continue
+        try:
+            query = urlparse(step.url).query or ""
+        except Exception:
+            query = ""
+        # Only an empty query or a login-credential bounce is a session reset.
+        # "?/checkout-step-two.html=" and "?q=team" are later progress, not a restart.
+        if query and not re.search(r"\b(user-name|username|user|password|email)=", query, re.I):
+            continue
+        last = i
+    if last == first:
+        return steps
+    prefix = [
+        step
+        for step in steps[:last]
+        if step.type in {"input", "select_change"} and str(step.value or "").startswith("{")
+    ]
+    return protect_last_action([*prefix, *steps[last:]], steps)
+
+
 def drop_junk_steps(steps: list[WorkflowStep]) -> list[WorkflowStep]:
-    out = [step for step in steps if not _is_junk_input(step) and not _is_chrome_step(step)]
+    out = [step for step in steps if not _is_junk_input(step) and not _is_chrome_step(step) and not _is_page_dump_click(step)]
     return protect_last_action(out, steps)
 
 
@@ -382,12 +516,20 @@ def compact_steps(steps: list[WorkflowStep]) -> tuple[list[WorkflowStep], dict[s
     original = len(steps)
     pipeline = [
         ("drop_junk", drop_junk_steps),
+        ("drop_leading_pre_nav", drop_leading_pre_navigation),
+        ("drop_query_navs", drop_spurious_query_navigations),
+        ("drop_broken_navs", drop_broken_navigations),
+        ("drop_repeated_start", drop_repeated_start_navigations),
+        ("drop_stale", drop_stale_after_navigation),
+        ("drop_noop_clicks", drop_noop_clicks),
+        ("dedupe_clicks", dedupe_consecutive_clicks),
         ("merge_fills", merge_consecutive_fills),
         ("collapse_navigations", collapse_back_and_forth_navigations),
         ("prefer_direct_url", prefer_direct_variable_url),
         ("causal_path", causal_path_to_extract),
         ("merge_fills_again", merge_consecutive_fills),
         ("collapse_navigations_again", collapse_back_and_forth_navigations),
+        ("dedupe_clicks_again", dedupe_consecutive_clicks),
     ]
     current = list(steps)
     stages: list[dict[str, Any]] = []
@@ -587,9 +729,25 @@ _PASSIVE_TAGS = {"html", "body", "main", "p", "h1", "h2", "h3", "h4", "h5", "h6"
 _ACTIVE_ROLES = {"button", "link", "option", "tab", "menuitem", "checkbox", "radio", "combobox", "textbox", "searchbox"}
 
 
+def _is_page_dump_click(step: WorkflowStep) -> bool:
+    """Clicks whose target is a whole-page text blob, not a control."""
+    if step.type != "click":
+        return False
+    text = (step.target_text or "").strip()
+    css = (step.cssSelector or "").strip()
+    xpath = (step.xpath or "").strip()
+    if len(text) > 80:
+        return True
+    if not css and xpath in {"", "/", "//", "//html", "//body", "//html[1]", "//body[1]"}:
+        return True
+    return False
+
+
 def _is_passive_click(step: WorkflowStep) -> bool:
     if step.type != "click":
         return False
+    if _is_page_dump_click(step):
+        return True
     if _step_carries_variable(step):
         return False
     changed = getattr(step, "changed", None)
@@ -646,6 +804,8 @@ def compact_recording_steps(steps: list[WorkflowStep]) -> tuple[list[WorkflowSte
     by_id = {_rec_id(step): step for step in original if _rec_id(step)}
     pipeline = [
         ("drop_junk", drop_junk_steps),
+        ("drop_leading_pre_nav", drop_leading_pre_navigation),
+        ("drop_query_navs", drop_spurious_query_navigations),
         ("drop_noop_clicks", drop_noop_clicks),
         ("dedupe_clicks", dedupe_consecutive_clicks),
         ("merge_fills", merge_consecutive_fills),

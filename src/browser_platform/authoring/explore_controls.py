@@ -12,6 +12,21 @@ from browser_platform.workflow_inputs import pretty_label
 MAX_PROPOSALS = 6
 
 
+
+def radio_label_text(html: str, attrs: str) -> str:
+    """Visible label for a radio input: <label for=id> or text after the input."""
+    el_id = html_attr(attrs, "id")
+    if el_id:
+        match = re.search(
+            rf'<label\b[^>]*for=["\']{re.escape(el_id)}["\'][^>]*>(.*?)</label>',
+            html,
+            re.I | re.S,
+        )
+        if match:
+            return re.sub(r"<[^>]+>", "", match.group(1)).strip()
+    return ""
+
+
 def html_attr(attrs: str, name: str) -> str:
     match = re.search(
         r"(?:^|\s)" + re.escape(name) + r'\s*=\s*(["\']?)([^"\'>]*)\1',
@@ -253,7 +268,8 @@ def propose_from_html(html: str, url: str, *, existing: set[str] | None = None, 
     for rm in re.finditer(r'<input\b([^>]*type=["\']radio["\'][^>]*)>', html, re.I):
         attrs = rm.group(1)
         gname = html_attr(attrs, "name") or "choice"
-        val = html_attr(attrs, "value") or html_attr(attrs, "id") or ""
+        label = radio_label_text(html, attrs)
+        val = label or html_attr(attrs, "value") or html_attr(attrs, "id") or ""
         if not val:
             continue
         radios.setdefault(gname, [])
@@ -275,7 +291,12 @@ def propose_from_html(html: str, url: str, *, existing: set[str] | None = None, 
                 "label": pretty_label(name),
                 "required": False,
                 "default": default,
-                "binding": {"kind": "radio", "step_index": step_index, "css": f"input[name='{gname}'][value='{{{name}}}']", "options": values},
+                "binding": {
+                    "kind": "radio",
+                    "step_index": step_index,
+                    "css": f"label[for]",
+                    "options": values,
+                },
                 "reason": "A radio group can be chosen by value.",
                 "verify_with": alt,
                 "verify_mode": "browser",

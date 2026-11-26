@@ -28,14 +28,15 @@ def is_action_ending(definition: WorkflowDefinition | None) -> bool:
         return False
     last = None
     for step in reversed(definition.steps or []):
-        if is_extract(step):
+        # A post-submit navigation (checkout-complete, /post) is not the action.
+        if is_extract(step) or (step.type or "").lower() in {"navigation", "navigate"}:
             continue
         last = step
         break
     if last is None:
         return False
     typ = (last.type or "").lower()
-    return typ in {"click", "submit"} or (typ == "key_press" and is_submit_like(last))
+    return typ in {"click", "submit", "select_change"} or (typ == "key_press" and is_submit_like(last))
 
 
 def _json_type(item: WorkflowInput) -> str:
@@ -92,10 +93,66 @@ def tool_from_workflow(stored: StoredWorkflow, *, name: str | None = None) -> di
     }
 
 
+
+def _is_low_quality_step(step) -> bool:
+    text = (getattr(step, "target_text", None) or "")
+    css = (getattr(step, "cssSelector", None) or "").strip()
+    if step.type == "click" and (len(text) > 80 or css in {"", "body", "html", "body > div", "#root"}):
+        return True
+    if step.type == "input" and str(getattr(step, "value", "") or "").strip().lower() in {"login", "continue", "submit", "finish"}:
+        return True
+    return False
+
+
+def _workflow_tool_quality(stored: StoredWorkflow) -> tuple[int, int, int, int]:
+    """Prefer parameterized, stable-selector workflows over noisy recordings."""
+
+    steps = list(stored.definition.steps or [])
+    bound_locators = 0
+    bound_values = 0
+    stable = 0
+    junk = 0
+    for step in steps:
+        if _is_low_quality_step(step):
+            junk += 1
+        css = step.cssSelector or ""
+        blob = " ".join(
+            [
+                css,
+                step.value or "",
+                step.selectedText or "",
+                step.url or "",
+                *(getattr(s, "value", "") or "" for s in (step.selectorStrategies or [])),
+            ]
+        )
+        if step.type != "navigation" and (
+            "{" in css
+            or any(
+                "{" in (getattr(s, "value", "") or "") and getattr(s, "type", "") in {"css", "xpath", "id"}
+                for s in (step.selectorStrategies or [])
+            )
+        ):
+            bound_locators += 1
+        if str(step.value or "").startswith("{") or str(step.selectedText or "").startswith("{"):
+            bound_values += 1
+        if css.startswith("#") or "data-test" in css or "name=" in css or css.startswith("label["):
+            stable += 1
+    starts_with_nav = 1 if steps and steps[0].type == "navigation" else 0
+    return (starts_with_nav, bound_locators, bound_values, stable - junk, -len(steps))
+
+
 def tools_from_workflows(items: list[StoredWorkflow]) -> list[dict[str, Any]]:
     used: set[str] = set()
     tools: list[dict[str, Any]] = []
+    grouped: dict[str, list[StoredWorkflow]] = {}
     for stored in items:
+        base, _suffix = tool_name(stored)
+        grouped.setdefault(base, []).append(stored)
+    ordered: list[StoredWorkflow] = []
+    for rows in grouped.values():
+        rows.sort(key=_workflow_tool_quality, reverse=True)
+        ordered.extend(rows)
+    for stored in ordered:
         base, suffix = tool_name(stored)
         name = base
         if name in used:

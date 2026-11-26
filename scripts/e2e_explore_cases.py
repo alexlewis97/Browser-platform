@@ -305,7 +305,7 @@ def main() -> int:
                 input_step("#user-name", "standard_user", "Username"),
                 input_step("#password", "secret_sauce", "Password"),
                 click_step("#login-button", "Login"),
-                {"type": "extract", "extractionGoal": "inventory product names and the current sort option", "output": "extract"},
+                {"type": "extract", "extractionGoal": "only the first inventory item name and its price, nothing else", "output": "extract"},
             ],
             "Log in to SauceDemo and view the inventory sort control",
         )
@@ -319,8 +319,12 @@ def main() -> int:
         alt_var = {choice["name"]: choice.get("verify_with") or ""} if choice else {}
         default = run_wf(client, sauce_id, default_var) if default_var else run_wf(client, sauce_id, {})
         alt = run_wf(client, sauce_id, alt_var) if alt_var else {"status": "skipped"}
+        first_default = (default.get("outputs_preview") or "").strip()
+        first_alt = (alt.get("outputs_preview") or "").strip()
+        sorts_differ = bool(first_default and first_alt and first_default != first_alt)
         report["cases"]["saucedemo_sort"] = {
-            "ok": browser_verify_ok(body),
+            "ok": browser_verify_ok(body) and bool(accepted) and default.get("status") == "succeeded" and alt.get("status") == "succeeded" and sorts_differ,
+            "sorts_differ": sorts_differ,
             "workflow_id": sauce_id,
             "accepted": accepted,
             "verified": [p.get("name") for p in verified],

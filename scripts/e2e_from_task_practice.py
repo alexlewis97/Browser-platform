@@ -216,7 +216,7 @@ def run_case(client: httpx.Client, case: dict[str, Any], key: str) -> dict[str, 
         "wait": False,
         "replay": True,
         "write_back": True,
-        "max_steps": 40,
+        "max_steps": 50,
         "timeout": 300,
     }
     # Use the Oracle server's LLM key. Never send a client api_key (an empty one would disable it).

@@ -82,8 +82,12 @@ def generalize_events(
                 value = strategy.get("value")
             if not value:
                 continue
-            updated = apply_variables_to_url(str(value), {literal: name}) or str(value)
-            if literal.lower() == str(value).lower():
+            raw_val = str(value)
+            if "://" in raw_val or raw_val.startswith(("http:", "https:", "/")):
+                updated = apply_variables_to_url(raw_val, {literal: name}) or raw_val
+            else:
+                updated = apply_variables_to_selector(raw_val, {literal: name})
+            if literal.lower() == raw_val.lower():
                 updated = "{" + name + "}"
             if hasattr(strategy, "value"):
                 strategy.value = updated
@@ -135,6 +139,11 @@ def generalize_events(
                 if _get(ev, "value") and not str(_get(ev, "value")).startswith("{"):
                     _set(ev, "value", placeholder)
             _rewrite_strategies(ev, raw or text, name)
+            if isinstance(element, dict):
+                for key in ("css", "id", "xpath"):
+                    if element.get(key):
+                        element[key] = apply_variables_to_selector(str(element[key]), {raw or text: name})
+                _set(ev, "element", element)
             bound = True
             break
         if bound:
@@ -156,6 +165,7 @@ def generalize_events(
             })
 
     by_value = {str(v): k for k, v in resolved.items()}
+    apply_variables_to_all_selectors(events, by_value)
     filtered = []
     for ev in events:
         typ = ev.type if hasattr(ev, "type") else ev.get("type")
@@ -274,6 +284,109 @@ def url_placeholder(name: str, literal: str, variant: str) -> str:
     if tokens and variant.lower() == tokens[0].lower() and len(tokens) >= 2:
         return "{" + name + "|head}"
     return "{" + name + "}"
+
+
+
+
+def apply_variables_to_all_selectors(events: list[Any], by_value: dict[str, str]) -> None:
+    """Rewrite every recorded selector after all literals have been bound.
+
+    Product slugs often live on a click whose visible text is "Add to cart",
+    so per-event binding never sees the product name in that event's text.
+    """
+    if not by_value:
+        return
+
+    def _get(ev, key, default=None):
+        if hasattr(ev, key):
+            return getattr(ev, key)
+        if isinstance(ev, dict):
+            return ev.get(key, default)
+        return default
+
+    def _set_strategy_value(strategy, value: str) -> None:
+        if hasattr(strategy, "value"):
+            strategy.value = value
+        elif isinstance(strategy, dict):
+            strategy["value"] = value
+
+    for ev in events:
+        typ = _get(ev, "type")
+        if typ == "navigation":
+            continue
+        for strategy in _get(ev, "selectors") or []:
+            raw = None
+            if hasattr(strategy, "value"):
+                raw = strategy.value
+            elif isinstance(strategy, dict):
+                raw = strategy.get("value")
+            if not raw:
+                continue
+            raw_val = str(raw)
+            if "://" in raw_val or raw_val.startswith(("http:", "https:", "/")):
+                updated = apply_variables_to_url(raw_val, by_value) or raw_val
+            else:
+                updated = apply_variables_to_selector(raw_val, by_value)
+            if updated != raw_val:
+                _set_strategy_value(strategy, updated)
+        element = _get(ev, "element")
+        if isinstance(element, dict):
+            for key in ("css", "id", "xpath", "dataTest", "dataTestId", "dataCy"):
+                if element.get(key):
+                    element[key] = apply_variables_to_selector(str(element[key]), by_value)
+
+
+def apply_variables_to_steps(steps: list[Any], by_value: dict[str, str]) -> list[Any]:
+    """Rewrite cssSelector and selectorStrategies on already-built workflow steps."""
+    if not by_value:
+        return steps
+    for step in steps:
+        typ = getattr(step, "type", None)
+        if typ == "navigation":
+            continue
+        css = getattr(step, "cssSelector", None)
+        if css:
+            step.cssSelector = apply_variables_to_selector(str(css), by_value)
+        xpath = getattr(step, "xpath", None)
+        if xpath:
+            step.xpath = apply_variables_to_selector(str(xpath), by_value)
+        for strategy in getattr(step, "selectorStrategies", None) or []:
+            raw = getattr(strategy, "value", None)
+            if not raw:
+                continue
+            raw_val = str(raw)
+            if "://" in raw_val or raw_val.startswith(("http:", "https:", "/")):
+                strategy.value = apply_variables_to_url(raw_val, by_value) or raw_val
+            else:
+                strategy.value = apply_variables_to_selector(raw_val, by_value)
+    return steps
+
+
+def apply_variables_to_selector(value: str | None, by_value: dict[str, str]) -> str:
+    """Replace bound literals and their slugs inside a CSS/XPath/id selector."""
+
+    out = str(value or "")
+    if not out:
+        return out
+    for literal, name in (by_value or {}).items():
+        lit = str(literal or "")
+        ident = str(name or "").strip()
+        if not lit or not ident:
+            continue
+        if lit.lower() == out.lower():
+            return "{" + ident + "}"
+        if lit in out:
+            out = out.replace(lit, "{" + ident + "}", 1)
+            continue
+        # Keep the original spelling in value='Male' rather than forcing a lowercased slug.
+        exact = re.compile(re.escape(lit), re.I)
+        if exact.search(out):
+            out = exact.sub("{" + ident + "}", out, count=1)
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", lit.lower()).strip("-")
+        if slug and slug != lit.lower() and len(slug) >= 4 and slug in out.lower():
+            out = re.sub(re.escape(slug), "{" + ident + "|slug}", out, count=1, flags=re.I)
+    return out
 
 
 def apply_variables_to_url(url: str | None, by_value: dict[str, str]) -> str | None:

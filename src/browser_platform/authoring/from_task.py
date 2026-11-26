@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from browser_platform.authoring.compact import compact_steps, estimate_cost_usd, maybe_llm_prune, usage_from_history
 from browser_platform.authoring.elements import resolve_fill_element, strategies_for_element
-from browser_platform.authoring.generalize import generalize_events, placeholders_in_task
+from browser_platform.authoring.generalize import apply_variables_to_steps, generalize_events, placeholders_in_task
 from browser_platform.authoring.parameters import (
     TaskParameter,
     constraint_prompt,
@@ -138,32 +138,43 @@ def events_to_steps(events: list[RecordedEvent], *, extract_goal: str = "result"
                     selectorStrategies=ev.selectors or None,
                 )
             )
-        elif ev.type == "input":
+        elif ev.type in {"input", "select_change"}:
             element = resolve_fill_element(ev.element) or ev.element or {}
-            selectors = ev.selectors or strategies_for_element(element, for_fill=True)
-            steps.append(
-                WorkflowStep(
-                    type="input",
-                    description="Fill field",
-                    value=ev.value,
-                    target_text=element.get("placeholder") or ev.text,
-                    cssSelector=element.get("css"),
-                    xpath=element.get("xpath"),
-                    selectorStrategies=selectors or None,
+            typ = str((element or {}).get("type") or "").lower()
+            choice = ev.type == "select_change" or typ in {"radio", "checkbox"}
+            selectors = ev.selectors or strategies_for_element(element, for_fill=not choice, include_text=True)
+            if choice:
+                css = element.get("css")
+                for strategy in selectors or []:
+                    raw = strategy.value if hasattr(strategy, "value") else (strategy.get("value") if isinstance(strategy, dict) else None)
+                    typ_s = strategy.type if hasattr(strategy, "type") else (strategy.get("type") if isinstance(strategy, dict) else None)
+                    if typ_s == "css" and raw and ("label[" in str(raw) or "name=" in str(raw)):
+                        css = raw
+                        break
+                steps.append(
+                    WorkflowStep(
+                        type="select_change",
+                        description="Choose option",
+                        value=ev.value,
+                        selectedText=ev.value,
+                        target_text=ev.value or ev.text,
+                        cssSelector=css,
+                        xpath=element.get("xpath"),
+                        selectorStrategies=selectors or None,
+                    )
                 )
-            )
-        elif ev.type == "select_change":
-            steps.append(
-                WorkflowStep(
-                    type="select_change",
-                    description="Choose option",
-                    selectedText=ev.value,
-                    target_text=ev.value,
-                    cssSelector=(ev.element or {}).get("css"),
-                    xpath=(ev.element or {}).get("xpath"),
-                    selectorStrategies=ev.selectors or None,
+            else:
+                steps.append(
+                    WorkflowStep(
+                        type="input",
+                        description="Fill field",
+                        value=ev.value,
+                        target_text=element.get("placeholder") or ev.text,
+                        cssSelector=element.get("css"),
+                        xpath=element.get("xpath"),
+                        selectorStrategies=selectors or None,
+                    )
                 )
-            )
         elif ev.type == "key_press" and ev.key:
             steps.append(
                 WorkflowStep(
@@ -314,7 +325,7 @@ async def _run_browser_use_task(
     llm: LLMConfig,
     start_url: str | None = None,
     variables: dict[str, Any] | None = None,
-    max_steps: int = 40,
+    max_steps: int = 50,
     timeout: float = 300,
     parameters: list[TaskParameter] | None = None,
     prompt_override: str | None = None,
@@ -344,6 +355,129 @@ async def _run_browser_use_task(
         return await agent.run(max_steps=max_steps, timeout=timeout)
 
 
+
+_SUBMIT_NAMES = ("finish", "continue", "submit", "place-order", "place_order")
+
+
+async def maybe_complete_visible_form(recorder, values: dict[str, str]) -> bool:
+    """If the demo stalled on a filled checkout/form, click Continue/Finish/Submit.
+
+    Playwright fills and clicks go through the page so the in-page recorder can
+    capture them as real events. Returns True when the URL or visible text changed.
+    """
+    if not values:
+        return False
+    try:
+        pages = [page for page in list(recorder.context.pages) if not page.is_closed()]
+    except Exception:
+        return False
+    if not pages:
+        return False
+    page = pages[-1]
+    advanced = False
+    try:
+        start_url = page.url or ""
+        start_text = ""
+        try:
+            start_text = (await page.locator("body").inner_text())[:400]
+        except Exception:
+            pass
+        # Fill empty visible text fields from provided values when the control
+        # name/id/placeholder mentions the parameter.
+        for name, value in values.items():
+            if not value:
+                continue
+            tokens = {name.lower(), name.lower().replace("_", "-"), name.lower().replace("_", "")}
+            if name.lower() in {"zip", "postal_code", "postal"}:
+                tokens.update({"zip", "postal", "postalcode", "postcode"})
+            if name.lower() in {"first_name", "firstname"}:
+                tokens.update({"first-name", "firstname", "first_name"})
+            if name.lower() in {"last_name", "lastname"}:
+                tokens.update({"last-name", "lastname", "last_name"})
+            locator = page.locator("input:visible, textarea:visible, select:visible")
+            count = 0
+            try:
+                count = await locator.count()
+            except Exception:
+                count = 0
+            for i in range(min(count, 20)):
+                loc = locator.nth(i)
+                typ = (await loc.get_attribute("type") or "").lower()
+                if typ in {"hidden", "submit", "button", "checkbox", "radio", "file"}:
+                    continue
+                ident = " ".join(
+                    filter(
+                        None,
+                        [
+                            await loc.get_attribute("id"),
+                            await loc.get_attribute("name"),
+                            await loc.get_attribute("placeholder"),
+                            await loc.get_attribute("data-test"),
+                            await loc.get_attribute("aria-label"),
+                        ],
+                    )
+                ).lower().replace(" ", "")
+                if not any(tok.replace("_", "") in ident or tok in ident for tok in tokens):
+                    continue
+                current = ""
+                try:
+                    current = await loc.input_value()
+                except Exception:
+                    pass
+                if current and current.strip() == str(value).strip():
+                    break
+                try:
+                    await loc.fill(str(value), timeout=3000)
+                    advanced = True
+                    break
+                except Exception:
+                    continue
+        # Click a visible continue/finish/submit control, up to two times
+        # (checkout information -> overview -> complete).
+        for _ in range(2):
+            clicked = False
+            css_candidates = [
+                "#finish",
+                "#continue",
+                "[data-test='finish']",
+                "[data-test='continue']",
+                "[data-test='submit']",
+                "input#finish",
+                "input#continue",
+                "input[type=submit]",
+                "button[type=submit]",
+            ]
+            for sel in css_candidates:
+                loc = page.locator(sel)
+                try:
+                    if await loc.count() and await loc.first.is_visible():
+                        await loc.first.click(timeout=3000)
+                        clicked = True
+                        advanced = True
+                        await page.wait_for_timeout(800)
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                for label in ("Finish", "Continue", "Submit", "Place Order"):
+                    loc = page.get_by_role("button", name=label)
+                    try:
+                        if await loc.count() and await loc.first.is_visible():
+                            await loc.first.click(timeout=3000)
+                            clicked = True
+                            advanced = True
+                            await page.wait_for_timeout(800)
+                            break
+                    except Exception:
+                        continue
+            if not clicked:
+                break
+        end_url = page.url or ""
+        return advanced or end_url != start_url
+    except Exception:
+        return False
+
+
 async def create_workflow_from_task(
     store: FileStore,
     settings: Settings,
@@ -358,7 +492,7 @@ async def create_workflow_from_task(
     replay: bool = True,
     job_id: str | None = None,
     agent_runner: AgentRunner | None = None,
-    max_steps: int = 40,
+    max_steps: int = 50,
     timeout: float = 300,
     confirm_variables: bool | None = None,
     confirmation_broker=None,
@@ -547,6 +681,30 @@ async def create_workflow_from_task(
                         events=preview_events,
                         task=task,
                     )
+                if missing:
+                    try:
+                        await maybe_complete_visible_form(recorder, required)
+                        await harvest_field_snapshots(recorder)
+                    except Exception:
+                        pass
+                    state = await snapshot_page_state(recorder)
+                    preview_events = list(getattr(recorder, "events", None) or [])
+                    try:
+                        for page in list(getattr(recorder, "context").pages):
+                            raw = await page.evaluate("() => (window.__bpRecorder && window.__bpRecorder.snapshot) ? window.__bpRecorder.snapshot() : []")
+                            preview_events.extend(raw or [])
+                    except Exception:
+                        pass
+                    missing = missing_parameters(
+                        url=state["url"],
+                        title=state["title"],
+                        headings=state["headings"],
+                        text=state["text"],
+                        selected=state["selected"],
+                        values=required,
+                        events=preview_events,
+                        task=task,
+                    )
                 if missing or demo_error:
                     tokens_in = tokens_out = 0
                     cost = None
@@ -649,6 +807,7 @@ async def create_workflow_from_task(
         steps = events_to_steps(events, extract_goal=_extract_goal(task))
         steps_before = len(steps)
         steps, compact_stats = compact_steps(steps)
+        steps = apply_variables_to_steps(steps, {str(v): k for k, v in (resolved or {}).items() if v is not None})
         form_names = [item.name for item in (parameters or []) if classify_parameter(item.name, steps=steps) == "form"]
         bound_values = " ".join(str(step.value or "") for step in steps if step.type in {"input", "select_change"})
         missing_fills = [name for name in form_names if "{" + name + "}" not in bound_values]

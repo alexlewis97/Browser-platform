@@ -10,12 +10,35 @@ _JS_DESCRIBE = r"""
 (el) => {
   if (!el || el.nodeType !== 1) return null;
   const escape = (window.CSS && CSS.escape) ? CSS.escape : (s) => String(s).replace(/[^a-zA-Z0-9_\-]/g, '\\$&');
-  function cssPath(node) {
+
+  function stableSelector(node) {
+    if (!node || node.nodeType !== 1) return "";
     if (node.id) return `#${escape(node.id)}`;
+    for (const attr of ["data-test", "data-testid", "data-cy"]) {
+      const v = node.getAttribute(attr);
+      if (v) return `[${attr}="${escape(v)}"]`;
+    }
+    const name = node.getAttribute("name");
+    if (name) {
+      const tag = node.tagName.toLowerCase();
+      const typ = (node.getAttribute("type") || "").toLowerCase();
+      const val = node.getAttribute("value");
+      if ((typ === "radio" || typ === "checkbox") && val) {
+        return `${tag}[name="${escape(name)}"][value="${escape(val)}"]`;
+      }
+      return `${tag}[name="${escape(name)}"]`;
+    }
+    return "";
+  }
+  function cssPath(node) {
+    if (!node || node.nodeType !== 1) return "";
+    const direct = stableSelector(node);
+    if (direct) return direct;
     const parts = [];
     let cur = node;
     while (cur && cur.nodeType === 1 && cur !== document.documentElement && parts.length < 6) {
-      if (cur.id) { parts.unshift(`#${escape(cur.id)}`); break; }
+      const stab = stableSelector(cur);
+      if (stab) { parts.unshift(stab); break; }
       let part = cur.tagName.toLowerCase();
       const parent = cur.parentElement;
       if (parent) {
@@ -56,6 +79,11 @@ _JS_DESCRIBE = r"""
     ariaLabel: el.getAttribute("aria-label"),
     type: el.getAttribute("type"),
     href: el.getAttribute("href"),
+    htmlFor: el.getAttribute("for") || el.htmlFor || null,
+    htmlName: el.getAttribute("name") || null,
+    dataTest: el.getAttribute("data-test") || null,
+    dataTestId: el.getAttribute("data-testid") || null,
+    dataCy: el.getAttribute("data-cy") || null,
     css: cssPath(el),
     xpath: xpath(el),
   };
@@ -66,13 +94,35 @@ RECORDER_JS = r"""
 (() => {
   if (window.__bpRecorder) return;
   const escape = (window.CSS && CSS.escape) ? CSS.escape : (s) => String(s).replace(/[^a-zA-Z0-9_\-]/g, '\\$&');
-  function cssPath(node) {
+
+  function stableSelector(node) {
     if (!node || node.nodeType !== 1) return "";
     if (node.id) return `#${escape(node.id)}`;
+    for (const attr of ["data-test", "data-testid", "data-cy"]) {
+      const v = node.getAttribute(attr);
+      if (v) return `[${attr}="${escape(v)}"]`;
+    }
+    const name = node.getAttribute("name");
+    if (name) {
+      const tag = node.tagName.toLowerCase();
+      const typ = (node.getAttribute("type") || "").toLowerCase();
+      const val = node.getAttribute("value");
+      if ((typ === "radio" || typ === "checkbox") && val) {
+        return `${tag}[name="${escape(name)}"][value="${escape(val)}"]`;
+      }
+      return `${tag}[name="${escape(name)}"]`;
+    }
+    return "";
+  }
+  function cssPath(node) {
+    if (!node || node.nodeType !== 1) return "";
+    const direct = stableSelector(node);
+    if (direct) return direct;
     const parts = [];
     let cur = node;
     while (cur && cur.nodeType === 1 && cur !== document.documentElement && parts.length < 6) {
-      if (cur.id) { parts.unshift(`#${escape(cur.id)}`); break; }
+      const stab = stableSelector(cur);
+      if (stab) { parts.unshift(stab); break; }
       let part = cur.tagName.toLowerCase();
       const parent = cur.parentElement;
       if (parent) {
@@ -145,6 +195,10 @@ RECORDER_JS = r"""
       type: el.getAttribute("type"),
       href: el.getAttribute("href"),
       htmlFor: el.getAttribute("for") || el.htmlFor || null,
+      htmlName: el.getAttribute("name") || null,
+      dataTest: el.getAttribute("data-test") || null,
+      dataTestId: el.getAttribute("data-testid") || null,
+      dataCy: el.getAttribute("data-cy") || null,
       css: cssPath(el),
       xpath: xpath(el),
     };
@@ -168,8 +222,12 @@ RECORDER_JS = r"""
   }
   function skipField(el) {
     const typ = ((el && el.getAttribute && el.getAttribute("type")) || "").toLowerCase();
-    // Checkboxes/radios include site chrome (e.g. Wikipedia's menu dropdown). They are not typed values.
-    return ["hidden", "submit", "button", "image", "file", "reset", "checkbox", "radio"].includes(typ);
+    // Hidden/button-like controls are not typed values. Radios and checkboxes are handled as choices.
+    return ["hidden", "submit", "button", "image", "file", "reset"].includes(typ);
+  }
+  function isChoice(el) {
+    const typ = ((el && el.getAttribute && el.getAttribute("type")) || "").toLowerCase();
+    return typ === "checkbox" || typ === "radio";
   }
   function fieldValue(el) {
     if (!el) return "";
@@ -184,9 +242,12 @@ RECORDER_JS = r"""
   }
   function noteField(el, reason) {
     el = associatedControl(el);
-    if (!el || el.nodeType !== 1 || skipField(el) || !isFillable(el)) return;
+    if (!el || el.nodeType !== 1 || skipField(el)) return;
     const tag = (el.tagName || "").toLowerCase();
-    if (!["input", "textarea", "select"].includes(tag) && !el.isContentEditable) return;
+    if (!["input", "textarea", "select"].includes(tag) && !el.isContentEditable && !isChoice(el)) return;
+    if (isChoice(el) && reason === "snapshot" && !el.closest("form")) return;
+    const typ = (el.getAttribute("type") || "").toLowerCase();
+    if (typ === "radio" && !el.checked && reason !== "click") return;
     const key = fieldKey(el);
     if (!key) return;
     const value = fieldValue(el);
@@ -194,8 +255,11 @@ RECORDER_JS = r"""
     const had = lastValues.has(key);
     lastValues.set(key, value);
     if (!had && value === "") return;
-    if (tag === "select") push("select_change", el, { value, selected: el.value, source: reason || "diff" });
-    else push("input", el, { value, source: reason || "diff" });
+    if (tag === "select" || isChoice(el)) {
+      push("select_change", el, { value: value || el.value || "on", selected: el.value || value, source: reason || "diff" });
+    } else if (isFillable(el)) {
+      push("input", el, { value, source: reason || "diff" });
+    }
   }
   function snapshotFields() {
     document.querySelectorAll("input, textarea, select").forEach((el) => noteField(el, "snapshot"));
@@ -217,10 +281,15 @@ RECORDER_JS = r"""
   hookValue(window.HTMLTextAreaElement && HTMLTextAreaElement.prototype);
   hookValue(window.HTMLSelectElement && HTMLSelectElement.prototype);
   document.addEventListener("click", (e) => {
-    if (e.target) {
+    if (!e.target) return;
+    const control = associatedControl(e.target);
+    if (control && isChoice(control)) {
+      noteField(control, "click");
       snapshotFields();
-      push("click", e.target);
+      return;
     }
+    snapshotFields();
+    push("click", e.target);
   }, true);
   document.addEventListener("input", (e) => {
     const el = associatedControl(e.target);
@@ -232,7 +301,17 @@ RECORDER_JS = r"""
   }, true);
   document.addEventListener("change", (e) => {
     const el = associatedControl(e.target);
-    if (!el || !isFillable(el)) return;
+    if (!el) return;
+    if (isChoice(el)) {
+      lastValues.set(fieldKey(el), fieldValue(el));
+      if (el.checked) {
+        push("select_change", el, { value: el.value || "on", selected: el.value || "on", source: "change" });
+      } else if ((el.getAttribute("type") || "").toLowerCase() === "checkbox") {
+        push("select_change", el, { value: "", selected: "", source: "change" });
+      }
+      return;
+    }
+    if (!isFillable(el)) return;
     const tag = (el.tagName || "").toLowerCase();
     lastValues.set(fieldKey(el), fieldValue(el));
     if (tag === "select") push("select_change", el, { value: el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value, selected: el.value, source: "change" });
@@ -334,9 +413,30 @@ def strategies_for_element(element: dict[str, Any] | None, *, include_text: bool
         seen.add(key)
         strategies.append(SelectorStrategy(type=type_, value=value, priority=priority, metadata=meta))
 
+    typ = str(element.get("type") or "").lower()
     el_id = element.get("id")
+    html_name = element.get("htmlName") or element.get("attrName")
+    el_value = element.get("value")
+    # Visible radio/checkbox labels beat a hidden input id. Prefer the label text
+    # so a later replay can choose a different option (Male vs Female).
+    if typ in {"radio", "checkbox"}:
+        label_text = str(element.get("text") or element.get("value") or "").strip()
+        if label_text:
+            add("text_exact", label_text, 8, source="radio_label_text")
+            add("xpath", f"//label[normalize-space()='{label_text}']", 8, source="radio_label_xpath")
+        if el_id:
+            add("css", f"label[for='{el_id}']", 9, source="radio_label")
     if el_id and not str(el_id).lower().endswith("label"):
         add("css", f"#{el_id}", 10, source="id")
+    for attr, key in (("data-test", "dataTest"), ("data-testid", "dataTestId"), ("data-cy", "dataCy")):
+        val = element.get(key) or element.get(attr)
+        if val:
+            add("css", f'[{attr}="{val}"]', 11, source=attr)
+    if html_name:
+        if typ in {"radio", "checkbox"} and el_value:
+            add("css", f"input[name='{html_name}'][value='{el_value}']", 12, source="name_value")
+        else:
+            add("css", f"[name='{html_name}']", 13, source="name")
     for i, sel in enumerate(element.get("associated_selectors") or []):
         add("css", sel, 8 + i, source="label_for")
     aria = element.get("ariaLabel")

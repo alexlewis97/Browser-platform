@@ -73,7 +73,7 @@ class FromTaskRequest(BaseModel):
     confirm_variables: bool | None = None
     explore: bool = True
     replay_variables: dict[str, Any] | None = None
-    max_steps: int = 40
+    max_steps: int = 50
     timeout: float = 300
 
 

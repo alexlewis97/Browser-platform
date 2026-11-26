@@ -53,6 +53,34 @@ def usage_of(payload: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+
+def items_genuinely_passed(case: dict[str, Any]) -> bool:
+    """True only when every workflow item succeeded and was not flagged."""
+
+    if case.get("status") != "succeeded":
+        return False
+    items = case.get("items") or []
+    if not items:
+        return False
+    for item in items:
+        if item.get("status") != "succeeded":
+            return False
+        verdict = item.get("validation")
+        if isinstance(verdict, dict):
+            verdict = verdict.get("verdict")
+        if verdict in {"wrong", "suspect"}:
+            return False
+    if case.get("flagged"):
+        return False
+    return True
+
+
+def write_report(report: dict[str, Any]) -> None:
+    report["finished"] = now_label()
+    REPORT.parent.mkdir(parents=True, exist_ok=True)
+    REPORT.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+
+
 def main() -> None:
     report: dict[str, Any] = {
         "started": now_label(),
@@ -130,13 +158,27 @@ def main() -> None:
 
         def chat(message: str, name: str) -> dict[str, Any]:
             t0 = time.perf_counter()
-            res = client.post(
-                f"{BACKEND}/api/chat",
-                json={"message": message, "target": "cloud", "stream": False},
-            )
+            print(f"CHAT_START {name}", flush=True)
+            try:
+                res = client.post(
+                    f"{BACKEND}/api/chat",
+                    json={"message": message, "target": "cloud", "stream": False, "confirm": True},
+                    timeout=240,
+                )
+            except Exception as exc:
+                print(f"CHAT_ERROR {name} {type(exc).__name__}: {exc}", flush=True)
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+                    "items": [],
+                    "flagged": [],
+                }
             elapsed = round((time.perf_counter() - t0) * 1000, 1)
             res.raise_for_status()
             job = res.json()
+            print(f"CHAT_DONE {name} status={job.get('status')}", flush=True)
             return {
                 "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
                 "id": job.get("id"),
@@ -251,6 +293,7 @@ def main() -> None:
                 "answer": job.get("answer"),
                 "confirm_reason": job.get("confirm_reason"),
                 "items": job.get("items") or [],
+                "flagged": job.get("flagged") or [],
                 "usage": usage_of(job),
                 "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
                 "error": job.get("error"),
@@ -289,9 +332,11 @@ def main() -> None:
                 "status": job.get("status"),
                 "answer": job.get("answer"),
                 "items": job.get("items") or [],
+                "flagged": job.get("flagged") or [],
                 "usage": usage_of(job),
                 "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
                 "error": job.get("error"),
+                "flagged": job.get("flagged") or [],
                 "confirmed": True,
             }
             confirm_if_needed(
@@ -312,9 +357,11 @@ def main() -> None:
                 "status": job.get("status"),
                 "answer": job.get("answer"),
                 "items": job.get("items") or [],
+                "flagged": job.get("flagged") or [],
                 "usage": usage_of(job),
                 "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
                 "error": job.get("error"),
+                "flagged": job.get("flagged") or [],
                 "confirmed": True,
             }
             confirm_if_needed(
@@ -328,21 +375,27 @@ def main() -> None:
             and bool(single.get("answer"))
             and any((i.get("inputs") or {}).get("team") in {"Arsenal", "arsenal"} and i.get("status") == "succeeded" for i in single.get("items") or [])
         )
-        single["ok"] = bool(single_ok)
+        single["ok"] = bool(single_ok) and items_genuinely_passed(single)
         fan = report["cases"]["fanout_compare"]
         teams = {(i.get("inputs") or {}).get("team") for i in fan.get("items") or []}
         fan["ok"] = bool(
-            fan.get("status") == "succeeded"
+            items_genuinely_passed(fan)
             and fan.get("answer")
             and {"Arsenal", "Chelsea", "Spurs"} <= teams
         )
         month_chat = report["cases"].get("month_chat") or {}
         if month_chat:
             month_chat["ok"] = bool(
-                month_chat.get("status") == "succeeded"
+                items_genuinely_passed(month_chat)
                 and month_chat.get("answer")
                 and any((i.get("inputs") or {}).get("month") in {"2026-12", "December"} or (i.get("inputs") or {}).get("team") in {"Arsenal", "arsenal"} for i in month_chat.get("items") or [])
             )
+
+        for practice in ("saucedemo_chat", "demoqa_chat", "httpbin_chat"):
+            case = report["cases"].get(practice)
+            if case:
+                case["ok"] = bool(case.get("answer")) and items_genuinely_passed(case)
+                case["items_ok"] = items_genuinely_passed(case)
 
         # Website Chat tab is present after deploy; checked separately if SITE is reachable.
         try:

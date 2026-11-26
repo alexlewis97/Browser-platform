@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,13 +19,31 @@ class _Entry:
 @dataclass
 class ResultCache:
     ttl_seconds: int = 300
-    _items: dict[tuple[str, int, str, str], _Entry] = field(default_factory=dict)
+    _items: dict[tuple[str, int, str, str, str], _Entry] = field(default_factory=dict)
 
-    def _key(self, workflow_id: str, step_index: int, url: str | None, goal: str) -> tuple[str, int, str, str]:
-        return (workflow_id, step_index, url_pattern(url), goal)
+    def _vars_part(self, variables: dict[str, Any] | None) -> str:
+        items = {str(k): str(v) for k, v in sorted((variables or {}).items()) if v is not None}
+        return json.dumps(items, sort_keys=True, ensure_ascii=False)
 
-    def get(self, workflow_id: str, step_index: int, url: str | None, goal: str) -> Any | None:
-        key = self._key(workflow_id, step_index, url, goal)
+    def _key(
+        self,
+        workflow_id: str,
+        step_index: int,
+        url: str | None,
+        goal: str,
+        variables: dict[str, Any] | None = None,
+    ) -> tuple[str, int, str, str, str]:
+        return (workflow_id, step_index, url_pattern(url), goal, self._vars_part(variables))
+
+    def get(
+        self,
+        workflow_id: str,
+        step_index: int,
+        url: str | None,
+        goal: str,
+        variables: dict[str, Any] | None = None,
+    ) -> Any | None:
+        key = self._key(workflow_id, step_index, url, goal, variables)
         entry = self._items.get(key)
         if not entry:
             return None
@@ -33,8 +52,16 @@ class ResultCache:
             return None
         return entry.value
 
-    def put(self, workflow_id: str, step_index: int, url: str | None, goal: str, value: Any) -> None:
-        self._items[self._key(workflow_id, step_index, url, goal)] = _Entry(
+    def put(
+        self,
+        workflow_id: str,
+        step_index: int,
+        url: str | None,
+        goal: str,
+        value: Any,
+        variables: dict[str, Any] | None = None,
+    ) -> None:
+        self._items[self._key(workflow_id, step_index, url, goal, variables)] = _Entry(
             value=value,
             expires_at=time.time() + self.ttl_seconds,
         )

@@ -385,3 +385,387 @@ def test_checkout_complete_does_not_require_product():
         task="Add the product {product} and check out, then finish.",
     )
     assert missing == []
+
+
+
+def test_apply_variables_rewrites_slug_in_selector():
+    from browser_platform.authoring.generalize import apply_variables_to_selector
+
+    assert apply_variables_to_selector(
+        "#add-to-cart-sauce-labs-backpack",
+        {"Sauce Labs Backpack": "product"},
+    ) == "#add-to-cart-{product|slug}"
+
+
+def test_strategies_prefer_stable_attributes():
+    from browser_platform.authoring.elements import strategies_for_element
+
+    strats = strategies_for_element(
+        {
+            "tag": "button",
+            "id": "add-to-cart-sauce-labs-backpack",
+            "dataTest": "add-to-cart-sauce-labs-backpack",
+            "htmlName": None,
+            "text": "Add to cart",
+        }
+    )
+    values = [s.value for s in strats]
+    assert values[0] == "#add-to-cart-sauce-labs-backpack"
+    assert '[data-test="add-to-cart-sauce-labs-backpack"]' in values
+
+
+def test_radio_strategies_prefer_label():
+    from browser_platform.authoring.elements import strategies_for_element
+
+    strats = strategies_for_element(
+        {
+            "tag": "input",
+            "type": "radio",
+            "id": "gender-radio-1",
+            "htmlName": "gender",
+            "value": "Male",
+            "text": "Male",
+        },
+        include_text=True,
+    )
+    values = [s.value for s in strats]
+    assert values[0] in {"Male", "label[for='gender-radio-1']", "//label[normalize-space()='Male']"}
+    assert "label[for='gender-radio-1']" in values
+    assert "input[name='gender'][value='Male']" in values
+
+
+def test_form_radio_input_is_not_junk():
+    from browser_platform.authoring.compact import _is_junk_input
+    from browser_platform.models.workflow import WorkflowStep, SelectorStrategy
+
+    step = WorkflowStep(
+        type="select_change",
+        value="{size}",
+        selectedText="{size}",
+        cssSelector="input[name='size'][value='{size}']",
+        selectorStrategies=[SelectorStrategy(type="css", value="input[name='size'][type='radio'][value='{size}']")],
+    )
+    assert _is_junk_input(step) is False
+
+
+def test_output_validate_skips_product_on_receipt():
+    from browser_platform.executor.output_validate import deterministic_verdict
+
+    result = deterministic_verdict(
+        inputs={"product": "Sauce Labs Bike Light", "first_name": "Sam", "zip": "10001"},
+        sample="Thank you for your order",
+        url="https://www.saucedemo.com/checkout-complete.html",
+        title="Checkout: Complete!",
+        action_ending=True,
+    )
+    assert result["verdict"] == "ok"
+
+
+def test_output_validate_skips_httpbin_form_fields():
+    from browser_platform.executor.output_validate import deterministic_verdict
+
+    result = deterministic_verdict(
+        inputs={"customer": "Jane Roe", "size": "medium", "toppings": "mushroom"},
+        sample="{\"custname\": \"Jane Roe\", \"size\": \"medium\", \"topping\": \"mushroom\"}",
+        url="https://httpbin.org/post",
+        title="",
+        action_ending=True,
+    )
+    assert result["verdict"] == "ok"
+
+
+def test_chat_status_is_partial_when_an_item_fails():
+    from browser_platform.orchestrator.chat import _status_from_items
+
+    compact = [
+        {"status": "succeeded", "validation": {"verdict": "ok"}},
+        {"status": "failed", "error": "no matching elements"},
+    ]
+    flagged = [{"reason": "no matching elements"}]
+    assert _status_from_items(compact, flagged) == "partial"
+    assert _status_from_items(compact[:1], []) == "succeeded"
+    assert _status_from_items([compact[1]], flagged) == "failed"
+
+
+def test_drop_spurious_checkout_query_navigation():
+    from browser_platform.authoring.compact import drop_spurious_query_navigations
+    from browser_platform.models.workflow import WorkflowStep
+
+    steps = [
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-step-one.html"),
+        WorkflowStep(type="click", target_text="Continue"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-step-one.html?firstName=Alex&lastName=Lewis"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-step-two.html"),
+        WorkflowStep(type="extract", extractionGoal="result"),
+    ]
+    out = drop_spurious_query_navigations(steps)
+    urls = [s.url for s in out if s.type == "navigation"]
+    assert urls == [
+        "https://www.saucedemo.com/checkout-step-one.html",
+        "https://www.saucedemo.com/checkout-step-two.html",
+    ]
+
+
+def test_compact_steps_drops_saucedemo_login_loops_and_stale_fills():
+    from browser_platform.authoring.compact import compact_steps
+    from browser_platform.authoring.generalize import apply_variables_to_steps
+    from browser_platform.models.workflow import WorkflowStep, SelectorStrategy
+
+    def nav(url):
+        return WorkflowStep(type="navigation", url=url)
+
+    def typ(css, value, typ="input"):
+        return WorkflowStep(type=typ, cssSelector=css, value=value, selectorStrategies=[SelectorStrategy(type="css", value=css)])
+
+    def click(css, text=""):
+        return WorkflowStep(type="click", cssSelector=css, target_text=text, selectorStrategies=[SelectorStrategy(type="css", value=css)])
+
+    steps = [
+        nav("https://www.saucedemo.com/"),
+        typ("#user-name", "standard_user"),
+        typ("#password", "secret_sauce"),
+        click("#login-button", "login-button"),
+        click("#login-button", "login-button"),
+        nav("https://www.saucedemo.com/?user-name=standard_user&password=secret_sauce"),
+        nav("https://www.saucedemo.com/"),
+        typ("#user-name", "standard_user"),
+        typ("#password", "secret_sauce"),
+        click("#login-button", "login-button"),
+        nav("https://www.saucedemo.com/inventory.html"),
+        typ('input[name="login-button"]', "Login"),
+        click("#add-to-cart-sauce-labs-backpack", "Add to cart"),
+        click('[data-test="shopping-cart-link"]', "1"),
+        nav("https://www.saucedemo.com/cart.html"),
+        click("#checkout", "Checkout"),
+        nav("https://www.saucedemo.com/checkout-step-one.html"),
+        typ("#first-name", "{first_name}"),
+        typ("#last-name", "{last_name}"),
+        typ("#postal-code", "{zip}"),
+        click("#continue", "continue"),
+        nav("https://www.saucedemo.com/checkout-step-two.html"),
+        typ('input[name="continue"]', "Continue"),
+        typ("#postal-code", "{zip}"),
+        click("#finish", "Finish"),
+        nav("https://www.saucedemo.com/checkout-complete.html"),
+        WorkflowStep(type="extract", extractionGoal="result"),
+    ]
+    out, _ = compact_steps(steps)
+    out = apply_variables_to_steps(out, {"Sauce Labs Backpack": "product"})
+    types_urls = []
+    for s in out:
+        types_urls.append((s.type, s.url or s.cssSelector, s.value))
+    urls = [s.url for s in out if s.type == "navigation"]
+    assert urls[0] == "https://www.saucedemo.com/"
+    assert "https://www.saucedemo.com/?user-name=standard_user&password=secret_sauce" not in urls
+    assert sum(1 for s in out if s.type == "navigation" and "saucedemo.com/" == (s.url or "").rstrip("/").split("://",1)[-1].split("www.")[-1] or (s.url or "").rstrip("/") in {"https://www.saucedemo.com", "https://www.saucedemo.com/"}) <= 1
+    assert not any(s.type == "input" and str(s.value).lower() in {"login", "continue"} for s in out)
+    assert not any((s.cssSelector or "") == "#postal-code" and any(x.type=="navigation" and x.url and "checkout-step-two" in x.url for x in out[:out.index(s)]) for s in out if s in out)
+    add = next(s for s in out if "add-to-cart" in (s.cssSelector or ""))
+    assert add.cssSelector == "#add-to-cart-{product|slug}"
+    assert any(s.cssSelector == "#finish" for s in out)
+
+
+def test_apply_variables_keeps_radio_value_spelling():
+    from browser_platform.authoring.generalize import apply_variables_to_selector
+
+    assert apply_variables_to_selector(
+        "input[name='gender'][value='Male']",
+        {"Male": "gender"},
+    ) == "input[name='gender'][value='{gender}']"
+    assert apply_variables_to_selector(
+        "#add-to-cart-sauce-labs-backpack",
+        {"Sauce Labs Backpack": "product"},
+    ) == "#add-to-cart-{product|slug}"
+
+
+def test_same_page_url_ignores_trailing_slash():
+    from browser_platform.executor.deterministic import _same_page_url
+
+    assert _same_page_url("https://httpbin.org/post", "https://httpbin.org/post")
+    assert _same_page_url("https://httpbin.org/post/", "https://httpbin.org/post")
+    assert not _same_page_url("https://httpbin.org/forms/post", "https://httpbin.org/post")
+    assert not _same_page_url("about:blank", "https://httpbin.org/post")
+
+
+def test_compact_drops_page_dump_clicks():
+    from browser_platform.authoring.compact import compact_steps
+    from browser_platform.models.workflow import WorkflowStep, SelectorStrategy
+
+    dump = "Open Menu Swag Labs 1 Your Cart QTYDescription 1 {product} carry.allTheThings() with the sleek, streamlined Sly Pack that melds uncompromising style with ample storage"
+    steps = [
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/cart.html"),
+        WorkflowStep(type="click", target_text=dump, cssSelector="", xpath="//", selectorStrategies=[SelectorStrategy(type="text_exact", value=dump)]),
+        WorkflowStep(type="click", cssSelector="#checkout", target_text="Checkout"),
+        WorkflowStep(type="extract", extractionGoal="result"),
+    ]
+    out, _ = compact_steps(steps)
+    assert not any((s.target_text or "").startswith("Open Menu") for s in out)
+    assert any(s.cssSelector == "#checkout" for s in out)
+
+
+def test_drop_repeated_start_ignores_malformed_checkout_query():
+    from browser_platform.authoring.compact import compact_steps
+    from browser_platform.models.workflow import WorkflowStep
+
+    steps = [
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/"),
+        WorkflowStep(type="input", cssSelector="#user-name", value="standard_user"),
+        WorkflowStep(type="input", cssSelector="#password", value="secret_sauce"),
+        WorkflowStep(type="click", cssSelector="#login-button", target_text="Login"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/inventory.html"),
+        WorkflowStep(type="click", cssSelector="#add-to-cart-{product|slug}", target_text="Add to cart"),
+        WorkflowStep(type="click", cssSelector="[data-test=shopping-cart-link]", target_text="1"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/cart.html"),
+        WorkflowStep(type="click", cssSelector="#checkout", target_text="Checkout"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-step-one.html"),
+        WorkflowStep(type="input", cssSelector="#first-name", value="{first_name}"),
+        WorkflowStep(type="input", cssSelector="#last-name", value="{last_name}"),
+        WorkflowStep(type="input", cssSelector="#postal-code", value="{zip}"),
+        WorkflowStep(type="click", cssSelector="#continue", target_text="Continue"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/?/checkout-step-two.html="),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-step-two.html"),
+        WorkflowStep(type="click", cssSelector="#finish", target_text="Finish"),
+        WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-complete.html"),
+        WorkflowStep(type="extract", extractionGoal="result"),
+    ]
+    out, _ = compact_steps(steps)
+    urls = [s.url for s in out if s.type == "navigation"]
+    assert "https://www.saucedemo.com/" in urls
+    assert "https://www.saucedemo.com/inventory.html" in urls
+    assert "https://www.saucedemo.com/?/checkout-step-two.html=" not in urls
+    assert any(s.cssSelector == "#add-to-cart-{product|slug}" for s in out)
+    assert any(s.cssSelector == "#user-name" for s in out)
+    assert out[0].type == "navigation"
+
+
+def test_classify_sort_is_not_a_filter():
+    from browser_platform.executor.verify import classify_parameter
+    from browser_platform.executor.output_validate import deterministic_verdict
+
+    assert classify_parameter("sort_products") == "form"
+    result = deterministic_verdict(
+        inputs={"sort_products": "Name (Z to A)"},
+        sample="Test.allTheThings() T-Shirt (Red) $15.99",
+        url="https://www.saucedemo.com/inventory.html",
+        title="Inventory",
+    )
+    assert result["verdict"] == "ok"
+
+
+def test_radio_label_text_from_for_attribute():
+    from browser_platform.authoring.explore_controls import radio_label_text
+
+    html = (
+        '<input type="radio" id="yesRadio" name="like" class="custom-control-input">'
+        '<label class="custom-control-label" for="yesRadio">Yes</label>'
+        '<input type="radio" id="impressiveRadio" name="like">'
+        '<label for="impressiveRadio">Impressive</label>'
+    )
+    assert radio_label_text(html, 'type="radio" id="yesRadio" name="like"') == "Yes"
+    assert radio_label_text(html, 'type="radio" id="impressiveRadio" name="like"') == "Impressive"
+
+
+def test_result_cache_keys_include_variables():
+    from browser_platform.cache.result_cache import ResultCache
+
+    cache = ResultCache(ttl_seconds=60)
+    cache.put("wf", 1, "https://www.saucedemo.com/inventory.html", "first item", "Backpack $29.99", {"sort_products": "Name (A to Z)"})
+    assert cache.get("wf", 1, "https://www.saucedemo.com/inventory.html", "first item", {"sort_products": "Name (A to Z)"}) == "Backpack $29.99"
+    assert cache.get("wf", 1, "https://www.saucedemo.com/inventory.html", "first item", {"sort_products": "Name (Z to A)"}) is None
+
+
+def test_action_cache_keys_include_variables():
+    from browser_platform.cache.action_cache import ActionCache
+    from browser_platform.models.workflow import SelectorStrategy
+
+    cache = ActionCache()
+    yes = SelectorStrategy(type="text_exact", value="Yes")
+    cache.put("wf", 1, "https://demoqa.com/radio-button", yes, {"like": "Yes"})
+    assert cache.get("wf", 1, "https://demoqa.com/radio-button", {"like": "Yes"}).value == "Yes"
+    assert cache.get("wf", 1, "https://demoqa.com/radio-button", {"like": "Impressive"}) is None
+
+
+def test_tool_quality_prefers_parameterized_stable_workflows():
+    from types import SimpleNamespace
+    from browser_platform.authoring.tools import _workflow_tool_quality
+    from browser_platform.models.workflow import WorkflowDefinition, WorkflowStep, SelectorStrategy
+
+    messy = WorkflowDefinition(
+        name="saucedemo_checkout",
+        version="1",
+        steps=[
+            WorkflowStep(type="navigation", url="https://www.saucedemo.com/"),
+            WorkflowStep(type="input", cssSelector="#user-name", value="standard_user"),
+            WorkflowStep(type="click", cssSelector="#login-button"),
+            WorkflowStep(type="click", cssSelector="#login-button"),
+            WorkflowStep(type="click", cssSelector="#add-to-cart-sauce-labs-backpack"),
+            WorkflowStep(type="input", cssSelector="#first-name", value="{first_name}"),
+            WorkflowStep(type="extract", extractionGoal="result"),
+        ],
+    )
+    clean = WorkflowDefinition(
+        name="saucedemo_checkout",
+        version="1",
+        steps=[
+            WorkflowStep(type="navigation", url="https://www.saucedemo.com/"),
+            WorkflowStep(type="input", cssSelector="#user-name", value="standard_user"),
+            WorkflowStep(type="click", cssSelector="#login-button"),
+            WorkflowStep(
+                type="click",
+                cssSelector="#add-to-cart-{product|slug}",
+                selectorStrategies=[SelectorStrategy(type="css", value="#add-to-cart-{product|slug}")],
+            ),
+            WorkflowStep(type="input", cssSelector="#first-name", value="{first_name}"),
+            WorkflowStep(type="extract", extractionGoal="result"),
+        ],
+    )
+    assert _workflow_tool_quality(SimpleNamespace(definition=clean)) > _workflow_tool_quality(SimpleNamespace(definition=messy))
+
+
+def test_action_ending_llm_cannot_downgrade_ok():
+    import asyncio
+    from browser_platform.executor import output_validate as ov
+
+    async def fake_llm(**kwargs):
+        return {"verdict": "suspect", "reason": "extract does not contain the product name"}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0, "used": True}
+
+    ov._llm_verdict = fake_llm  # type: ignore
+    ov.env_api_key = lambda: "test"  # type: ignore
+    result = asyncio.run(
+        ov.validate_output(
+            request="Checkout Bike Light for Sam",
+            inputs={"product": "Sauce Labs Bike Light", "first_name": "Sam", "zip": "10001"},
+            sample="Swag Labs",
+            url="https://www.saucedemo.com/checkout-complete.html",
+            title="Checkout: Complete!",
+            action_ending=True,
+            use_llm=True,
+        )
+    )
+    assert result["verdict"] == "ok"
+
+
+def test_is_action_ending_ignores_trailing_result_navigation():
+    from browser_platform.authoring.tools import is_action_ending
+    from browser_platform.models.workflow import WorkflowDefinition, WorkflowStep
+
+    sauce = WorkflowDefinition(
+        name="saucedemo_checkout",
+        version="1",
+        steps=[
+            WorkflowStep(type="click", cssSelector="#finish", target_text="Finish"),
+            WorkflowStep(type="navigation", url="https://www.saucedemo.com/checkout-complete.html"),
+            WorkflowStep(type="extract", extractionGoal="result"),
+        ],
+    )
+    httpbin = WorkflowDefinition(
+        name="httpbin_form_post",
+        version="1",
+        steps=[
+            WorkflowStep(type="click", cssSelector="button", target_text="Submit order"),
+            WorkflowStep(type="navigation", url="https://httpbin.org/post"),
+            WorkflowStep(type="extract", extractionGoal="result"),
+        ],
+    )
+    assert is_action_ending(sauce) is True
+    assert is_action_ending(httpbin) is True

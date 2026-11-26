@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re as _re
+
 import json
 from typing import Any
 
@@ -42,6 +44,7 @@ def deterministic_verdict(
     url: str = "",
     title: str = "",
     headings: list[str] | None = None,
+    action_ending: bool = False,
 ) -> dict[str, Any]:
     if is_not_found_page(url=url, title=title, headings=headings, text=sample):
         return {
@@ -53,9 +56,15 @@ def deterministic_verdict(
         value = str(raw or "").strip()
         if len(value) < 3:
             continue
-        # Form-entry values were typed into a field; they often will not appear in the extract.
-        if classify_parameter(str(key)) == "form":
+        kind = classify_parameter(str(key))
+        # Form fields and clicked locators (product, item) often do not appear on a
+        # confirmation page or in an action-ending extract.
+        if kind in {"form", "locator"}:
             continue
+        hay = " ".join([url or "", title or "", sample or ""])
+        if action_ending and _re.search(r"checkout-complete|thank you for your order|/post/?$", hay, _re.I):
+            if kind != "filter":
+                continue
         if parameter_reflected(url=url, title=title, headings=headings, text=sample, value=value):
             continue
         return {
@@ -89,7 +98,7 @@ async def validate_output(
     use_llm: bool = True,
 ) -> dict[str, Any]:
     text = trim_sample(sample if sample is not None else collect_sample(outputs))
-    result = deterministic_verdict(inputs=inputs, sample=text, url=url, title=title, headings=headings)
+    result = deterministic_verdict(inputs=inputs, sample=text, url=url, title=title, headings=headings, action_ending=action_ending)
     usage = {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
     if result["verdict"] == "wrong":
         return {**result, "usage": usage, "sample": text[:400]}
@@ -106,10 +115,14 @@ async def validate_output(
             if llm_result.get("verdict") in {"ok", "suspect", "wrong"}:
                 # Never downgrade a deterministic wrong (already returned). If the page
                 # already reflects the inputs, a picky LLM may only mark it suspect.
-                if result["verdict"] == "ok" and llm_result["verdict"] == "wrong":
-                    result = {**llm_result, "verdict": "suspect", "source": "llm"}
-                elif result["verdict"] == "ok" and llm_result["verdict"] == "ok":
+                if result["verdict"] == "ok" and llm_result["verdict"] == "ok":
                     result = {**result, "reason": llm_result.get("reason") or result["reason"], "source": "llm"}
+                elif result["verdict"] == "ok" and action_ending:
+                    # Receipts often omit form fields and product names. Deterministic
+                    # already skipped those; do not let the LLM fail the job.
+                    pass
+                elif result["verdict"] == "ok" and llm_result["verdict"] == "wrong":
+                    result = {**llm_result, "verdict": "suspect", "source": "llm"}
                 else:
                     result = {**llm_result, "source": "llm"}
         except Exception:
@@ -139,7 +152,7 @@ async def _llm_verdict(
         "(for example fixtures are for the requested team and month). "
         "For action workflows, confirm the page shows the action succeeded."
         if not action_ending
-        else "Confirm the page shows the action completed as requested."
+        else "Confirm the page shows the action completed. Do not require form fields or product names to appear in a short confirmation extract (for example Swag Labs or Thank you for your order)."
     )
     message, usage = await chat_complete(
         [

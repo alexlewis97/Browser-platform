@@ -87,6 +87,23 @@ class ChatJobs:
         return self._jobs.get(job_id)
 
 
+def _status_from_items(compact: list[dict[str, Any]], flagged: list[dict[str, Any]]) -> str:
+    """A chat job is not succeeded when any workflow item failed or was flagged."""
+
+    if not compact:
+        return "failed"
+    ok = [
+        item
+        for item in compact
+        if item.get("status") == "succeeded" and (item.get("validation") or {}).get("verdict") not in {"wrong", "suspect"}
+    ]
+    if ok and len(ok) == len(compact) and not flagged:
+        return "succeeded"
+    if ok:
+        return "partial"
+    return "failed"
+
+
 class ChatOrchestrator:
     def __init__(
         self,
@@ -390,6 +407,7 @@ class ChatOrchestrator:
         await _emit(emit, {"type": "item_done", "item": public_item(item), "job_id": job["id"]})
         return item
 
+
     async def synthesize(self, job: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
         compact = [compact_item(item) for item in job.get("items") or []]
         job["compact"] = compact
@@ -411,7 +429,9 @@ class ChatOrchestrator:
         fallback = _fallback_answer(job, compact)
         if not env_api_key():
             job["answer"] = fallback
-            job["status"] = "succeeded"
+            job["status"] = _status_from_items(compact, job["flagged"])
+            if job["status"] != "succeeded" and not job.get("error"):
+                job["error"] = (job["flagged"][0].get("reason") if job["flagged"] else "One or more workflow items failed.")
             await _emit(emit, {"type": "answer", "text": job["answer"], "job_id": job["id"]})
             return job
         try:
@@ -446,7 +466,9 @@ class ChatOrchestrator:
         except Exception as exc:
             job["answer"] = fallback
             job["synthesis_error"] = type(exc).__name__
-        job["status"] = "succeeded"
+        job["status"] = _status_from_items(compact, job["flagged"])
+        if job["status"] != "succeeded" and not job.get("error"):
+            job["error"] = (job["flagged"][0].get("reason") if job["flagged"] else "One or more workflow items failed.")
         await _emit(emit, {"type": "answer", "text": job["answer"], "usage": job.get("usage"), "job_id": job["id"]})
         return job
 

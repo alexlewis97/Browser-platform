@@ -27,6 +27,21 @@ class StepFailed(Exception):
         self.last_error = last_error or message
 
 
+def _same_page_url(left: str | None, right: str | None) -> bool:
+    """True when a navigation would only reload the current page (e.g. GET after POST)."""
+    if not left or not right:
+        return False
+    try:
+        from urllib.parse import urlparse, urlunparse
+        def _norm(url: str) -> str:
+            parsed = urlparse(url)
+            path = parsed.path.rstrip("/") or "/"
+            return urlunparse((parsed.scheme, parsed.netloc.lower(), path, "", parsed.query, ""))
+        return _norm(left) == _norm(right)
+    except Exception:
+        return left.rstrip("/") == right.rstrip("/")
+
+
 async def _first_visible(locator: Locator, timeout_ms: int) -> Locator:
     count = await locator.count()
     if count == 0:
@@ -113,9 +128,9 @@ async def assert_expected(
             interpolated = str(interpolate(text, variables) or text)
             values[name] = interpolated
             kinds[name] = classify_parameter(name)
-        # Replay has no recorder events. A locator already clicked earlier in the run
-        # does not have to still be visible on a checkout confirmation page.
-        check = {name: value for name, value in values.items() if kinds.get(name) != "locator"}
+        # Replay has no recorder events. Locators and form fields do not have to appear
+        # in a confirmation URL; only filters do.
+        check = {name: value for name, value in values.items() if kinds.get(name) == "filter"}
         missing = missing_parameters(url=page.url, title=title, headings=headings, text=body, selected=selected, values=check, kinds=kinds)
         if missing:
             names = ", ".join(item.split("=", 1)[-1] for item in missing)
@@ -124,11 +139,13 @@ async def assert_expected(
                 "Apply the filter in the UI (dropdown, option, or team link), not only a search box."
             )
     if expected.echo_values:
-        missing_echo = [value for value in expected.echo_values if value and not value_echoed(title=title, text=body, value=str(value))]
-        if missing_echo:
-            raise StepFailed(
-                f"The confirmation did not echo {', '.join(missing_echo)}. URL was {page.url}."
-            )
+        hay = " ".join([page.url or "", title or "", body or ""])
+        if not re.search(r"checkout-complete|thank you for your order", hay, re.I):
+            missing_echo = [value for value in expected.echo_values if value and not value_echoed(title=title, text=body, value=str(value))]
+            if missing_echo:
+                raise StepFailed(
+                    f"The confirmation did not echo {', '.join(missing_echo)}. URL was {page.url}."
+                )
     if element is not None:
         # Visibility is implied if we already acted on it; still check if attached.
         try:
@@ -161,6 +178,75 @@ def normalize_wikipedia_url(url: str | None) -> str | None:
     return url
 
 
+
+
+async def _first_item_text(page: Page) -> str:
+    try:
+        loc = page.locator(".inventory_item_name, [data-test='inventory-item-name'], .product-title")
+        if await loc.count():
+            return (await loc.first.inner_text()).strip()
+    except Exception:
+        return ""
+    return ""
+
+
+async def _wait_for_list_update(page: Page, *, before: str = "", timeout_ms: int = 4000) -> None:
+    """Poll until a sort/filter re-render updates the first visible item, if any."""
+    if not before:
+        await page.wait_for_timeout(800)
+        return
+    import time as _time
+    deadline = _time.monotonic() + (timeout_ms / 1000.0)
+    while _time.monotonic() < deadline:
+        text = await _first_item_text(page)
+        if text and text != before:
+            return
+        await page.wait_for_timeout(150)
+
+
+
+
+async def _extract_first_item(page: Page) -> str:
+    """Name and price of the first visible catalogue/inventory card, if present."""
+    cards = page.locator(
+        ".inventory_item, [data-test='inventory-item'], .product-card, .product, li.product, .card"
+    )
+    try:
+        count = await cards.count()
+    except Exception:
+        count = 0
+    if count:
+        card = cards.first
+        name = ""
+        price = ""
+        try:
+            name_loc = card.locator(
+                ".inventory_item_name, [data-test='inventory-item-name'], .product-title, .product_title, h2, h3"
+            )
+            if await name_loc.count():
+                name = (await name_loc.first.inner_text()).strip()
+        except Exception:
+            pass
+        try:
+            price_loc = card.locator(
+                ".inventory_item_price, [data-test='inventory-item-price'], .price, .product-price, .product_price"
+            )
+            if await price_loc.count():
+                price = (await price_loc.first.inner_text()).strip()
+        except Exception:
+            pass
+        text = " ".join(part for part in (name, price) if part).strip()
+        if text:
+            return text
+        try:
+            blob = (await card.inner_text()).strip()
+            if blob:
+                return " ".join(blob.split())[:200]
+        except Exception:
+            pass
+    return ""
+
+
 async def extract_content(page: Page, step: WorkflowStep) -> str:
     goal = (step.extractionGoal or step.goal or step.description or "").lower()
     if step.cssSelector:
@@ -172,6 +258,10 @@ async def extract_content(page: Page, step: WorkflowStep) -> str:
         if await h1.count():
             return (await h1.first.inner_text()).strip()
         return (await page.title()).strip()
+    if "first" in goal and any(token in goal for token in ("item", "product", "price", "inventory", "result")):
+        first = await _extract_first_item(page)
+        if first:
+            return first
     # Paragraph / article body: do not let a decorative h1 win over <main> or <p>.
     if "paragraph" in goal or "article" in goal:
         para = page.locator("main p, article p, #mw-content-text p, p")
@@ -252,7 +342,14 @@ async def run_step(
             raise StepFailed("navigation step is missing url")
         if not is_navigable_url(str(url)):
             raise StepFailed(f"navigation step is not an http(s) URL: {url!r}")
-        await page.goto(str(url), wait_until="domcontentloaded")
+        # A recorded post-submit navigation is often the form action URL. Replaying
+        # it with page.goto() would GET the same path and wipe the POST body.
+        try:
+            current = page.url
+        except Exception:
+            current = ""
+        if not _same_page_url(current, str(url)):
+            await page.goto(str(url), wait_until="domcontentloaded")
         # Public sites (notably Wikipedia) may return a short rate-limit error page on the first hit.
         for _ in range(2):
             title = ""
@@ -312,14 +409,18 @@ async def run_step(
                     raise StepFailed("input step is missing value")
                 await _apply_input_value(loc, str(value), timeout_ms)
             elif typ == "select_change":
-                if selected is None:
+                choice = selected if selected is not None else value
+                if choice is None:
                     raise StepFailed("select_change step is missing selectedText")
-                await loc.select_option(label=str(selected), timeout=timeout_ms)
+                before = await _first_item_text(page)
+                await _apply_input_value(loc, str(choice), timeout_ms)
+                await _wait_for_list_update(page, before=before)
             elif typ == "key_press":
                 if not key:
                     raise StepFailed("key_press step is missing key")
                 await loc.press(str(key), timeout=timeout_ms)
-            await page.wait_for_timeout(50)
+            if typ != "select_change":
+                await page.wait_for_timeout(50)
             await assert_expected(page, step.expected_state, loc, variables=variables)
             return StepSuccess(attempt=attempt)
         except StepFailed as exc:

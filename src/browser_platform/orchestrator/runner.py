@@ -351,7 +351,7 @@ class WorkflowRunner:
             and page.url
         ):
             goal = step.extractionGoal or step.goal or ""
-            cached_value = self.result_cache.get(workflow_id, index, page.url, goal)
+            cached_value = self.result_cache.get(workflow_id, index, page.url, goal, variables)
             if cached_value is not None:
                 started = time.perf_counter()
                 return (
@@ -362,7 +362,7 @@ class WorkflowRunner:
 
         # --- Tier 2: workflow-use deterministic replay (cache, selectors, heuristics) ---
         url_for_cache = page.url
-        cached = self.action_cache.get(workflow_id, index, url_for_cache)
+        cached = self.action_cache.get(workflow_id, index, url_for_cache, variables)
         plan = build_selector_plan(step, cached=cached)
         started = time.perf_counter()
         try:
@@ -381,10 +381,10 @@ class WorkflowRunner:
                     tier = "heuristic"
                 else:
                     tier = "selector"
-                self.action_cache.put(workflow_id, index, page.url, success.attempt.strategy)
+                self.action_cache.put(workflow_id, index, page.url, success.attempt.strategy, variables)
             if step.type in {"extract", "extract_page_content"} and definition.cache_results:
                 goal = step.extractionGoal or step.goal or ""
-                self.result_cache.put(workflow_id, index, page.url, goal, success.output)
+                self.result_cache.put(workflow_id, index, page.url, goal, success.output, variables)
             # Navigation / extract have no attempt — still workflow_use deterministic.
             if success.attempt is None and step.type in {
                 "navigation",
@@ -518,7 +518,7 @@ class WorkflowRunner:
                                 strategy=winner,
                                 reason=det_error,
                             )
-                        self.action_cache.put(workflow_id, index, page.url, winner)
+                        self.action_cache.put(workflow_id, index, page.url, winner, variables)
                     except StepFailed:
                         # Agent may already have performed the action; still write back the strategy.
                         winner = strategies[0]
@@ -581,7 +581,7 @@ class WorkflowRunner:
                     strategy=winner,
                     reason=det_error,
                 )
-            self.action_cache.put(workflow_id, index, page.url, winner)
+            self.action_cache.put(workflow_id, index, page.url, winner, variables)
             return (
                 _tel(
                     index,
@@ -800,7 +800,7 @@ class WorkflowRunner:
                 metadata={"source": source, "role": candidate.role or ""},
             )
         try:
-            self.action_cache.put(workflow_id, index, getattr(page, "url", "") or "", strategy)
+            self.action_cache.put(workflow_id, index, getattr(page, "url", "") or "", strategy, variables)
         except Exception:
             pass
         if do_write_back:

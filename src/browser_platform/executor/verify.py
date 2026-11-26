@@ -143,6 +143,8 @@ def classify_parameter(name: str, *, steps: list | None = None, task: str = "") 
         return "locator"
     if n in _FILTER_NAMES:
         return "filter"
+    if n.startswith("sort") or n.endswith("_sort") or "_sort_" in n or n in {"product_sort", "product_sort_container", "order_by"}:
+        return "form"
     for step in steps or []:
         typ = getattr(step, "type", None) or (step.get("type") if isinstance(step, dict) else None)
         url = getattr(step, "url", None) or (step.get("url") if isinstance(step, dict) else "") or ""

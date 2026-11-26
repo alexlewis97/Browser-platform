@@ -169,9 +169,11 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                 # Prefer visible label text; raw radio inputs are often not clickable.
                 cssSelector=None if kind in {"radio", "tab", "click"} else binding.get("css"),
                 selectorStrategies=[
-                    {"type": "text_exact", "value": "{" + name + "}", "priority": 20},
+                    {"type": "xpath", "value": "//label[normalize-space()='{" + name + "}']", "priority": 8},
+                    {"type": "text_exact", "value": "{" + name + "}", "priority": 10},
+                    {"type": "role_text", "value": "{" + name + "}", "priority": 15, "metadata": {"role": "radio"}},
                     {"type": "text_fuzzy", "value": "{" + name + "}", "priority": 40},
-                    *([{"type": "css", "value": binding.get("css"), "priority": 80}] if binding.get("css") else []),
+                    *([{"type": "css", "value": binding.get("css"), "priority": 80}] if binding.get("css") and "label[for]" != binding.get("css") else []),
                 ],
             )
             extract_at = next((i for i, item in enumerate(steps) if item.type in {"extract", "extract_page_content"}), len(steps))
