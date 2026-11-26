@@ -33,6 +33,7 @@ import {
   type MarketInput,
   type MarketListing,
 } from "./market";
+import { he } from "./copy/he";
 
 type Route =
   | { name: "workflows" }
@@ -101,7 +102,7 @@ function escapeHtml(value: unknown): string {
 }
 
 function fmtMs(ms?: number): string {
-  if (ms == null || Number.isNaN(ms)) return "—";
+  if (ms == null || Number.isNaN(ms)) return he.common.dash;
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
 }
@@ -116,8 +117,8 @@ function fmtTokens(step: StepTelemetry): string {
 function totalTokens(run: RunRecord): string {
   const inn = (run.steps ?? []).reduce((s, x) => s + (x.tokens_in ?? 0), 0);
   const out = (run.steps ?? []).reduce((s, x) => s + (x.tokens_out ?? 0), 0);
-  if (!inn && !out) return "0 tokens";
-  return `${inn + out} tokens`;
+  if (!inn && !out) return he.validation.zeroTokens;
+  return `${inn + out} ${he.validation.tokens}`;
 }
 
 function statusClass(status: string): string {
@@ -132,9 +133,9 @@ function isLiveStatus(status: string): boolean {
 }
 
 function reasonLabel(reason?: string): string {
-  if (reason === "ambiguous_margin") return "Close scores — pick the right match";
-  if (reason === "below_threshold") return "No confident match";
-  return "Needs confirmation";
+  if (reason === "ambiguous_margin") return he.confirm.ambiguous;
+  if (reason === "below_threshold") return he.confirm.below;
+  return he.confirm.needs;
 }
 
 function renderConfirmation(run: RunRecord, prompt: ConfirmationPrompt): string {
@@ -143,19 +144,19 @@ function renderConfirmation(run: RunRecord, prompt: ConfirmationPrompt): string 
     selectedCandidateRunId = run.id;
   }
   const src = resolveScreenshotSrc(prompt.screenshot);
-  const shot = src ? `<img class="shot" alt="Page screenshot" src="${escapeHtml(src)}" />` : "";
-  const query = prompt.query ? `“${prompt.query}”` : "this step";
-  const stepBit = [prompt.stepType, prompt.stepIndex != null ? `step ${prompt.stepIndex + 1}` : "", prompt.stepDescription].filter(Boolean).join(" · ");
+  const shot = src ? `<img class="shot" alt="${he.confirm.screenshot}" src="${escapeHtml(src)}" />` : "";
+  const query = prompt.query ? `“${prompt.query}”` : he.hitl.thisStep;
+  const stepBit = [prompt.stepType, prompt.stepIndex != null ? `${he.hitl.step} ${prompt.stepIndex + 1}` : "", prompt.stepDescription].filter(Boolean).join(" · ");
   const scores = [
-    prompt.threshold != null ? `threshold ${formatScore(prompt.threshold)}` : "",
-    prompt.margin != null ? `margin ${formatScore(prompt.margin)}` : "",
-    prompt.winnerScore != null ? `top ${formatScore(prompt.winnerScore)}` : "",
-    prompt.runnerUpScore != null ? `runner-up ${formatScore(prompt.runnerUpScore)}` : "",
+    prompt.threshold != null ? `${he.hitl.threshold} ${formatScore(prompt.threshold)}` : "",
+    prompt.margin != null ? `${he.hitl.margin} ${formatScore(prompt.margin)}` : "",
+    prompt.winnerScore != null ? `${he.hitl.top} ${formatScore(prompt.winnerScore)}` : "",
+    prompt.runnerUpScore != null ? `${he.hitl.runnerUp} ${formatScore(prompt.runnerUpScore)}` : "",
   ].filter(Boolean).join(" · ");
   const timeout = prompt.timeoutAt
-    ? `Timeout ${new Date(prompt.timeoutAt).toLocaleTimeString()} (${escapeHtml(prompt.timeoutPolicy || "fail")})`
+    ? `${he.hitl.timeout} ${new Date(prompt.timeoutAt).toLocaleTimeString("he-IL")} (${escapeHtml(prompt.timeoutPolicy || "fail")})`
     : prompt.timeoutS
-      ? `Timeout ${prompt.timeoutS}s (${escapeHtml(prompt.timeoutPolicy || "fail")})`
+      ? `${he.hitl.timeout} ${prompt.timeoutS}s (${escapeHtml(prompt.timeoutPolicy || "fail")})`
       : "";
   const cards = prompt.candidates.length
     ? prompt.candidates
@@ -172,19 +173,19 @@ function renderConfirmation(run: RunRecord, prompt: ConfirmationPrompt): string 
           </button>`;
         })
         .join("")
-    : `<p class="muted">No candidates were included with this prompt yet.</p>`;
+    : `<p class="muted">${he.hitl.noCandidates}</p>`;
   return `<div class="card confirm-panel" id="hitl-panel" data-run-id="${escapeHtml(run.id)}" data-prompt-id="${escapeHtml(prompt.id)}">
     <p class="eyebrow">${escapeHtml(reasonLabel(prompt.reason))}${prompt.hitlMode ? " · " + escapeHtml(prompt.hitlMode) : ""}</p>
-    <h2>Choose a match for ${escapeHtml(query)}</h2>
-    <p class="sub">${escapeHtml(prompt.message || "Pick the element this step should use, then confirm.")}</p>
+    <h2>${he.hitl.chooseMatch} ${escapeHtml(query)}</h2>
+    <p class="sub">${escapeHtml(prompt.message || he.confirm.pick)}</p>
     ${stepBit ? `<div class="meta">${escapeHtml(stepBit)}</div>` : ""}
     ${scores ? `<div class="meta">${escapeHtml(scores)}</div>` : ""}
     ${timeout ? `<div class="meta">${timeout}</div>` : ""}
     ${shot}
     <div class="candidates">${cards}</div>
     <div class="btn-row">
-      <button type="button" class="btn danger" data-action="hitl-cancel">Cancel</button>
-      <button type="button" class="btn primary" data-action="hitl-confirm" ${selectedCandidateId ? "" : "disabled"}>Confirm</button>
+      <button type="button" class="btn danger" data-action="hitl-cancel">${he.confirm.cancel}</button>
+      <button type="button" class="btn primary" data-action="hitl-confirm" ${selectedCandidateId ? "" : "disabled"}>${he.confirm.confirm}</button>
     </div>
     <div id="hitl-status" style="margin-top:12px"></div>
   </div>`;
@@ -194,10 +195,10 @@ function shell(title: string, eyebrow: string, body: string, subtitle = ""): str
   const settings = loadSettings();
   const ready = settingsComplete(settings);
   const pill = connected
-    ? `<span class="pill ok"><span class="dot"></span>backend</span>`
+    ? `<span class="pill ok"><span class="dot"></span>${he.status.connected}</span>`
     : ready
-      ? `<span class="pill"><span class="dot"></span>checking</span>`
-      : `<span class="pill bad"><span class="dot"></span>setup needed</span>`;
+      ? `<span class="pill"><span class="dot"></span>${he.status.checking}</span>`
+      : `<span class="pill bad"><span class="dot"></span>${he.status.setupNeeded}</span>`;
   return `
     <div class="shell">
       <header class="top">
@@ -219,14 +220,14 @@ function nav(): string {
   const active = (name: string) => (route.name === name || (name === "workflows" && route.name === "workflow") || (name === "workflows" && route.name === "new") || (name === "runs" && route.name === "run") || (name === "mint" && (route.name === "mint" || route.name === "mint-job")) || (name === "from-task" && (route.name === "from-task" || route.name === "from-task-job")) || (name === "record" && route.name === "record") || (name === "marketplace" && route.name === "marketplace") ? "active" : "");
   return `
     <nav class="nav">
-      <a href="#/workflows" class="${active("workflows")}">${ICONS.workflows}Workflows</a>
-      <a href="#/from-task" class="${active("from-task")}">${ICONS.fromTask}From task</a>
-      <a href="#/record" class="${active("record")}">${ICONS.record}Record</a>
-      <a href="#/chat" class="${active("chat")}">${ICONS.chat}Chat</a>
-      <a href="#/runs" class="${active("runs")}">${ICONS.runs}Runs</a>
-      <a href="#/mint" class="${active("mint")}">${ICONS.mint}Mint</a>
-      <a href="#/marketplace" class="${active("marketplace")}">${ICONS.market}Market</a>
-      <a href="#/settings" class="${active("settings")}">${ICONS.settings}Settings</a>
+      <a href="#/workflows" class="${active("workflows")}">${ICONS.workflows}${he.nav.workflows}</a>
+      <a href="#/from-task" class="${active("from-task")}">${ICONS.fromTask}${he.nav.fromTask}</a>
+      <a href="#/record" class="${active("record")}">${ICONS.record}${he.nav.record}</a>
+      <a href="#/chat" class="${active("chat")}">${ICONS.chat}${he.nav.chat}</a>
+      <a href="#/runs" class="${active("runs")}">${ICONS.runs}${he.nav.runs}</a>
+      <a href="#/mint" class="${active("mint")}">${ICONS.mint}${he.nav.mint}</a>
+      <a href="#/marketplace" class="${active("marketplace")}">${ICONS.market}${he.nav.market}</a>
+      <a href="#/settings" class="${active("settings")}">${ICONS.settings}${he.nav.settings}</a>
     </nav>
   `;
 }
@@ -235,11 +236,11 @@ function needSetup(): string | null {
   const s = loadSettings();
   if (!settingsComplete(s)) {
     return shell(
-      "Connect the backend",
-      "Setup",
+      he.setup.title,
+      he.setup.eyebrow,
       `<div class="card">
-        <p class="sub" style="margin-top:0">This phone page is the remote control. The browser still runs on the box. Add the tunnel URL and the shared access token to get started. Your OpenRouter key stays in this browser only.</p>
-        <div style="margin-top:16px"><a class="btn primary" href="#/settings">Open settings</a></div>
+        <p class="sub" style="margin-top:0">${he.setup.body}</p>
+        <div style="margin-top:16px"><a class="btn primary" href="#/settings">${he.setup.openSettings}</a></div>
       </div>`,
     );
   }
@@ -250,13 +251,13 @@ async function ping(): Promise<void> {
   const s = loadSettings();
   if (!s.backendUrl) {
     connected = false;
-    lastConnectError = "No backend URL yet. Refresh to rediscover the tunnel, or add one in Settings.";
+    lastConnectError = he.connect.noUrl;
     return;
   }
   try {
     const result = await api.health(s);
     connected = Boolean(result.ok);
-    lastConnectError = connected ? null : "The backend answered but did not report healthy.";
+    lastConnectError = connected ? null : he.connect.notHealthy;
   } catch (err) {
     connected = false;
     lastConnectError = err instanceof Error ? err.message : String(err);
@@ -270,7 +271,7 @@ function bannerError(err: unknown): string {
 
 function backendDownBanner(): string {
   if (connected || !settingsComplete(loadSettings())) return "";
-  const detail = lastConnectError || "Can't reach the backend.";
+  const detail = lastConnectError || he.connectErrors.cantReach;
   return `<div class="banner err">${escapeHtml(detail)}</div>`;
 }
 
@@ -278,7 +279,7 @@ async function renderWorkflows(): Promise<string> {
   const setup = needSetup();
   if (setup) return setup;
   if (!connected) {
-    return shell("Workflows", "Saved automations", `${backendDownBanner()}<div class="card"><p class="sub" style="margin:0">The site can't list workflows until it reconnects to the backend. Refresh this page to pick up a new tunnel URL, or check Settings.</p></div>`);
+    return shell(he.workflows.title, he.workflows.eyebrowSaved, `${backendDownBanner()}<div class="card"><p class="sub" style="margin:0">${he.workflows.down}</p></div>`);
   }
   try {
     const { workflows } = await api.listWorkflows();
@@ -293,30 +294,30 @@ async function renderWorkflows(): Promise<string> {
                   <strong>${escapeHtml(w.name)}</strong>
                   <div class="meta">v${escapeHtml(w.version)} · ${escapeHtml(w.id.slice(0, 8))}</div>
                 </div>
-                <span class="muted">Open</span>
+                <span class="muted">${he.common.open}</span>
               </div>
             </a>
             <div class="btn-row" style="margin-top:10px">
-              <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(w.id)}">Publish to marketplace</button>
+              <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.publish}</button>
             </div>
           </div>`,
           )
           .join("")
-      : `<div class="card empty">No workflows yet. Create one, or start with the example.com smoke test.</div>`;
+      : `<div class="card empty">${he.workflows.empty}</div>`;
     return shell(
-      "Workflows",
-      "Library",
+      he.workflows.title,
+      he.workflows.eyebrow,
       `${list}
        <div class="btn-row" style="margin-top:14px">
-         <a class="btn" href="#/workflows/new">New workflow</a>
-         <a class="btn primary" href="#/from-task">Create from task</a>
-         <a class="btn" href="#/record">Record</a>
-         <button class="btn wide" data-action="seed-example">Add example.com</button>
+         <a class="btn" href="#/workflows/new">${he.workflows.new}</a>
+         <a class="btn primary" href="#/from-task">${he.workflows.fromTask}</a>
+         <a class="btn" href="#/record">${he.workflows.record}</a>
+         <button class="btn wide" data-action="seed-example">${he.workflows.seed}</button>
        </div>`,
-      "Run a saved workflow against the box browser.",
+      he.workflows.subtitle,
     );
   } catch (err) {
-    return shell("Workflows", "Library", `${bannerError(err)}<a class="btn" href="#/settings">Check settings</a>`);
+    return shell(he.workflows.title, he.workflows.eyebrow, `${bannerError(err)}<a class="btn" href="#/settings">${he.workflows.checkSettings}</a>`);
   }
 }
 
@@ -324,33 +325,33 @@ async function renderNew(): Promise<string> {
   const setup = needSetup();
   if (setup) return setup;
   return shell(
-    "New workflow",
-    "Create",
+    he.newWorkflow.title,
+    he.newWorkflow.eyebrow,
     `<form id="create-form" class="card">
-      <label class="field"><span>Name</span><input name="name" type="text" required placeholder="example_com_heading" /></label>
-      <label class="field"><span>Description</span><input name="description" type="text" placeholder="What this does" /></label>
-      <label class="field"><span>Paste workflow JSON</span>
+      <label class="field"><span>${he.newWorkflow.name}</span><input name="name" type="text" required placeholder="example_com_heading" /></label>
+      <label class="field"><span>${he.newWorkflow.description}</span><input name="description" type="text" placeholder="${he.newWorkflow.descriptionPh}" /></label>
+      <label class="field"><span>${he.newWorkflow.pasteJson}</span>
         <textarea name="json" placeholder='{"name":"...","steps":[{"type":"navigation","url":"https://example.com"},{"type":"extract","extractionGoal":"the page title","output":"heading"}]}'></textarea>
       </label>
-      <p class="muted" style="margin-top:-4px">Must end with an extract step. You can also leave the JSON blank and use the simple fields below.</p>
-      <label class="field"><span>Or just a URL to open</span><input name="url" type="url" placeholder="https://example.com" /></label>
-      <label class="field"><span>Extract goal</span><input name="goal" type="text" placeholder="the main heading" /></label>
-      <button class="btn primary" type="submit">Create</button>
+      <p class="muted" style="margin-top:-4px">${he.newWorkflow.jsonHint}</p>
+      <label class="field"><span>${he.newWorkflow.orUrl}</span><input name="url" type="url" placeholder="https://example.com" /></label>
+      <label class="field"><span>${he.newWorkflow.extract}</span><input name="goal" type="text" placeholder="${he.newWorkflow.mainHeading}" /></label>
+      <button class="btn primary" type="submit">${he.newWorkflow.create}</button>
     </form>`,
   );
 }
 
 
 const INPUT_LABELS: Record<string, string> = {
-  term: "Search term",
-  query: "Search query",
-  q: "Search query",
-  search: "Search term",
-  name: "Name",
-  status: "Status",
-  url: "URL",
-  email: "Email",
-  title: "Title",
+  term: he.labels.term,
+  query: he.labels.query,
+  q: he.labels.q,
+  search: he.labels.search,
+  name: he.labels.name,
+  status: he.labels.status,
+  url: he.labels.url,
+  email: he.labels.email,
+  title: he.labels.title,
 };
 const RESERVED_RUN_FIELDS = new Set(["hitl_mode", "instructions"]);
 
@@ -359,7 +360,7 @@ function prettyInputLabel(name: string, label?: string): string {
   const key = (name || "").trim();
   if (INPUT_LABELS[key.toLowerCase()]) return INPUT_LABELS[key.toLowerCase()];
   const text = key.replace(/_/g, " ").trim();
-  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "Input";
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : he.labels.input;
 }
 
 function placeholdersIn(value: unknown, found: string[] = []): string[] {
@@ -414,7 +415,7 @@ function deriveWorkflowInputs(def: WorkflowDefinition): WorkflowInput[] {
 
 function renderRunInputs(id: string, inputs: WorkflowInput[]): string {
   if (!inputs.length) {
-    return `<p class="muted" style="margin-top:0">This workflow has no variables.</p>`;
+    return `<p class="muted" style="margin-top:0">${he.runPage.noVariables}</p>`;
   }
   const lastUsed = loadRunInputs(id);
   return inputs
@@ -423,9 +424,9 @@ function renderRunInputs(id: string, inputs: WorkflowInput[]): string {
       const saved = lastUsed[input.name];
       const value = saved != null ? saved : "";
       const example = input.default == null ? "" : String(input.default);
-      const hint = input.description || (example ? `Example: ${example}` : "");
+      const hint = input.description || (example ? `${he.runPage.examplePrefix} ${example}` : "");
       return `<label class="field">
-        <span>${escapeHtml(label)} <span class="muted">required</span></span>
+        <span>${escapeHtml(label)} <span class="muted">${he.workflow.required}</span></span>
         <input name="${escapeHtml(input.name)}" type="text" required value="${escapeHtml(value)}" placeholder="${escapeHtml(example)}" autocomplete="off" />
         ${hint ? `<span class="muted">${escapeHtml(hint)}</span>` : ""}
       </label>`;
@@ -455,38 +456,38 @@ async function renderWorkflow(id: string): Promise<string> {
       .join("");
     return shell(
       escapeHtml(def.name),
-      "Workflow",
+      he.workflow.title,
       `<div class="card">
-        <p class="sub" style="margin:0 0 12px">${escapeHtml(def.description || "No description")}</p>
+        <p class="sub" style="margin:0 0 12px">${escapeHtml(def.description || he.workflows.noDescription)}</p>
         <div class="mono muted">id ${escapeHtml(stored.id)} · v${escapeHtml(def.version || "1")}</div>
         <div style="margin-top:14px">${steps}</div>
-        ${typeof def.mint_job_id === "string" && def.mint_job_id ? `<p style="margin:16px 0 0"><a class="btn" href="#/mint/${encodeURIComponent(String(def.mint_job_id))}">Mint trace</a></p>` : ""}
+        ${typeof def.mint_job_id === "string" && def.mint_job_id ? `<p style="margin:16px 0 0"><a class="btn" href="#/mint/${encodeURIComponent(String(def.mint_job_id))}">${he.workflow.mintTrace}</a></p>` : ""}
         <div class="btn-row" style="margin-top:14px">
-          <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(stored.id)}">Publish to marketplace</button>
+          <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(stored.id)}">${he.workflows.publish}</button>
         </div>
       </div>
       <form id="run-form" class="card" data-id="${escapeHtml(stored.id)}">
-        <h2 style="margin:0 0 12px;font-size:1.05rem">Run</h2>
+        <h2 style="margin:0 0 12px;font-size:1.05rem">${he.workflow.run}</h2>
         ${fields}
-        <label class="field"><span>When a match is uncertain (hitl_mode)</span>
+        <label class="field"><span>${he.runPage.hitlMode}</span>
           <select name="hitl_mode">
             ${HITL_MODES.map((mode) => {
               const current = String((def as { hitl?: { mode?: string } }).hitl?.mode || "always_on_uncertain");
               const labels: Record<string, string> = {
-                always_on_uncertain: "always_on_uncertain — pause for a person",
-                llm_then_human: "llm_then_human — try AI first, then pause",
-                llm_only: "llm_only — never pause, use AI",
+                always_on_uncertain: he.hitlModes.always,
+                llm_then_human: he.hitlModes.llmThenHuman,
+                llm_only: he.hitlModes.llmOnly,
               };
               const selected = current === mode ? "selected" : "";
               return `<option value="${mode}" ${selected}>${labels[mode]}</option>`;
             }).join("")}
           </select>
         </label>
-        <button class="btn primary" type="submit">Run now</button>
+        <button class="btn primary" type="submit">${he.runPage.runNow}</button>
       </form>`,
     );
   } catch (err) {
-    return shell("Workflow", "Error", bannerError(err));
+    return shell(he.workflow.title, he.workflows.error, bannerError(err));
   }
 }
 
@@ -500,7 +501,7 @@ function renderStep(step: StepTelemetry, pending = false): string {
         <strong>${escapeHtml(step.step_type)}${step.description ? " · " + escapeHtml(step.description) : ""}</strong>
         <div class="meta">${fmtMs(step.latency_ms)} · ${fmtTokens(step)}${step.resolution ? " · " + escapeHtml(step.resolution) : ""}${step.error ? " · " + escapeHtml(step.error) : ""}</div>
       </div>
-      ${step.tier ? `<span class="tier ${escapeHtml(step.tier)}">${escapeHtml(step.tier)}</span>` : `<span class="tier">${pending ? "running" : "—"}</span>`}
+      ${step.tier ? `<span class="tier ${escapeHtml(step.tier)}">${escapeHtml(step.tier)}</span>` : `<span class="tier">${pending ? he.runPage.runningTier : he.common.dash}</span>`}
     </div>`;
 }
 
@@ -510,35 +511,35 @@ function runView(run: RunRecord): string {
     run.started_at && run.finished_at
       ? fmtMs(new Date(run.finished_at).getTime() - new Date(run.started_at).getTime())
       : live
-        ? "in progress"
-        : "—";
-  const steps = (run.steps ?? []).map((s) => renderStep(s)).join("") || `<p class="muted">Waiting for the first step…</p>`;
+        ? he.runPage.inProgress
+        : he.common.dash;
+  const steps = (run.steps ?? []).map((s) => renderStep(s)).join("") || `<p class="muted">${he.runPage.waitingStep}</p>`;
   const outputs = run.outputs && Object.keys(run.outputs).length
     ? `<pre class="output">${escapeHtml(JSON.stringify(run.outputs, null, 2))}</pre>`
-    : `<p class="muted">No outputs yet.</p>`;
+    : `<p class="muted">${he.runPage.noOutputs}</p>`;
   const prompt = extractConfirmation(run);
   const confirm = prompt ? renderConfirmation(run, prompt) : "";
   const spin = live ? ' <span class="spinner"></span>' : "";
   return shell(
-    escapeHtml(run.workflow_name || "Run"),
-    "Live run",
+    escapeHtml(run.workflow_name || he.workflow.run),
+    he.runPage.live,
     `${confirm}<div class="card">
       <div class="row">
         <span class="pill ${statusClass(run.status)}"><span class="dot"></span>${escapeHtml(run.status)}${spin}</span>
         <span class="mono muted">${escapeHtml(run.id.slice(0, 10))}</span>
       </div>
       <div class="status-grid">
-        <div class="stat"><b>${escapeHtml(duration)}</b><span>Duration</span></div>
-        <div class="stat"><b>${escapeHtml(totalTokens(run))}</b><span>Tokens</span></div>
+        <div class="stat"><b>${escapeHtml(duration)}</b><span>${he.runPage.duration}</span></div>
+        <div class="stat"><b>${escapeHtml(totalTokens(run))}</b><span>${he.runPage.tokens}</span></div>
       </div>
       ${run.error ? `<div class="banner err" style="margin:12px 0 0">${escapeHtml(run.error)}</div>` : ""}
       <div style="margin-top:16px">${steps}</div>
     </div>
     <div class="card">
-      <h2 style="margin:0 0 10px;font-size:1.05rem">Outputs</h2>
+      <h2 style="margin:0 0 10px;font-size:1.05rem">${he.runPage.outputs}</h2>
       ${outputs}
     </div>`,
-    run.model ? `Model for repairs: ${escapeHtml(run.model)}` : "Deterministic first, AI only if a step breaks.",
+    run.model ? `${he.runs.modelRepairs} ${escapeHtml(run.model)}` : he.runs.deterministic,
   );
 }
 
@@ -549,7 +550,7 @@ async function renderRun(id: string): Promise<string> {
     const run = await api.getRun(id);
     return runView(run);
   } catch (err) {
-    return shell("Run", "Error", bannerError(err));
+    return shell(he.workflow.run, he.workflows.error, bannerError(err));
   }
 }
 
@@ -561,7 +562,7 @@ async function renderRuns(): Promise<string> {
     const list = runs.length
       ? runs
           .map((run) => {
-            const when = run.started_at ? new Date(run.started_at).toLocaleString() : "";
+            const when = run.started_at ? new Date(run.started_at).toLocaleString("he-IL") : "";
             return `<a class="card card-link" href="#/runs/${encodeURIComponent(run.id)}">
               <div class="row">
                 <div class="grow">
@@ -573,10 +574,10 @@ async function renderRuns(): Promise<string> {
             </a>`;
           })
           .join("")
-      : `<div class="card empty">No runs yet. Open a workflow and press Run now.</div>`;
-    return shell("Run history", "Telemetry", list, "Per-step tier, latency and tokens from earlier jobs.");
+      : `<div class="card empty">${he.runPage.runHistoryEmpty}</div>`;
+    return shell(he.runs.title, he.runs.eyebrow, list, he.runs.subtitle);
   } catch (err) {
-    return shell("Run history", "Telemetry", bannerError(err));
+    return shell(he.runs.title, he.runs.eyebrow, bannerError(err));
   }
 }
 
@@ -603,7 +604,7 @@ function mintStatusLabel(job: MintJob): string {
 function fmtWhen(value?: string | null): string {
   if (!value) return "";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("he-IL");
 }
 
 function renderMintStep(step: MintTraceStep): string {
@@ -627,34 +628,34 @@ function mintJobView(job: MintJob): string {
   const id = mintJobId(job);
   const live = isLiveMint(job.status);
   const steps = mintSteps(job);
-  const timeline = steps.map(renderMintStep).join("") || `<p class="muted">${live ? "Waiting for the first mint event…" : "No trace steps were saved."}</p>`;
+  const timeline = steps.map(renderMintStep).join("") || `<p class="muted">${live ? he.mint.waiting : he.mint.noSteps}</p>`;
   const partial = job.partial || job.trace?.partial;
   const duration =
     job.started_at && job.finished_at
       ? fmtMs(new Date(job.finished_at).getTime() - new Date(job.started_at).getTime())
       : live
-        ? "in progress"
-        : "—";
+        ? he.runPage.inProgress
+        : he.common.dash;
   const workflow = job.workflow && typeof job.workflow === "object" ? job.workflow : null;
   const workflowId = workflow?.id || (typeof job.workflow_id === "string" ? job.workflow_id : "");
   const spin = live ? ' <span class="spinner"></span>' : "";
   const banner = partial
-    ? `<div class="banner info" style="margin:0 0 12px">This trace is partial — reconstructed from saved artifacts and the mint report. Mid-mint tool calls, stdout/stderr, and Guardian step logs were not captured live.</div>`
+    ? `<div class="banner info" style="margin:0 0 12px">${he.mintExtra.partialBanner}</div>`
     : "";
   const wfLink = workflowId
-    ? `<a class="btn" href="#/workflows/${encodeURIComponent(workflowId)}">Open workflow</a>`
+    ? `<a class="btn" href="#/workflows/${encodeURIComponent(workflowId)}">${he.mint.openWorkflow}</a>`
     : "";
   return shell(
-    escapeHtml(job.name || "Mint"),
-    "Mint trace",
+    escapeHtml(job.name || he.mint.title),
+    he.mint.trace,
     `${banner}<div class="card">
       <div class="row">
         <span class="pill ${statusClass(mintStatusLabel(job))}"><span class="dot"></span>${escapeHtml(mintStatusLabel(job))}${spin}</span>
         <span class="mono muted">${escapeHtml(id.slice(0, 10))}</span>
       </div>
       <div class="status-grid">
-        <div class="stat"><b>${escapeHtml(duration)}</b><span>Duration</span></div>
-        <div class="stat"><b>${steps.length}</b><span>Events</span></div>
+        <div class="stat"><b>${escapeHtml(duration)}</b><span>${he.mintExtra.duration}</span></div>
+        <div class="stat"><b>${steps.length}</b><span>${he.mintExtra.events}</span></div>
       </div>
       ${job.intent ? `<p class="sub" style="margin:12px 0 0">${escapeHtml(job.intent)}</p>` : ""}
       ${job.url ? `<div class="meta" style="margin-top:8px">${escapeHtml(job.url)}</div>` : ""}
@@ -662,10 +663,10 @@ function mintJobView(job: MintJob): string {
       <div style="margin-top:16px">${timeline}</div>
     </div>
     <div class="row" style="margin-top:12px;gap:8px">
-      <a class="btn" href="#/mint">All mints</a>
+      <a class="btn" href="#/mint">${he.mint.all}</a>
       ${wfLink}
     </div>`,
-    live ? "Live mint — this timeline updates as Pomerado reports progress." : job.trace_source === "backfill" || partial ? "Backfilled from saved Pomerado artifacts." : "Official Pomerado mint trace.",
+    live ? he.mint.live : job.trace_source === "backfill" || partial ? he.mint.backfill : he.mint.official,
   );
 }
 
@@ -692,12 +693,12 @@ async function renderMint(): Promise<string> {
           const id = mintJobId(job);
           const when = fmtWhen(job.started_at);
           const count = job.step_count ?? mintSteps(job).length;
-          const partial = job.partial ? " · partial" : "";
+          const partial = job.partial ? he.mintExtra.partial : "";
           return `<a class="card card-link" href="#/mint/${encodeURIComponent(id)}">
             <div class="row">
               <div class="grow">
-                <strong>${escapeHtml(job.name || id || "Mint")}</strong>
-                <div class="meta">${escapeHtml(when)}${when && count ? " · " : ""}${count ? escapeHtml(String(count) + " events") : ""}${escapeHtml(partial)}</div>
+                <strong>${escapeHtml(job.name || id || he.mint.title)}</strong>
+                <div class="meta">${escapeHtml(when)}${when && count ? " · " : ""}${count ? escapeHtml(String(count) + " " + he.mintExtra.events) : ""}${escapeHtml(partial)}</div>
               </div>
               <span class="pill ${statusClass(mintStatusLabel(job))}">${escapeHtml(mintStatusLabel(job))}</span>
             </div>
@@ -706,38 +707,38 @@ async function renderMint(): Promise<string> {
         .join("")
     : listError
       ? bannerError(listError)
-      : `<div class="card empty">No mint jobs yet. Start one below — the trace will show up here the same way a run does.</div>`;
+      : `<div class="card empty">${he.mintExtra.emptyJobs}</div>`;
   return shell(
-    "Mint a Pomerado tool",
-    "Deterministic",
-    `${!openaiConfigured ? `<div class="banner info">Add an OpenAI key in <a href="#/settings">Settings</a> before minting. It stays on this computer and is never written to the zip or logs.</div>` : ""}
+    he.mint.title,
+    he.mintExtra.deterministic,
+    `${!openaiConfigured ? `<div class="banner info">${he.mint.needOpenai}<a href="#/settings">${he.nav.settings}</a>${he.mint.beforeMint}</div>` : ""}
     ${list}
     <form id="mint-form" class="card">
-      <p class="sub" style="margin-top:0">Pomerado explores a site once with the OpenAI key saved in Settings, then later runs cost no tokens. This can take a while. Open a job to watch its trace, like a workflow run.</p>
-      <label class="field"><span>Tool name</span><input name="name" required type="text" placeholder="example_reader" /></label>
-      <label class="field"><span>URL</span><input name="url" required type="url" placeholder="https://example.com" /></label>
-      <label class="field"><span>Intent</span><textarea name="intent" required placeholder="Read the main heading" style="min-height:88px;font-family:var(--font);font-size:16px"></textarea></label>
-      <label class="field"><span>Effect</span>
+      <p class="sub" style="margin-top:0">${he.mintExtra.mintBody}</p>
+      <label class="field"><span>${he.mintExtra.toolName}</span><input name="name" required type="text" placeholder="example_reader" /></label>
+      <label class="field"><span>${he.labels.url}</span><input name="url" required type="url" placeholder="https://example.com" /></label>
+      <label class="field"><span>${he.mint.intent}</span><textarea name="intent" required placeholder="${he.mint.intentPh}" style="min-height:88px;font-family:var(--font);font-size:16px"></textarea></label>
+      <label class="field"><span>${he.mintExtra.effect}</span>
         <select name="effect">
           <option value="read" selected>read</option>
           <option value="write">write</option>
         </select>
       </label>
       <div class="field">
-        <span>Inputs</span>
-        <p class="muted" style="margin:0 0 8px">Named values the minted tool should ask for on every run (for example a search term). You can rename or add more after you start, and they become required fields on the Run screen.</p>
+        <span>${he.mint.inputs}</span>
+        <p class="muted" style="margin:0 0 8px">${he.mintExtra.inputsHelp}</p>
         <div id="mint-inputs" class="var-list">
           <label class="var-row">
-            <input type="text" name="input-name-0" value="term" placeholder="name" aria-label="Input name" />
-            <input type="text" name="input-example-0" value="" placeholder="example value" aria-label="Example value" />
+            <input type="text" name="input-name-0" value="term" placeholder="name" aria-label="${he.aria.inputName}" />
+            <input type="text" name="input-example-0" value="" placeholder="${he.mint.exampleValue}" aria-label="${he.aria.exampleValue}" />
           </label>
         </div>
-        <button type="button" class="btn" data-action="mint-add-input">Add input</button>
+        <button type="button" class="btn" data-action="mint-add-input">${he.mintExtra.addInput}</button>
       </div>
-      <button class="btn primary" type="submit">Start mint</button>
+      <button class="btn primary" type="submit">${he.mintExtra.startMint}</button>
     </form>
     <div id="mint-status"></div>`,
-    "Past mint jobs and a live timeline of the one you open.",
+    he.mint.subtitle,
   );
 }
 
@@ -748,7 +749,7 @@ async function renderMintJob(id: string): Promise<string> {
     const job = await api.getMintJob(id);
     return mintJobView(job);
   } catch (err) {
-    return shell("Mint", "Error", `${bannerError(err)}<a class="btn" href="#/mint">All mints</a>`);
+    return shell(he.nav.mint, he.workflows.error, `${bannerError(err)}<a class="btn" href="#/mint">${he.mint.all}</a>`);
   }
 }
 
@@ -756,34 +757,34 @@ async function renderMintJob(id: string): Promise<string> {
 function formatMarketDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value || "";
-  return date.toLocaleString();
+  return date.toLocaleString("he-IL");
 }
 
 function inputSummary(listing: MarketListing): string {
-  if (!listing.inputs.length) return "No declared inputs";
+  if (!listing.inputs.length) return he.market.noInputs;
   return listing.inputs
     .map((input) => {
       const label = input.label || input.name;
-      return input.required === false ? label : `${label} (required)`;
+      return input.required === false ? label : `${label} ${he.marketExtra.requiredParen}`;
     })
     .join(", ");
 }
 
 function listingCard(listing: MarketListing): string {
   const warning = listing.contains_code
-    ? `<div class="banner info" style="margin-top:10px">This package contains executable automation code. Review it before running.</div>`
+    ? `<div class="banner info" style="margin-top:10px">${he.marketExtra.codeWarning}</div>`
     : "";
   const download = packageUrl(listing.id);
   return `<article class="card" data-listing-id="${escapeHtml(listing.id)}">
     <h2 style="margin:0 0 6px;font-size:1.05rem">${escapeHtml(listing.name)}</h2>
     <div class="mono muted">${escapeHtml(listing.type)}${listing.tier && listing.tier !== listing.type ? ` · ${escapeHtml(listing.tier)}` : ""} · v${escapeHtml(listing.version)} · ${escapeHtml(formatMarketDate(listing.created_at))}</div>
-    <p class="sub" style="margin:10px 0">${escapeHtml(listing.description || "No description")}</p>
-    <p class="muted" style="margin:0">Inputs: ${escapeHtml(inputSummary(listing))}</p>
+    <p class="sub" style="margin:10px 0">${escapeHtml(listing.description || he.workflows.noDescription)}</p>
+    <p class="muted" style="margin:0">${he.marketExtra.inputsLabel} ${escapeHtml(inputSummary(listing))}</p>
     <p class="mono muted" style="margin:8px 0 0;word-break:break-all">sha256 ${escapeHtml(listing.sha256)}</p>
     ${warning}
     <div class="btn-row" style="margin-top:14px">
-      <a class="btn" href="${escapeHtml(download)}" data-action="market-download" data-id="${escapeHtml(listing.id)}">Download package</a>
-      <button type="button" class="btn danger" data-action="market-delete" data-id="${escapeHtml(listing.id)}">Delete</button>
+      <a class="btn" href="${escapeHtml(download)}" data-action="market-download" data-id="${escapeHtml(listing.id)}">${he.marketExtra.downloadPackage}</a>
+      <button type="button" class="btn danger" data-action="market-delete" data-id="${escapeHtml(listing.id)}">${he.market.delete}</button>
     </div>
   </article>`;
 }
@@ -792,11 +793,11 @@ async function renderMarketplace(): Promise<string> {
   const s = loadSettings();
   if (!s.accessToken) {
     return shell(
-      "Marketplace",
-      "Private automations",
+      he.market.title,
+      he.market.eyebrow,
       `<div class="card">
-        <p class="sub" style="margin-top:0">Listings are private and need the same shared access token you use for the phone site. Add it in Settings, then come back here to browse or publish.</p>
-        <div style="margin-top:16px"><a class="btn primary" href="#/settings">Open settings</a></div>
+        <p class="sub" style="margin-top:0">${he.marketExtra.tokenGate}</p>
+        <div style="margin-top:16px"><a class="btn primary" href="#/settings">${he.setup.openSettings}</a></div>
       </div>`,
     );
   }
@@ -819,52 +820,52 @@ async function renderMarketplace(): Promise<string> {
   const preselect = hashQuery.get("publish") || "";
   const cards = listings.length
     ? listings.map(listingCard).join("")
-    : `<div class="card"><p class="sub" style="margin:0">No automations published yet. Choose one of your workflows below and tap Publish.</p></div>`;
+    : `<div class="card"><p class="sub" style="margin:0">${he.marketExtra.emptyPublish}</p></div>`;
   const options = library.length
     ? library
         .map((w) => {
           const existing = matchListing(listings, w.name, listingIdForName(w.name));
-          const label = `${w.name}${existing ? ` (published v${existing.version} — Update)` : ""}`;
+          const label = `${w.name}${existing ? `${he.marketExtra.publishedSuffix}${existing.version}${he.marketExtra.updateSuffix})` : ""}`;
           const selected = w.id === preselect ? "selected" : "";
           return `<option value="${escapeHtml(w.id)}" ${selected}>${escapeHtml(label)}</option>`;
         })
         .join("")
     : "";
   const form = `<form id="market-publish-form" class="card">
-    <h2 style="margin:0 0 12px;font-size:1.05rem">Publish</h2>
-    <p class="muted" style="margin:0 0 12px">Select one of your automations, edit the details if you want, then publish. Republishing bumps the version. No zip is needed for workflow-use or from-task (Pomerado code packages still use a zip).</p>
+    <h2 style="margin:0 0 12px;font-size:1.05rem">${he.marketExtra.publishHeading}</h2>
+    <p class="muted" style="margin:0 0 12px">${he.marketExtra.publishIntro}</p>
     ${
       library.length
-        ? `<label class="field"><span>Your automations</span>
+        ? `<label class="field"><span>${he.marketExtra.yourAutomations}</span>
       <select name="workflowId" id="market-source">
-        <option value="">Choose a workflow…</option>
+        <option value="">${he.marketExtra.chooseWorkflow}</option>
         ${options}
       </select>
     </label>
     <div id="market-publish-fields" hidden>
-      <label class="field"><span>Name</span><input name="name" required placeholder="Wikipedia search reader" /></label>
-      <label class="field"><span>Description</span><textarea name="description" rows="3" placeholder="What this automation does"></textarea></label>
-      <label class="field"><span>Type</span>
+      <label class="field"><span>${he.market.name}</span><input name="name" required placeholder="${he.market.namePh}" /></label>
+      <label class="field"><span>${he.market.description}</span><textarea name="description" rows="3" placeholder="${he.market.descriptionPh}"></textarea></label>
+      <label class="field"><span>${he.marketExtra.type}</span>
         <select name="type">
           <option value="workflow-use">workflow-use</option>
           <option value="from-task">from-task</option>
         </select>
       </label>
-      <label class="field"><span>Declared inputs (editable)</span>
-        <textarea name="inputs" rows="3" placeholder='[{"name":"term","label":"Search term","required":true,"type":"string"}]'></textarea>
+      <label class="field"><span>${he.marketExtra.declaredInputs}</span>
+        <textarea name="inputs" rows="3" placeholder='[{"name":"term","label":"${he.labels.term}","required":true,"type":"string"}]'></textarea>
       </label>
     </div>
-    <p id="market-pomerado-note" class="muted" hidden>This is a Pomerado tool. Publishing still needs its integration zip — zip upload is only for those code packages.</p>`
-        : `<p class="muted">Connect the backend in Settings to publish from your workflow library. ${isLocalOrigin() ? "This page should already be talking to the local app." : "Add the tunnel URL if you are on the phone site."}</p>`
+    <p id="market-pomerado-note" class="muted" hidden>${he.marketExtra.pomeradoZipNote}</p>`
+        : `<p class="muted">${he.market.connectToPublish} ${isLocalOrigin() ? he.market.localHint : he.market.tunnelHint}</p>`
     }
     <div id="market-publish-status" style="margin-top:12px"></div>
     <div class="btn-row" style="margin-top:16px">
-      <button class="btn primary wide" id="market-publish-submit" type="submit" disabled>Publish</button>
+      <button class="btn primary wide" id="market-publish-submit" type="submit" disabled>${he.market.publish}</button>
     </div>
   </form>`;
   const flash = flashMessage ? `<div class="banner ${flashMessage.kind}">${escapeHtml(flashMessage.text)}</div>` : "";
   flashMessage = null;
-  const html = shell("Marketplace", "Private automations", `${flash}${errHtml}${libraryErr}${form}${cards}`);
+  const html = shell(he.market.title, he.market.eyebrow, `${flash}${errHtml}${libraryErr}${form}${cards}`);
   queueMicrotask(() => {
     const select = document.getElementById("market-source") as HTMLSelectElement | null;
     if (select && preselect) {
@@ -895,7 +896,7 @@ async function fillPublishFields(workflowId: string, listings?: MarketListing[])
     fields.hidden = true;
     if (note) note.hidden = true;
     submit.disabled = true;
-    submit.textContent = "Publish";
+    submit.textContent = he.market.publish;
     return;
   }
   const stored = await api.getWorkflow(workflowId);
@@ -905,7 +906,7 @@ async function fillPublishFields(workflowId: string, listings?: MarketListing[])
   if (typ === "pomerado") {
     fields.hidden = true;
     submit.disabled = true;
-    submit.textContent = "Publish";
+    submit.textContent = he.market.publish;
     return;
   }
   fields.hidden = false;
@@ -930,7 +931,7 @@ async function fillPublishFields(workflowId: string, listings?: MarketListing[])
     form.dataset.blocksPublish = "0";
   }
   submit.disabled = blocked;
-  submit.textContent = blocked ? "Fix input errors to publish" : published ? "Update" : "Publish";
+  submit.textContent = blocked ? he.market.fixToPublish : published ? he.market.update : he.market.publish;
 }
 
 async function renderSettings(): Promise<string> {
@@ -946,46 +947,46 @@ async function renderSettings(): Promise<string> {
   }
   const modelBlock = [DEFAULT_MODEL, ALT_MODEL]
     .map((model) => {
-      const label = model === DEFAULT_MODEL ? "Fast and cheap. Best default for repairs." : "Alternative OpenRouter model.";
+      const label = model === DEFAULT_MODEL ? he.settings.modelFast : he.settings.modelAlt;
       const checked = s.model === model ? "checked" : "";
       return `<label class="model"><input type="radio" name="model" value="${escapeHtml(model)}" ${checked} /><div><b>${escapeHtml(model)}</b><small>${label}</small></div></label>`;
     })
     .join("");
   return shell(
-    "Settings",
-    "This device",
+    he.settings.title,
+    he.settings.eyebrow,
     `<form id="settings-form" class="card">
-      <label class="field"><span>Backend URL</span>
-        <input name="backendUrl" type="url" placeholder="${isLocalOrigin() ? "http://localhost:8745" : "auto (published tunnel)"}" value="${escapeHtml(s.backendUrl)}" />
+      <label class="field"><span>${he.settings.backendUrl}</span>
+        <input name="backendUrl" type="url" placeholder="${isLocalOrigin() ? "http://localhost:8745" : he.settingsExtra.autoTunnelPh}" value="${escapeHtml(s.backendUrl)}" />
       </label>
-      <p class="muted" style="margin-top:-6px">${isLocalOrigin() ? "Served on this computer — defaults to this page's origin. Leave this as-is unless you moved the backend." : isManagedBackendUrl(s.backendUrl) || !s.backendUrl ? "The current tunnel URL is picked up automatically. You can leave this blank or ignore a trycloudflare.com URL — you do not need to paste a new one when the tunnel restarts. Only set a custom URL if you use something else." : "Custom backend URL (not auto-updated). Clear this field to go back to automatic discovery."}</p>
-      <label class="field"><span>Shared access token${isLocalOrigin() ? " (optional on localhost)" : ""}</span>
+      <p class="muted" style="margin-top:-6px">${isLocalOrigin() ? he.settings.localBackend : isManagedBackendUrl(s.backendUrl) || !s.backendUrl ? he.settings.autoTunnel : he.settings.customBackend}</p>
+      <label class="field"><span>${he.settings.accessToken}${isLocalOrigin() ? he.settingsExtra.tokenOptionalLocal : ""}</span>
         <div class="secret-wrap">
           <input name="accessToken" type="password" autocomplete="off" value="${escapeHtml(s.accessToken)}" />
-          <button type="button" class="btn peek" data-peek="accessToken">Show</button>
+          <button type="button" class="btn peek" data-peek="accessToken">${he.settings.show}</button>
         </div>
       </label>
-      <p class="muted" style="margin-top:-6px">The same token unlocks the private Marketplace (list, publish, and download).</p>
-      ${isLocalOrigin() && !openaiConfigured ? `<div class="banner info">Add an OpenAI key to mint Pomerado tools. It is stored only on this computer, never in the app zip or logs.</div>` : ""}
-      <label class="field"><span>OpenAI key (Pomerado minting)</span>
+      <p class="muted" style="margin-top:-6px">${he.settingsExtra.marketTokenNote}</p>
+      ${isLocalOrigin() && !openaiConfigured ? `<div class="banner info">${he.settingsExtra.openrouterMintBanner}</div>` : ""}
+      <label class="field"><span>${he.settingsExtra.openaiField}</span>
         <div class="secret-wrap">
-          <input name="openaiKey" type="password" autocomplete="off" placeholder="${openaiConfigured ? "A key is saved on this computer — paste to replace" : "sk-…"}" value="" />
-          <button type="button" class="btn peek" data-peek="openaiKey">Show</button>
+          <input name="openaiKey" type="password" autocomplete="off" placeholder="${openaiConfigured ? he.settingsExtra.pasteReplace : "sk-…"}" value="" />
+          <button type="button" class="btn peek" data-peek="openaiKey">${he.settings.show}</button>
         </div>
       </label>
-      <p class="muted" style="margin-top:-6px">${openaiConfigured ? "A key is already saved on this computer (not in this browser). Leave the box blank to keep it, or paste a new one to replace it." : "Saved only on this computer (not in localStorage or the zip). Needed for Pomerado minting on this machine."}${isLocalOrigin() ? ` <button type="button" class="btn" data-action="clear-openai-key" ${openaiConfigured ? "" : "disabled"}>Remove saved key</button>` : ""}</p>
-      <label class="field"><span>OpenRouter key</span>
+      <p class="muted" style="margin-top:-6px">${openaiConfigured ? he.settings.openaiSaved : he.settings.openaiNeed}${isLocalOrigin() ? ` <button type="button" class="btn" data-action="clear-openai-key" ${openaiConfigured ? "" : "disabled"}>${he.settings.removeKey}</button>` : ""}</p>
+      <label class="field"><span>${he.settingsExtra.openrouterField}</span>
         <div class="secret-wrap">
           <input name="openrouterKey" type="password" autocomplete="off" placeholder="sk-or-v1-…" value="${escapeHtml(s.openrouterKey)}" />
-          <button type="button" class="btn peek" data-peek="openrouterKey">Show</button>
+          <button type="button" class="btn peek" data-peek="openrouterKey">${he.settings.show}</button>
         </div>
       </label>
-      <p class="muted" style="margin-top:-6px">Stored only in this browser's localStorage. Used for from-task, repair, and browser-use — not for Pomerado minting.</p>
-      <span class="field"><span>Repair model</span></span>
+      <p class="muted" style="margin-top:-6px">${he.settingsExtra.openrouterNote}</p>
+      <span class="field"><span>${he.settingsExtra.repairModel}</span></span>
       <div class="models">${modelBlock}</div>
       <div class="btn-row" style="margin-top:16px">
-        <button class="btn" type="button" data-action="test-connection">Test connection</button>
-        <button class="btn primary" type="submit">Save</button>
+        <button class="btn" type="button" data-action="test-connection">${he.settingsExtra.testConnection}</button>
+        <button class="btn primary" type="submit">${he.settings.save}</button>
       </div>
       <div id="settings-status" style="margin-top:12px">${flashMessage ? `<div class="banner ${flashMessage.kind}">${escapeHtml(flashMessage.text)}</div>` : ""}</div>
     </form>`,
@@ -1008,58 +1009,58 @@ function renderRecordPage(): string {
   const live = s.phase === "live";
   const cleaning = s.phase === "cleaning";
   const sourceToggle = `<div class="source-toggle" role="tablist">
-      <button type="button" class="btn ${s.source === "remote" ? "primary" : ""}" data-action="record-source" data-source="remote" ${live || cleaning ? "disabled" : ""}>Remote browser</button>
-      <button type="button" class="btn ${s.source === "extension" ? "primary" : ""}" data-action="record-source" data-source="extension" ${live || cleaning ? "disabled" : ""}>Record in my Chrome</button>
+      <button type="button" class="btn ${s.source === "remote" ? "primary" : ""}" data-action="record-source" data-source="remote" ${live || cleaning ? "disabled" : ""}>${he.record.remoteBrowser}</button>
+      <button type="button" class="btn ${s.source === "extension" ? "primary" : ""}" data-action="record-source" data-source="extension" ${live || cleaning ? "disabled" : ""}>${he.recordExtra.recordInChrome}</button>
     </div>`;
   const extNote = s.source === "extension"
     ? (s.extensionReady
-      ? `<p class="muted">The Browser Platform extension is available in this Chrome. Start, do the task in your own tabs, then stop — the cleaned steps come back here to review, save, and publish.</p>`
-      : `<div class="banner info">This page can't record your phone's browser, and the extension is not visible here. On a computer with the extension installed, choose this option and reload. Otherwise use <strong>Remote browser</strong>, or open the extension's <strong>Record</strong> tab, then publish from Market after you save.</div>`)
-    : `<p class="muted">A Chromium session starts on the backend and is streamed here. Tap or click the picture to click; use the box below to type (needed on a phone). Idle sessions close after 3 minutes, and at most two can run at once.</p>`;
+      ? `<p class="muted">${he.recordExtra.extensionReady}</p>`
+      : `<div class="banner info">${he.recordExtra.extensionMissing}</div>`)
+    : `<p class="muted">${he.recordExtra.remoteHelp}</p>`;
   const controls = `<div class="card" id="record-setup">
       ${sourceToggle}
       ${extNote}
-      <label class="field"><span>Goal (optional, one line)</span>
-        <input id="record-goal" value="${escapeHtml(s.goal)}" placeholder="Find the fixtures for a football team" ${live || cleaning ? "disabled" : ""} />
+      <label class="field"><span>${he.recordExtra.goalOptional}</span>
+        <input id="record-goal" value="${escapeHtml(s.goal)}" placeholder="${he.record.goalPh}" ${live || cleaning ? "disabled" : ""} />
       </label>
-      <label class="field"><span>Name</span>
+      <label class="field"><span>${he.recordExtra.name}</span>
         <input id="record-name" value="${escapeHtml(s.name)}" placeholder="football_fixtures_recorded" ${live || cleaning ? "disabled" : ""} />
       </label>
       <div class="btn-row">
         ${
           live
-            ? `<button class="btn danger wide" data-action="record-stop" ${cleaning ? "disabled" : ""} id="record-stop">Stop recording</button>`
-            : `<button class="btn primary wide" data-action="record-start" ${cleaning ? "disabled" : ""} id="record-start">Start recording</button>`
+            ? `<button class="btn danger wide" data-action="record-stop" ${cleaning ? "disabled" : ""} id="record-stop">${he.recordExtra.stopRecording}</button>`
+            : `<button class="btn primary wide" data-action="record-start" ${cleaning ? "disabled" : ""} id="record-start">${he.recordExtra.startRecording}</button>`
         }
-        ${live && s.source === "remote" ? `<button class="btn" data-action="record-cancel">Cancel session</button>` : ""}
+        ${live && s.source === "remote" ? `<button class="btn" data-action="record-cancel">${he.recordExtra.cancelSession}</button>` : ""}
       </div>
-      ${cleaning ? `<p class="muted">Cleaning the recording…</p>` : ""}
+      ${cleaning ? `<p class="muted">${he.record.cleaning}</p>` : ""}
       ${s.error ? `<div class="banner err" style="margin-top:10px">${escapeHtml(s.error)}</div>` : ""}
     </div>`;
   const remote = s.source === "remote" && live
     ? `<div class="card record-stage">
         <form id="record-url-form" class="url-bar">
           <input id="record-url" type="url" inputmode="url" value="${escapeHtml(s.url)}" placeholder="https://www.bbc.com/sport/football" />
-          <button class="btn" type="submit">Go</button>
+          <button class="btn" type="submit">${he.record.urlGo}</button>
         </form>
         <div class="record-screen-wrap">
-          <img id="record-screen" alt="Remote browser" src="${s.frame ? escapeHtml(s.frame) : ""}" />
-          ${s.frame ? "" : `<div id="record-screen-placeholder" class="record-placeholder">Starting the remote browser…</div>`}
+          <img id="record-screen" alt="${he.recordExtra.remoteBrowserAlt}" src="${s.frame ? escapeHtml(s.frame) : ""}" />
+          ${s.frame ? "" : `<div id="record-screen-placeholder" class="record-placeholder">${he.record.starting}</div>`}
         </div>
-        <div class="record-meta"><span id="record-event-count">${s.eventCount} event${s.eventCount === 1 ? "" : "s"}</span> · ${escapeHtml(s.url || "about:blank")}</div>
+        <div class="record-meta"><span id="record-event-count">${s.eventCount} ${s.eventCount === 1 ? he.recordExtra.event : he.recordExtra.events}</span> · ${escapeHtml(s.url || "about:blank")}</div>
         <form id="record-type-form" class="type-bar">
-          <input id="record-type" type="text" enterkeyhint="send" placeholder="Type into the focused field" />
-          <button class="btn" type="submit" data-enter="0">Send</button>
-          <button class="btn" type="submit" data-enter="1">Send + Enter</button>
+          <input id="record-type" type="text" enterkeyhint="send" placeholder="${he.record.typePh}" />
+          <button class="btn" type="submit" data-enter="0">${he.recordExtra.send}</button>
+          <button class="btn" type="submit" data-enter="1">${he.recordExtra.sendEnter}</button>
         </form>
       </div>`
     : "";
   const extLive = s.source === "extension" && live
-    ? `<div class="banner info">Recording in your Chrome. Switch to the tab you want, do the task (redundant clicks are fine), then come back and press Stop.</div>`
+    ? `<div class="banner info">${he.recordExtra.extRecordingBanner}</div>`
     : "";
   const review = s.review.length
     ? `<div class="card" id="record-review">
-        <h2 style="margin:0 0 8px;font-size:1.05rem">Review steps</h2>
+        <h2 style="margin:0 0 8px;font-size:1.05rem">${he.recordExtra.reviewSteps}</h2>
         <p class="muted">${escapeHtml(s.usageLabel)}</p>
         <p class="muted">${escapeHtml(s.statsLine)}</p>
         <div class="trace">${s.review.map((item, i) => {
@@ -1070,77 +1071,77 @@ function renderRecordPage(): string {
             <div>
               <div>${escapeHtml(stepSummary(item.step))}</div>
               ${reason}
-              <button type="button" class="btn" data-action="${dropped ? "record-restore" : "record-drop"}" data-rec-id="${escapeHtml(item.id)}">${dropped ? "Restore" : "Delete"}</button>
+              <button type="button" class="btn" data-action="${dropped ? "record-restore" : "record-drop"}" data-rec-id="${escapeHtml(item.id)}">${dropped ? he.record.restore : he.record.drop}</button>
             </div>
           </div>`;
         }).join("")}</div>
       </div>
       <div class="card">
-        <h2 style="margin:0 0 8px;font-size:1.05rem">Inputs</h2>
-        <p class="muted">These become required labelled fields when you run the workflow. Confirm or edit them.</p>
+        <h2 style="margin:0 0 8px;font-size:1.05rem">${he.recordExtra.inputsTitle}</h2>
+        <p class="muted">${he.recordExtra.inputsHelp}</p>
         ${
           s.parameters.length
             ? s.parameters.map((param, i) => `<div class="param-row">
-                <label class="field"><span>Name</span><input data-param="${i}" data-field="name" value="${escapeHtml(param.name)}" /></label>
-                <label class="field"><span>Label</span><input data-param="${i}" data-field="label" value="${escapeHtml(param.label || param.name)}" /></label>
-                <label class="field"><span>Example</span><input data-param="${i}" data-field="example" value="${escapeHtml(param.example || "")}" /></label>
-                <label class="check"><input type="checkbox" data-param="${i}" data-field="required" ${param.required === false ? "" : "checked"} /> Required</label>
+                <label class="field"><span>${he.recordExtra.name}</span><input data-param="${i}" data-field="name" value="${escapeHtml(param.name)}" /></label>
+                <label class="field"><span>${he.recordExtra.label}</span><input data-param="${i}" data-field="label" value="${escapeHtml(param.label || param.name)}" /></label>
+                <label class="field"><span>${he.recordExtra.example}</span><input data-param="${i}" data-field="example" value="${escapeHtml(param.example || "")}" /></label>
+                <label class="check"><input type="checkbox" data-param="${i}" data-field="required" ${param.required === false ? "" : "checked"} /> ${he.recordExtra.required}</label>
               </div>`).join("")
-            : `<p class="muted">No parameters detected. You can still save a fixed workflow.</p>`
+            : `<p class="muted">${he.recordExtra.noParams}</p>`
         }
-        <div class="btn-row"><button class="btn" data-action="record-add-param">Add input</button></div>
+        <div class="btn-row"><button class="btn" data-action="record-add-param">${he.recordExtra.addInput}</button></div>
       </div>
       ${findingsCard(s.inputValidation, { applyAction: "record-apply-finding" })}`
     : "";
   const save = s.review.some((item) => item.kept)
     ? `<div class="btn-row">
-        <button class="btn primary wide" data-action="record-save" id="record-save" ${s.phase === "cleaning" ? "disabled" : ""}>${s.workflowId ? "Saved" : "Save workflow"}</button>
-        <button class="btn wide" data-action="record-publish" id="record-publish" ${s.workflowId && !s.inputValidation?.blocks_publish ? "" : "disabled"}>${s.inputValidation?.blocks_publish ? "Fix input errors to publish" : "Publish to marketplace"}</button>
+        <button class="btn primary wide" data-action="record-save" id="record-save" ${s.phase === "cleaning" ? "disabled" : ""}>${s.workflowId ? he.record.saved : he.recordExtra.saveWorkflow}</button>
+        <button class="btn wide" data-action="record-publish" id="record-publish" ${s.workflowId && !s.inputValidation?.blocks_publish ? "" : "disabled"}>${s.inputValidation?.blocks_publish ? he.recordExtra.publishBlocked : he.record.publish}</button>
       </div>
-      ${s.workflowId ? `<p class="muted">Saved as <a href="#/workflows/${encodeURIComponent(s.workflowId)}">${escapeHtml(s.workflowId)}</a>. You can run it from the library or publish it now.</p>` : ""}
-      ${s.listing ? `<div class="banner ok">Published ${escapeHtml(s.listing.name)} v${escapeHtml(s.listing.version)} to the marketplace.</div>` : ""}`
+      ${s.workflowId ? `<p class="muted">${he.recordExtra.savedAs} <a href="#/workflows/${encodeURIComponent(s.workflowId)}">${escapeHtml(s.workflowId)}</a>${he.recordExtra.savedRunHint}</p>` : ""}
+      ${s.listing ? `<div class="banner ok">${he.recordExtra.publishedBanner} ${escapeHtml(s.listing.name)} v${escapeHtml(s.listing.version)} ${he.recordExtra.toMarket}</div>` : ""}`
     : "";
   const flash = flashMessage ? `<div class="banner ${flashMessage.kind}">${escapeHtml(flashMessage.text)}</div>` : "";
   flashMessage = null;
   return shell(
-    "Record",
-    "Authoring",
+    he.record.title,
+    he.recordExtra.authoring,
     `${flash}${controls}${extLive}${remote}${review}${save}`,
-    "Do the task yourself, then keep only the steps you need and publish.",
+    he.record.subtitle,
   );
 }
 
 function renderFromTaskForm(): string {
   const settings = loadSettings();
   const keyNote = settings.openrouterKey
-    ? "Your OpenRouter key will be sent with this request only and is not stored on the server."
-    : "Add an OpenRouter key in Settings first. The demonstration uses browser-use once, then a 0-token replay.";
+    ? he.fromTaskExtra.keyWillSend
+    : `${he.fromTask.needOr}<a href="#/settings">${he.nav.settings}</a>${he.fromTask.needOr2}`;
   return shell(
-    "Create from task",
-    "Authoring",
-    `${!settings.openrouterKey ? `<div class="banner info">Add an OpenRouter key in <a href="#/settings">Settings</a> so browser-use can demonstrate the task.</div>` : ""}
+    he.fromTask.title,
+    he.fromTaskExtra.authoring,
+    `${!settings.openrouterKey ? `<div class="banner info">${he.fromTask.needOr}<a href="#/settings">${he.nav.settings}</a>${he.fromTask.needOr2}</div>` : ""}
     <form id="from-task-form" class="card">
-      <p class="sub" style="margin-top:0">Describe the task in plain language. First we extract the inputs (team, search term, and so on) so you can confirm them. The agent then has to apply those filters, and they become required labelled fields on the saved workflow.</p>
-      <label class="field"><span>Task</span>
-        <textarea name="task" required placeholder="Search the library for {query} and extract the first paragraph." style="min-height:110px;font-family:var(--font);font-size:16px"></textarea>
+      <p class="sub" style="margin-top:0">${he.fromTaskExtra.formIntro}</p>
+      <label class="field"><span>${he.fromTask.task}</span>
+        <textarea name="task" required placeholder="${he.fromTask.taskPh}" style="min-height:110px;font-family:var(--font);font-size:16px"></textarea>
       </label>
-      <label class="field"><span>Start URL (optional)</span>
+      <label class="field"><span>${he.fromTaskExtra.startUrl}</span>
         <input name="start_url" type="url" placeholder="http://127.0.0.1:8765/from_task_form.html" />
       </label>
-      <label class="field"><span>Workflow name (optional)</span>
+      <label class="field"><span>${he.fromTaskExtra.workflowName}</span>
         <input name="name" type="text" placeholder="library_search" />
       </label>
-      <label class="field"><span>Variables (optional, name=value per line)</span>
+      <label class="field"><span>${he.fromTaskExtra.variables}</span>
         <textarea name="variables" placeholder="query=browser automation" style="min-height:88px;font-family:var(--mono);font-size:14px"></textarea>
       </label>
       <label class="check">
         <input type="checkbox" name="confirm_variables" checked />
-        <span>Ask me to confirm, edit, or add the extracted inputs before the demonstration starts</span>
+        <span>${he.fromTaskExtra.confirmVars}</span>
       </label>
       <p class="muted">${escapeHtml(keyNote)}</p>
-      <button class="btn primary" type="submit">Start demonstration</button>
+      <button class="btn primary" type="submit">${he.fromTaskExtra.startDemo}</button>
     </form>`,
-    "browser-use demonstrates once, then a deterministic replay validates the workflow.",
+    he.fromTaskExtra.replaySubtitle,
   );
 }
 
@@ -1152,8 +1153,8 @@ function renderFromTaskProgress(job: FromTaskJob): string {
   const error = job.error && job.status !== "succeeded" ? `<div class="banner err">${escapeHtml(job.error)}</div>` : "";
   const creation = job.creation;
   return shell(
-    escapeHtml(job.name || "From task"),
-    "Live job",
+    escapeHtml(job.name || he.fromTask.title),
+    he.fromTaskExtra.liveJob,
     `${confirmation}
     <div class="card">
       <div class="row">
@@ -1163,13 +1164,13 @@ function renderFromTaskProgress(job: FromTaskJob): string {
       <p class="sub">${escapeHtml(job.task)}</p>
       ${error}
       <div class="status-grid">
-        <div class="stat"><b>${escapeHtml(formatLatency(creation?.latency_ms))}</b><span>Creation time</span></div>
-        <div class="stat"><b>${escapeHtml(formatTokens(creation))}</b><span>Creation tokens</span></div>
+        <div class="stat"><b>${escapeHtml(formatLatency(creation?.latency_ms))}</b><span>${he.fromTaskExtra.creationTime}</span></div>
+        <div class="stat"><b>${escapeHtml(formatTokens(creation))}</b><span>${he.fromTaskExtra.creationTokens}</span></div>
       </div>
     </div>
     ${result}
-    <a class="btn" href="#/from-task" style="margin-top:12px">Start another</a>`,
-    live ? "The agent is working in the box browser. This page will update as the job moves." : "",
+    <a class="btn" href="#/from-task" style="margin-top:12px">${he.fromTask.another}</a>`,
+    live ? he.fromTask.working : "",
   );
 }
 
@@ -1187,37 +1188,37 @@ function renderFromTaskConfirmation(job: FromTaskJob): string {
             const value = item.example ?? existing;
             const required = item.required !== false;
             return `<label class="var-row var-row-params">
-            <input type="checkbox" name="required-${i}" ${required ? "checked" : ""} data-index="${i}" title="Required" />
-            <input type="text" name="name-${i}" value="${escapeHtml(name)}" aria-label="Input name" placeholder="name" />
-            <input type="text" name="label-${i}" value="${escapeHtml(label)}" aria-label="Label" placeholder="Label" />
-            <input type="text" name="value-${i}" value="${escapeHtml(String(value))}" aria-label="Example value" placeholder="example value" />
+            <input type="checkbox" name="required-${i}" ${required ? "checked" : ""} data-index="${i}" title="${he.aria.required}" />
+            <input type="text" name="name-${i}" value="${escapeHtml(name)}" aria-label="${he.aria.inputName}" placeholder="name" />
+            <input type="text" name="label-${i}" value="${escapeHtml(label)}" aria-label="${he.aria.label}" placeholder="${he.aria.label}" />
+            <input type="text" name="value-${i}" value="${escapeHtml(String(value))}" aria-label="${he.aria.exampleValue}" placeholder="${he.mint.exampleValue}" />
           </label>`;
           })
           .join("")
-      : `<p class="muted">No inputs were detected. Add one below if this task should be reusable with a filter or search term.</p>`;
+      : `<p class="muted">${he.fromTaskExtra.noInputsDetected}</p>`;
     return `<div class="card confirm-panel" id="from-task-confirm" data-job-id="${escapeHtml(job.id)}" data-kind="parameters">
-    <p class="eyebrow">Needs confirmation · inputs</p>
-    <h2>Confirm the inputs this workflow will use</h2>
-    <p class="sub">These become required labelled fields, and the agent must actually apply each one (not just mention it). Edit, uncheck required, or add a missing input before the demonstration starts.</p>
-    <div class="var-list-head muted">Required · name · label · example</div>
+    <p class="eyebrow">${he.fromTaskExtra.needsConfirmInputs}</p>
+    <h2>${he.fromTaskExtra.confirmInputsTitle}</h2>
+    <p class="sub">${he.fromTaskExtra.confirmInputsBody}</p>
+    <div class="var-list-head muted">${he.fromTaskExtra.varListHead}</div>
     <div class="var-list">${rows}</div>
-    <button type="button" class="btn" data-action="from-task-add-input" style="margin-bottom:12px">Add input</button>
+    <button type="button" class="btn" data-action="from-task-add-input" style="margin-bottom:12px">${he.recordExtra.addInput}</button>
     <div class="btn-row">
-      <button type="button" class="btn danger" data-action="from-task-cancel">Cancel</button>
-      <button type="button" class="btn primary" data-action="from-task-confirm">Confirm and start</button>
+      <button type="button" class="btn danger" data-action="from-task-cancel">${he.confirm.cancel}</button>
+      <button type="button" class="btn primary" data-action="from-task-confirm">${he.fromTaskExtra.confirmAndStart}</button>
     </div>
     <div id="from-task-confirm-status" style="margin-top:12px"></div>
   </div>`;
   }
   if (kind !== "variables") {
-    const message = payload.message || payload.prompt || "The agent is waiting for a confirmation.";
+    const message = payload.message || payload.prompt || he.fromTask.waitingConfirm;
     return `<div class="card confirm-panel" id="from-task-confirm" data-job-id="${escapeHtml(job.id)}" data-kind="${escapeHtml(kind)}">
-      <p class="eyebrow">Needs confirmation</p>
-      <h2>The agent has a question</h2>
+      <p class="eyebrow">${he.confirm.needs}</p>
+      <h2>${he.fromTaskExtra.agentQuestion}</h2>
       <p class="sub">${escapeHtml(message)}</p>
       <div class="btn-row">
-        <button type="button" class="btn danger" data-action="from-task-cancel">Cancel</button>
-        <button type="button" class="btn primary" data-action="from-task-confirm">Confirm</button>
+        <button type="button" class="btn danger" data-action="from-task-cancel">${he.confirm.cancel}</button>
+        <button type="button" class="btn primary" data-action="from-task-confirm">${he.confirm.confirm}</button>
       </div>
       <div id="from-task-confirm-status" style="margin-top:12px"></div>
     </div>`;
@@ -1225,7 +1226,7 @@ function renderFromTaskConfirmation(job: FromTaskJob): string {
   const suggestions = suggestionRows(job);
   const already = payload.variables || job.variables || {};
   const alreadyBits = Object.keys(already).length
-    ? `<p class="meta">Already in the workflow: ${escapeHtml(Object.entries(already).map(([k, v]) => `${k}=${v}`).join(", "))}</p>`
+    ? `<p class="meta">${he.fromTaskExtra.alreadyInWorkflow} ${escapeHtml(Object.entries(already).map(([k, v]) => `${k}=${v}`).join(", "))}</p>`
     : "";
   const rows = suggestions.length
     ? suggestions
@@ -1235,23 +1236,23 @@ function renderFromTaskConfirmation(job: FromTaskJob): string {
           const hint = item.element && (item.element.name || item.element.placeholder || item.element.role);
           return `<label class="var-row">
             <input type="checkbox" name="accept-${i}" checked data-index="${i}" />
-            <input type="text" name="name-${i}" value="${escapeHtml(name)}" aria-label="Variable name" />
-            <input type="text" name="value-${i}" value="${escapeHtml(value)}" aria-label="Detected value" />
+            <input type="text" name="name-${i}" value="${escapeHtml(name)}" aria-label="${he.aria.variableName}" />
+            <input type="text" name="value-${i}" value="${escapeHtml(value)}" aria-label="${he.aria.detectedValue}" />
             ${hint || item.type ? `<span class="muted" style="grid-column:2 / -1">${escapeHtml(item.type || "")}${hint ? " · " + escapeHtml(String(hint)) : ""}</span>` : ""}
           </label>`;
         })
         .join("")
-    : `<p class="muted">No extra variables were suggested. Add one below, or confirm to continue.</p>`;
+    : `<p class="muted">${he.fromTaskExtra.noVarsSuggested}</p>`;
   return `<div class="card confirm-panel" id="from-task-confirm" data-job-id="${escapeHtml(job.id)}" data-kind="variables">
-    <p class="eyebrow">Needs confirmation · variables</p>
-    <h2>Accept or rename detected variables</h2>
-    <p class="sub">Literals typed during the demonstration can become workflow inputs. Uncheck any you want left as fixed text.</p>
+    <p class="eyebrow">${he.fromTaskExtra.needsConfirmVars}</p>
+    <h2>${he.fromTaskExtra.acceptVarsTitle}</h2>
+    <p class="sub">${he.fromTaskExtra.acceptVarsBody}</p>
     ${alreadyBits}
     <div class="var-list">${rows}</div>
-    <button type="button" class="btn" data-action="from-task-add-input" style="margin-bottom:12px">Add input</button>
+    <button type="button" class="btn" data-action="from-task-add-input" style="margin-bottom:12px">${he.recordExtra.addInput}</button>
     <div class="btn-row">
-      <button type="button" class="btn danger" data-action="from-task-cancel">Cancel</button>
-      <button type="button" class="btn primary" data-action="from-task-confirm">Confirm variables</button>
+      <button type="button" class="btn danger" data-action="from-task-cancel">${he.confirm.cancel}</button>
+      <button type="button" class="btn primary" data-action="from-task-confirm">${he.fromTaskExtra.confirmVarsBtn}</button>
     </div>
     <div id="from-task-confirm-status" style="margin-top:12px"></div>
   </div>`;
@@ -1271,7 +1272,7 @@ function renderFromTaskResult(job: FromTaskJob): string {
         </div>
       </div>`,
     )
-    .join("") || `<p class="muted">No steps were saved.</p>`;
+    .join("") || `<p class="muted">${he.fromTaskExtra.noStepsSaved}</p>`;
   const replay = job.replay;
   const replayStatus = replay?.status ? `<span class="pill ${statusClass(String(replay.status))}">${escapeHtml(String(replay.status))}</span>` : "";
   const outputs = replay?.outputs && Object.keys(replay.outputs).length
@@ -1279,23 +1280,23 @@ function renderFromTaskResult(job: FromTaskJob): string {
     : "";
   return `<div class="card" id="from-task-result">
     <h2 style="margin:0 0 8px;font-size:1.08rem">${escapeHtml(def?.name || job.name)}</h2>
-    <div class="mono muted">${wfId ? "workflow " + escapeHtml(wfId) : "no workflow id yet"}</div>
+    <div class="mono muted">${wfId ? he.fromTaskExtra.workflowPrefix + escapeHtml(wfId) : he.fromTaskExtra.noWorkflowId}</div>
     <div class="usage-compare">
       <div class="stat">
         <b>${escapeHtml(formatLatency(job.creation?.latency_ms))}</b>
-        <span>Creation · ${escapeHtml(formatTokens(job.creation))}</span>
+        <span>${he.fromTaskExtra.creation} · ${escapeHtml(formatTokens(job.creation))}</span>
       </div>
       <div class="stat">
         <b>${escapeHtml(formatLatency(replay?.latency_ms))}</b>
-        <span>Replay · ${escapeHtml(formatTokens(replay))} ${replayStatus}</span>
+        <span>${he.fromTaskExtra.replay} · ${escapeHtml(formatTokens(replay))} ${replayStatus}</span>
       </div>
     </div>
     <div style="margin-top:16px">${steps}</div>
     ${outputs ? `<div style="margin-top:12px">${outputs}</div>` : ""}
     ${findingsCard((job as FromTaskJob & { input_validation?: InputValidation }).input_validation, { applyAction: "from-task-apply-finding" })}
     <div class="btn-row" style="margin-top:16px">
-      ${wfId ? `<a class="btn" href="#/workflows/${encodeURIComponent(wfId)}">Open workflow</a>
-      <a class="btn primary" href="#/workflows/${encodeURIComponent(wfId)}" data-action="from-task-run" data-workflow-id="${escapeHtml(wfId)}">Run</a>` : `<span class="muted">Workflow was not saved.</span>`}
+      ${wfId ? `<a class="btn" href="#/workflows/${encodeURIComponent(wfId)}">${he.fromTask.open}</a>
+      <a class="btn primary" href="#/workflows/${encodeURIComponent(wfId)}" data-action="from-task-run" data-workflow-id="${escapeHtml(wfId)}">${he.fromTask.run}</a>` : `<span class="muted">${he.fromTask.notSaved}</span>`}
     </div>
   </div>`;
 }
@@ -1308,7 +1309,7 @@ async function renderFromTaskPage(jobId?: string): Promise<string> {
     const job = await getFromTaskJob(jobId);
     return renderFromTaskProgress(job);
   } catch (err) {
-    return shell("Create from task", "Job", `${bannerError(err)}<a class="btn" href="#/from-task">Start another</a>`);
+    return shell(he.fromTask.title, he.fromTask.job, `${bannerError(err)}<a class="btn" href="#/from-task">${he.fromTask.another}</a>`);
   }
 }
 
@@ -1326,7 +1327,7 @@ async function render(): Promise<void> {
   if (route.name === "settings") html = await renderSettings();
   else if (route.name === "marketplace") html = await renderMarketplace();
   else if (route.name === "record") html = renderRecordPage();
-  else if (route.name === "chat") html = shell("Chat", "Workflows as tools", `<div id="chat-page">${renderChatPage()}</div>`, "Ask one workflow, many, or the same one over a list. I'll answer your question, not dump raw results.");
+  else if (route.name === "chat") html = shell(he.chat.title, he.chat.eyebrow, `<div id="chat-page">${renderChatPage()}</div>`, he.chat.subtitle);
   else if (route.name === "from-task") html = await renderFromTaskPage();
   else if (route.name === "from-task-job") html = await renderFromTaskPage(route.id);
   else if (route.name === "mint") html = await renderMint();
@@ -1517,7 +1518,7 @@ async function onClick(event: Event): Promise<void> {
     const input = document.querySelector<HTMLInputElement>(`input[name="${name}"]`);
     if (!input) return;
     input.type = input.type === "password" ? "text" : "password";
-    peek.textContent = input.type === "password" ? "Show" : "Hide";
+    peek.textContent = input.type === "password" ? he.common.show : he.common.hide;
     return;
   }
   const action = (target.closest("[data-action]") as HTMLElement | null)?.dataset.action;
@@ -1575,7 +1576,7 @@ async function onClick(event: Event): Promise<void> {
   }
   if (action === "record-add-param") {
     event.preventDefault();
-    recordState.parameters = [...recordState.parameters, { name: "value", label: "Value", example: "", required: true }];
+    recordState.parameters = [...recordState.parameters, { name: "value", label: he.recordExtra.valueLabel, example: "", required: true }];
     await render();
     return;
   }
@@ -1585,7 +1586,7 @@ async function onClick(event: Event): Promise<void> {
     if (btn) btn.disabled = true;
     try {
       await saveRecording();
-      flashMessage = { kind: "ok", text: "Saved to your library." };
+      flashMessage = { kind: "ok", text: he.flash.savedLibrary };
     } catch (err) {
       recordState.error = err instanceof Error ? err.message : String(err);
     }
@@ -1631,7 +1632,7 @@ async function onClick(event: Event): Promise<void> {
       if (job.workflow_id && result.definition) {
         await api.updateWorkflow(job.workflow_id, result.definition);
       }
-      flashMessage = { kind: "ok", text: "Applied the suggested input fix." };
+      flashMessage = { kind: "ok", text: he.flash.appliedFix };
     } catch (err) {
       flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
     }
@@ -1641,7 +1642,7 @@ async function onClick(event: Event): Promise<void> {
   if (action === "record-publish") {
     event.preventDefault();
     if (recordState.inputValidation?.blocks_publish) {
-      recordState.error = "Publishing is blocked until input validation errors are fixed.";
+      recordState.error = he.recordExtra.publishBlockedErr;
       await render();
       return;
     }
@@ -1649,7 +1650,7 @@ async function onClick(event: Event): Promise<void> {
     if (btn) btn.disabled = true;
     try {
       const listing = await publishRecording();
-      flashMessage = { kind: "ok", text: `Published ${listing.name} v${listing.version} to the marketplace.` };
+      flashMessage = { kind: "ok", text: `${he.flash.publishedListing} ${listing.name} v${listing.version} ${he.recordExtra.toMarket}` };
     } catch (err) {
       recordState.error = err instanceof Error ? err.message : String(err);
     }
@@ -1678,12 +1679,12 @@ async function onClick(event: Event): Promise<void> {
     const prompt: ConfirmationPrompt = { id: promptId, runId, candidates: [] };
     const btn = target.closest("button") as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
-    if (status) status.innerHTML = `<div class="banner info">${action === "hitl-cancel" ? "Cancelling…" : "Confirming…"}</div>`;
+    if (status) status.innerHTML = `<div class="banner info">${action === "hitl-cancel" ? he.hitl.cancelling : he.hitl.confirming}</div>`;
     void (async () => {
       try {
         if (action === "hitl-cancel") await cancelRun(runId, prompt);
         else {
-          if (!selectedCandidateId) throw new Error("Select a candidate first.");
+          if (!selectedCandidateId) throw new Error(he.hitl.selectCandidate);
           await confirmRun(runId, prompt, selectedCandidateId);
         }
         selectedCandidateId = null;
@@ -1707,12 +1708,12 @@ async function onClick(event: Event): Promise<void> {
     event.preventDefault();
     const id = (target.closest("[data-id]") as HTMLElement | null)?.dataset.id;
     if (!id) return;
-    if (!window.confirm("Delete this marketplace listing? The packaged automation will be removed.")) return;
+    if (!window.confirm(he.flash.deleteMarketConfirm)) return;
     const btn = target.closest("button") as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
     try {
       await deleteMarketListing(id);
-      flashMessage = { kind: "ok", text: "Listing deleted." };
+      flashMessage = { kind: "ok", text: he.flash.listingDeleted };
       await render();
     } catch (err) {
       if (btn) btn.disabled = false;
@@ -1754,10 +1755,10 @@ async function onClick(event: Event): Promise<void> {
   }
   if (action === "clear-openai-key") {
     event.preventDefault();
-    if (!window.confirm("Remove the OpenAI key saved on this computer?")) return;
+    if (!window.confirm(he.flash.removeOpenaiConfirm)) return;
     try {
       await api.setOpenAIKey("");
-      flashMessage = { kind: "ok", text: "Removed the OpenAI key saved on this computer." };
+      flashMessage = { kind: "ok", text: he.flash.removeOpenaiDone };
     } catch (err) {
       flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
     }
@@ -1771,7 +1772,7 @@ async function onClick(event: Event): Promise<void> {
     const i = list.querySelectorAll(".var-row").length;
     const row = document.createElement("label");
     row.className = "var-row";
-    row.innerHTML = `<input type="text" name="input-name-${i}" value="" placeholder="name" aria-label="Input name" /><input type="text" name="input-example-${i}" value="" placeholder="example value" aria-label="Example value" />`;
+    row.innerHTML = `<input type="text" name="input-name-${i}" value="" placeholder="name" aria-label="${he.aria.inputName}" /><input type="text" name="input-example-${i}" value="" placeholder="${he.mint.exampleValue}" aria-label="${he.aria.exampleValue}" />`;
     list.appendChild(row);
     row.querySelector("input")?.focus();
     return;
@@ -1786,8 +1787,8 @@ async function onClick(event: Event): Promise<void> {
     const params = panel?.dataset.kind === "parameters";
     row.className = params ? "var-row var-row-params" : "var-row";
     row.innerHTML = params
-      ? `<input type="checkbox" name="required-${i}" checked data-index="${i}" title="Required" /><input type="text" name="name-${i}" value="" placeholder="name" aria-label="Input name" /><input type="text" name="label-${i}" value="" placeholder="Label" aria-label="Label" /><input type="text" name="value-${i}" value="" placeholder="example value" aria-label="Example value" />`
-      : `<input type="checkbox" name="accept-${i}" checked data-index="${i}" /><input type="text" name="name-${i}" value="" placeholder="input name" aria-label="Variable name" /><input type="text" name="value-${i}" value="" placeholder="example value" aria-label="Detected value" />`;
+      ? `<input type="checkbox" name="required-${i}" checked data-index="${i}" title="${he.aria.required}" /><input type="text" name="name-${i}" value="" placeholder="name" aria-label="${he.aria.inputName}" /><input type="text" name="label-${i}" value="" placeholder="${he.aria.label}" aria-label="${he.aria.label}" /><input type="text" name="value-${i}" value="" placeholder="${he.mint.exampleValue}" aria-label="${he.aria.exampleValue}" />`
+      : `<input type="checkbox" name="accept-${i}" checked data-index="${i}" /><input type="text" name="name-${i}" value="" placeholder="name" aria-label="${he.aria.variableName}" /><input type="text" name="value-${i}" value="" placeholder="${he.mint.exampleValue}" aria-label="${he.aria.detectedValue}" />`;
     list.appendChild(row);
     row.querySelector<HTMLInputElement>('input[name^="name"]')?.focus();
     return;
@@ -1800,7 +1801,7 @@ async function onClick(event: Event): Promise<void> {
     const jobId = panel.dataset.jobId!;
     const btn = target.closest("button") as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
-    if (status) status.innerHTML = `<div class="banner info">${action === "from-task-cancel" ? "Cancelling…" : "Saving inputs…"}</div>`;
+    if (status) status.innerHTML = `<div class="banner info">${action === "from-task-cancel" ? he.hitl.cancelling : he.flash.savingInputs}</div>`;
     void (async () => {
       try {
         if (action === "from-task-cancel") await cancelFromTask(jobId);
@@ -1859,14 +1860,14 @@ async function onClick(event: Event): Promise<void> {
       model: values.model || DEFAULT_MODEL,
     };
     saveSettings(trial);
-    status.innerHTML = `<div class="banner info">Checking…</div>`;
+    status.innerHTML = `<div class="banner info">${he.flash.checking}</div>`;
     try {
       const h = await api.health(trial);
       const listed = await api.listWorkflows();
       connected = true;
       flashMessage = {
         kind: "ok",
-        text: `Connected to ${h.service || "backend"}. ${listed.workflows.length} workflow(s) visible.`,
+        text: `${he.flash.connected} ${h.service || he.status.backend}. ${listed.workflows.length} ${he.flash.workflowsVisible}`,
       };
       await render();
     } catch (err) {
@@ -1910,7 +1911,7 @@ async function onSubmit(event: Event): Promise<void> {
     const button = form.querySelector("button[type=submit]") as HTMLButtonElement | null;
     const workflowId = String((form.elements.namedItem("workflowId") as HTMLSelectElement | null)?.value || form.dataset.workflowId || "");
     if (!workflowId) {
-      if (status) status.innerHTML = `<div class="banner err">Choose a workflow to publish.</div>`;
+      if (status) status.innerHTML = `<div class="banner err">${he.flash.chooseWorkflowPublish}</div>`;
       return;
     }
     const inputsRaw = String((form.elements.namedItem("inputs") as HTMLTextAreaElement | null)?.value || "").trim();
@@ -1921,22 +1922,22 @@ async function onSubmit(event: Event): Promise<void> {
         if (!Array.isArray(parsed)) throw new Error("inputs must be a JSON array");
         inputs = parsed as MarketInput[];
       } catch (err) {
-        if (status) status.innerHTML = `<div class="banner err">${escapeHtml(err instanceof Error ? err.message : "inputs must be a JSON array")}</div>`;
+        if (status) status.innerHTML = `<div class="banner err">${escapeHtml(err instanceof Error ? err.message : he.marketExtra.jsonArrayErr)}</div>`;
         return;
       }
     }
     if (form.dataset.blocksPublish === "1") {
-      if (status) status.innerHTML = `<div class="banner err">Publishing is blocked until input validation errors are fixed.</div>`;
+      if (status) status.innerHTML = `<div class="banner err">${he.flash.publishingBlocked}</div>`;
       return;
     }
     if (button) button.disabled = true;
-    if (status) status.innerHTML = `<div class="banner info">Publishing…</div>`;
+    if (status) status.innerHTML = `<div class="banner info">${he.flash.publishing}</div>`;
     try {
       const stored = await api.getWorkflow(workflowId);
       const check = await validateInputs(stored.definition, stored.definition.description || stored.definition.name || "");
       if (check.blocks_publish) {
         if (button) button.disabled = false;
-        if (status) status.innerHTML = findingsCard(check) || `<div class="banner err">Publishing is blocked until input errors are fixed.</div>`;
+        if (status) status.innerHTML = findingsCard(check) || `<div class="banner err">${he.validation.blockPublish}</div>`;
         return;
       }
       const typ = String((form.elements.namedItem("type") as HTMLSelectElement | null)?.value || inferWorkflowType(stored.definition as unknown as Record<string, unknown>));
@@ -1949,7 +1950,7 @@ async function onSubmit(event: Event): Promise<void> {
         inputs: inputs || inputPayload(deriveWorkflowInputs(stored.definition)),
         workflow: stored.definition as unknown as Record<string, unknown>,
       });
-      flashMessage = { kind: "ok", text: `Published ${result.listing.name} v${result.listing.version}.` };
+      flashMessage = { kind: "ok", text: `${he.flash.publishedListing} ${result.listing.name} v${result.listing.version}.` };
       await render();
     } catch (err) {
       if (button) button.disabled = false;
@@ -1969,7 +1970,7 @@ async function onSubmit(event: Event): Promise<void> {
     if (!(values.backendUrl ?? "").trim()) await refreshDiscovery();
     try {
       if (openaiKey) await api.setOpenAIKey(openaiKey);
-      flashMessage = { kind: "ok", text: openaiKey ? "Saved. The OpenAI key is stored only on this computer." : "Saved on this device." };
+      flashMessage = { kind: "ok", text: openaiKey ? he.flash.savedOpenai : he.flash.savedDevice };
     } catch (err) {
       flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
     }
@@ -1988,7 +1989,7 @@ async function onSubmit(event: Event): Promise<void> {
       } else {
         const url = values.url?.trim();
         const goal = values.goal?.trim() || "the main heading";
-        if (!url) throw new Error("Paste workflow JSON, or enter a URL for the simple form.");
+        if (!url) throw new Error(he.newWorkflow.pasteOrUrl);
         payload = {
           name: values.name || "untitled",
           description: values.description || "",
@@ -2014,7 +2015,7 @@ async function onSubmit(event: Event): Promise<void> {
     for (const key of RESERVED_RUN_FIELDS) delete values[key];
     const empty = Object.entries(values).filter(([, value]) => !String(value || "").trim());
     if (empty.length) {
-      alert("Fill in every required input before running.");
+      alert(he.runPage.fillRequired);
       const first = form.querySelector<HTMLInputElement>(`input[name="${empty[0][0]}"]`);
       first?.focus();
       return;
@@ -2030,7 +2031,7 @@ async function onSubmit(event: Event): Promise<void> {
     const button = form.querySelector("button[type=submit]") as HTMLButtonElement | null;
     if (button) {
       button.disabled = true;
-      button.textContent = "Starting…";
+      button.textContent = he.runPage.starting;
     }
     try {
       const run = await api.startRun(id, body);
@@ -2039,7 +2040,7 @@ async function onSubmit(event: Event): Promise<void> {
     } catch (err) {
       if (button) {
         button.disabled = false;
-        button.textContent = "Run now";
+        button.textContent = he.runPage.runNow;
       }
       alert(err instanceof Error ? err.message : String(err));
     }
@@ -2064,7 +2065,7 @@ async function onSubmit(event: Event): Promise<void> {
     const button = form.querySelector("button[type=submit]") as HTMLButtonElement | null;
     if (button) {
       button.disabled = true;
-      button.textContent = "Starting…";
+      button.textContent = he.runPage.starting;
     }
     try {
       const job = await startFromTask(payload);
@@ -2072,7 +2073,7 @@ async function onSubmit(event: Event): Promise<void> {
     } catch (err) {
       if (button) {
         button.disabled = false;
-        button.textContent = "Start demonstration";
+        button.textContent = he.fromTaskExtra.startDemo;
       }
       alert(err instanceof Error ? err.message : String(err));
     }
@@ -2099,7 +2100,7 @@ async function onSubmit(event: Event): Promise<void> {
     const status = document.getElementById("mint-status");
     const button = form.querySelector("button[type=submit]") as HTMLButtonElement | null;
     if (button) button.disabled = true;
-    if (status) status.innerHTML = `<div class="card"><div class="banner info">Mint started. This can take several minutes…</div></div>`;
+    if (status) status.innerHTML = `<div class="card"><div class="banner info">${he.flash.mintStarted}</div></div>`;
     try {
       const { result } = await api.mint(payload);
       const jobId = mintJobId(result);
@@ -2108,7 +2109,7 @@ async function onSubmit(event: Event): Promise<void> {
         return;
       }
       if (status) {
-        status.innerHTML = `<div class="card"><h2 style="margin:0 0 8px;font-size:1.05rem">Job</h2><pre class="output">${escapeHtml(JSON.stringify(result, null, 2))}</pre></div>`;
+        status.innerHTML = `<div class="card"><h2 style="margin:0 0 8px;font-size:1.05rem">${he.mintExtra.job}</h2><pre class="output">${escapeHtml(JSON.stringify(result, null, 2))}</pre></div>`;
       }
     } catch (err) {
       if (status) status.innerHTML = bannerError(err);

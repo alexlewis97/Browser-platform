@@ -1,4 +1,5 @@
 import { request, type WorkflowDefinition } from "./api";
+import { he } from "./copy/he";
 
 export type ValidationFinding = {
   id?: string;
@@ -36,12 +37,12 @@ export function escapeHtml(value: unknown): string {
 }
 
 export function formatUsage(usage?: { tokens_in?: number; tokens_out?: number; cost_usd?: number | null; used?: boolean } | null): string {
-  if (!usage) return "0 tokens";
+  if (!usage) return he.validation.zeroTokens;
   const inn = usage.tokens_in || 0;
   const out = usage.tokens_out || 0;
   const cost = usage.cost_usd;
   const costLabel = cost != null && cost > 0 ? ` · $${Number(cost).toFixed(6)}` : "";
-  return `${inn} in / ${out} out${costLabel}`;
+  return `${inn} נכנס / ${out} יוצא${costLabel}`;
 }
 
 export function findingsCard(validation?: InputValidation | null, opts?: { applyAction?: string }): string {
@@ -51,21 +52,22 @@ export function findingsCard(validation?: InputValidation | null, opts?: { apply
   const rows = findings
     .map((item) => {
       const sev = item.severity === "error" ? "bad" : "warn";
+      const sevLabel = item.severity === "error" ? he.validation.error : he.validation.warning;
       const fix = item.suggestion_label && item.patch && opts?.applyAction
         ? `<button type="button" class="btn" data-action="${escapeHtml(opts.applyAction)}" data-finding="${escapeHtml(item.id || "")}">${escapeHtml(item.suggestion_label)}</button>`
         : item.suggestion_label
-          ? `<div class="muted">Suggested: ${escapeHtml(item.suggestion_label)}</div>`
+          ? `<div class="muted">${he.validation.suggested} ${escapeHtml(item.suggestion_label)}</div>`
           : "";
       return `<div class="finding">
-        <span class="pill ${sev}">${escapeHtml(item.severity || "warning")}</span>
+        <span class="pill ${sev}">${escapeHtml(sevLabel)}</span>
         <div><div>${escapeHtml(item.message)}</div>${fix}</div>
       </div>`;
     })
     .join("");
   const banner = blocks
-    ? `<div class="banner err">Publishing is blocked until the errors below are fixed. You can still save.</div>`
-    : `<div class="banner info">Input checks found something to review. Saving is still allowed.</div>`;
-  const usage = validation?.usage?.used ? `<p class="muted">Input check tokens: ${escapeHtml(formatUsage(validation.usage))}</p>` : "";
+    ? `<div class="banner err">${he.validation.blockPublish}</div>`
+    : `<div class="banner info">${he.validation.review}</div>`;
+  const usage = validation?.usage?.used ? `<p class="muted">${he.validation.inputTokens} ${escapeHtml(formatUsage(validation.usage))}</p>` : "";
   return `<div class="card" id="input-findings">${banner}${rows}${usage}</div>`;
 }
 
