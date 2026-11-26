@@ -1656,7 +1656,8 @@ async function onClick(event: Event): Promise<void> {
   if (action === "from-task-explore-save") {
     event.preventDefault();
     const form = target.closest("#from-task-explore") as HTMLFormElement | null;
-    const jobId = form?.dataset.jobId || parseRoute().id;
+    const route = parseRoute();
+    const jobId = form?.dataset.jobId || ("id" in route ? route.id : "");
     if (!jobId || !form) return;
     const boxes = [...form.querySelectorAll<HTMLInputElement>("input[data-explore-name]")];
     const accepted = boxes.filter((box) => box.checked).map((box) => box.dataset.exploreName || "").filter(Boolean);
