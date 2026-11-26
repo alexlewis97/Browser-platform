@@ -36,18 +36,18 @@ def _settings(data_dir: Path, **kwargs) -> Settings:
 
 def test_serves_built_web_app_at_root(data_dir: Path):
     site = web_site_dir(ROOT)
-    assert site is not None, "web/site must be built (index.html) for local serving"
     client = TestClient(create_app(_settings(data_dir), root=ROOT))
+    # API routes are always available even without a built web/site.
+    assert client.get("/health").json()["ok"] is True
+    listed = client.get("/api/workflows")
+    assert listed.status_code == 200
+    if site is None:
+        return
     home = client.get("/")
     assert home.status_code == 200
     assert "text/html" in home.headers.get("content-type", "")
     body = home.text.lower()
     assert "<!doctype html>" in body or "<html" in body
-    # API routes are unchanged
-    assert client.get("/health").json()["ok"] is True
-    listed = client.get("/api/workflows")
-    assert listed.status_code == 200
-    # Bundled assets if present
     assets = list((site / "assets").glob("*")) if (site / "assets").is_dir() else []
     if assets:
         rel = assets[0].name
@@ -56,40 +56,57 @@ def test_serves_built_web_app_at_root(data_dir: Path):
 
 
 @pytest.mark.asyncio
-async def test_localhost_skips_token_non_local_still_requires(data_dir: Path):
+async def test_token_required_everywhere_by_default(data_dir: Path):
     settings = _settings(data_dir, access_token="test-token-not-for-production")
     app = create_app(settings, root=ROOT)
     remote = TestClient(app)
     assert remote.get("/health").status_code == 200
-    assert remote.get("/").status_code == 200  # static UI is open
+    # Static UI is open when built; otherwise the catch-all may 404 — either is fine.
+    assert remote.get("/").status_code in {200, 404}
     denied = remote.get("/api/workflows")
     assert denied.status_code == 401
     allowed = remote.get("/api/workflows", headers={"X-Browser-Platform-Token": "test-token-not-for-production"})
     assert allowed.status_code == 200
+    # Docs are disabled (404) or locked (401) when a token is configured.
+    assert remote.get("/openapi.json").status_code in {401, 404}
 
     transport = ASGITransport(app=app, client=("127.0.0.1", 50123))
     async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8745") as local:
         skipped = await local.get("/api/workflows")
-        assert skipped.status_code == 200, skipped.text
-
-
-@pytest.mark.asyncio
-async def test_require_token_on_localhost_enforced(data_dir: Path):
-    settings = _settings(
-        data_dir,
-        access_token="test-token-not-for-production",
-        require_token_on_localhost=True,
-    )
-    app = create_app(settings, root=ROOT)
-    transport = ASGITransport(app=app, client=("127.0.0.1", 50124))
-    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8745") as local:
-        denied = await local.get("/api/workflows")
-        assert denied.status_code == 401
+        assert skipped.status_code == 401
         ok = await local.get("/api/workflows", headers={"X-Browser-Platform-Token": "test-token-not-for-production"})
         assert ok.status_code == 200
 
 
-def test_cors_allows_localhost_ports_and_vercel(data_dir: Path):
+@pytest.mark.asyncio
+async def test_require_token_on_localhost_can_be_disabled(data_dir: Path):
+    settings = _settings(
+        data_dir,
+        access_token="test-token-not-for-production",
+        require_token_on_localhost=False,
+    )
+    app = create_app(settings, root=ROOT)
+    transport = ASGITransport(app=app, client=("127.0.0.1", 50124))
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8745") as local:
+        ok = await local.get("/api/workflows")
+        assert ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_proxy_headers_still_require_token_when_localhost_skip_enabled(data_dir: Path):
+    settings = _settings(
+        data_dir,
+        access_token="test-token-not-for-production",
+        require_token_on_localhost=False,
+    )
+    app = create_app(settings, root=ROOT)
+    transport = ASGITransport(app=app, client=("127.0.0.1", 50125))
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8745") as local:
+        denied = await local.get("/api/workflows", headers={"X-Forwarded-For": "203.0.113.10"})
+        assert denied.status_code == 401
+
+
+def test_cors_allows_localhost_ports_and_exact_vercel(data_dir: Path):
     settings = _settings(data_dir, cors_origins="https://browser-platform-web.vercel.app")
     client = TestClient(create_app(settings, root=ROOT))
 
@@ -101,6 +118,8 @@ def test_cors_allows_localhost_ports_and_vercel(data_dir: Path):
     assert origin_allowed("http://localhost:5173") == "http://localhost:5173"
     assert origin_allowed("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
     assert origin_allowed("https://browser-platform-web.vercel.app") == "https://browser-platform-web.vercel.app"
+    # Preview vercel apps are no longer wildcard-allowed.
+    assert origin_allowed("https://preview.vercel.app") != "https://preview.vercel.app"
     preflight = client.options(
         "/api/workflows",
         headers={
@@ -110,6 +129,14 @@ def test_cors_allows_localhost_ports_and_vercel(data_dir: Path):
     )
     assert preflight.headers.get("access-control-allow-origin") == "http://localhost:8745"
     assert origin_allowed("https://evil.example") != "https://evil.example"
+
+
+def test_public_bind_requires_token(data_dir: Path):
+    from browser_platform.local_access import validate_public_bind
+
+    with pytest.raises(RuntimeError):
+        validate_public_bind(_settings(data_dir, host="0.0.0.0", access_token=""))
+    validate_public_bind(_settings(data_dir, host="0.0.0.0", access_token="secret"))
 
 
 def test_frontend_defaults_backend_url_to_local_origin():

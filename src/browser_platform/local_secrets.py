@@ -79,19 +79,32 @@ def save_openai_key(key: str | None) -> bool:
     """Save or clear the local OpenAI key. Returns whether a live key is now configured."""
     value = (key or "").strip()
     path = openai_key_path()
+    stored_before = _read_stored_key()
     if not value:
         if path.is_file():
             try:
                 path.unlink()
             except Exception:
                 pass
-        # Only drop the process env key if it came from our store (don't clobber a shell-provided key unless clearing).
-        os.environ.pop("OPENAI_API_KEY", None)
-        return False
+        # Only drop the process env key when it matched our stored file (do not clobber a shell key).
+        env = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        if stored_before and env == stored_before:
+            os.environ.pop("OPENAI_API_KEY", None)
+        return looks_like_live_key((os.environ.get("OPENAI_API_KEY") or "").strip())
     if not looks_like_live_key(value):
         raise ValueError("that does not look like a live OpenAI API key")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(value + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value + "\n")
+    except Exception:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        raise
     try:
         os.chmod(path, 0o600)
     except Exception:

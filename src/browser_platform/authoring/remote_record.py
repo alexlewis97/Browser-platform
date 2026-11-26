@@ -123,7 +123,7 @@ class RecordSession:
         )
         self.context = await self.browser.new_context(
             viewport=self.viewport,
-            ignore_https_errors=True,
+            ignore_https_errors=False,
         )
         await self.context.add_init_script(RECORDER_JS)
         self.page = await self.context.new_page()
@@ -227,11 +227,18 @@ class RecordSession:
     async def navigate(self, url: str) -> None:
         if self.page is None:
             raise RuntimeError("session is not running")
+        from browser_platform.nav_policy import assert_safe_navigation_url
+
         target = (url or "").strip()
         if target and "://" not in target and is_navigable_url("https://" + target):
             target = "https://" + target
         if not is_navigable_url(target):
             raise RuntimeError(f"refusing to navigate to a non-URL: {url!r}")
+        # Remote-record Chromium is server-side — block private/loopback and file://.
+        try:
+            target = assert_safe_navigation_url(target, allow_private=False)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
         self.touch()
         await self.page.goto(target, wait_until="domcontentloaded", timeout=45000)
         self.latest_url = self.page.url

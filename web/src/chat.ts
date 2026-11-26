@@ -1,5 +1,7 @@
 import { backendFetch } from "./api";
+import { he } from "./copy/he";
 import { probeExtension } from "./record";
+import { loadSettings } from "./storage";
 import { escapeHtml, formatUsage } from "./validation";
 
 export type ChatCall = {
@@ -49,6 +51,17 @@ type Preset = { name: string; message: string; target?: string };
 
 const PRESET_KEY = "bp-chat-presets";
 
+const CHAT_STATUS: Record<string, string> = {
+  planned: he.chat.planned,
+  running: he.chat.running,
+  succeeded: he.chat.succeeded,
+  failed: he.chat.failed,
+};
+
+function chatStatusLabel(status: string): string {
+  return CHAT_STATUS[status] ?? status;
+}
+
 export const chatState = {
   messages: [] as ChatMessage[],
   job: null as ChatJob | null,
@@ -89,9 +102,9 @@ export function renderChatPage(): string {
   const live = s.busy && s.job ? renderJob(s.job, s.job.answer || "") : "";
   const confirm = s.job?.status === "needs_confirmation"
     ? `<div class="banner info" id="chat-confirm">
-        ${escapeHtml(s.job.confirm_reason || "Confirm before running.")}
+        ${escapeHtml(s.job.confirm_reason || he.chat.confirmDefault)}
         <div class="btn-row" style="margin-top:8px">
-          <button type="button" class="btn primary" data-action="chat-confirm">Confirm and run</button>
+          <button type="button" class="btn primary" data-action="chat-confirm">${he.chat.confirmRun}</button>
         </div>
       </div>`
     : "";
@@ -108,22 +121,22 @@ export function renderChatPage(): string {
   return `
     ${err}
     <div class="card chat-thread" id="chat-thread">
-      ${history || `<p class="muted">Ask for a saved workflow, several at once, or the same one over a list (for example three teams). I'll call the tools, then answer your actual question.</p>`}
+      ${history || `<p class="muted">${he.chat.empty}</p>`}
       ${live}
       ${confirm}
-      ${s.busy ? `<p class="muted"><span class="spinner"></span> Working…</p>` : ""}
+      ${s.busy ? `<p class="muted"><span class="spinner"></span> ${he.chat.working}</p>` : ""}
     </div>
     <form id="chat-form" class="card chat-composer">
-      <label class="field"><span>Message</span>
-        <textarea id="chat-input" name="message" required placeholder="Which of Arsenal, Chelsea and Spurs plays first?" style="min-height:88px;font-family:var(--font);font-size:16px">${escapeHtml(s.draft)}</textarea>
+      <label class="field"><span>${he.chat.message}</span>
+        <textarea id="chat-input" name="message" required placeholder="${he.chat.messagePh}" style="min-height:88px;font-family:var(--font);font-size:16px">${escapeHtml(s.draft)}</textarea>
       </label>
       <label class="check">
         <input type="checkbox" id="chat-target-extension" ${s.target === "extension" ? "checked" : ""} ${s.extensionReady ? "" : "disabled"} />
-        <span>Run in my Chrome ${s.extensionReady ? "" : "(extension not detected)"}</span>
+        <span>${he.chat.runInChrome} ${s.extensionReady ? "" : he.chat.extMissing}</span>
       </label>
       <div class="btn-row">
-        <button class="btn primary wide" type="submit" ${s.busy ? "disabled" : ""}>Send</button>
-        <button class="btn" type="button" data-action="chat-save-preset" ${s.busy ? "disabled" : ""}>Save as preset</button>
+        <button class="btn primary wide" type="submit" ${s.busy ? "disabled" : ""}>${he.chat.send}</button>
+        <button class="btn" type="button" data-action="chat-save-preset" ${s.busy ? "disabled" : ""}>${he.chat.savePreset}</button>
       </div>
       ${presetList}
     </form>
@@ -135,15 +148,17 @@ function renderJob(job: ChatJob, answer: string): string {
     const item = (job.items || []).find((entry) => entry.id === call.id);
     return renderCallCard(call, item);
   }).join("");
+  const done = (job.items || []).filter((i) => i.status && i.status !== "running").length;
+  const total = (job.calls || []).length;
   const progress = job.status === "running"
-    ? `<p class="muted">Batch progress: ${(job.items || []).filter((i) => i.status && i.status !== "running").length}/${(job.calls || []).length} finished.</p>`
+    ? `<p class="muted">${he.chat.batchProgress} ${done}/${total} ${he.chat.finished}</p>`
     : "";
   const flagged = (job.flagged || []).length
-    ? `<div class="banner err">Flagged or failed: ${(job.flagged || [])
+    ? `<div class="banner err">${he.chat.flagged} ${(job.flagged || [])
         .map((f) => `${escapeHtml(f.workflow || "")} ${escapeHtml(JSON.stringify(f.inputs || {}))} — ${escapeHtml(f.verdict || "")}: ${escapeHtml(f.reason || "")}`)
         .join(" · ")}</div>`
     : "";
-  const usage = job.usage ? `<p class="muted">This turn: ${escapeHtml(formatUsage(job.usage))}${job.elapsed_ms != null ? ` · ${(job.elapsed_ms / 1000).toFixed(1)}s` : ""}</p>` : "";
+  const usage = job.usage ? `<p class="muted">${he.chat.thisTurn} ${escapeHtml(formatUsage(job.usage))}${job.elapsed_ms != null ? ` · ${(job.elapsed_ms / 1000).toFixed(1)}s` : ""}</p>` : "";
   const text = answer || job.answer || job.question || job.error || "";
   return `<div class="chat-job" data-job-id="${escapeHtml(job.id || "")}">
     ${calls}
@@ -163,19 +178,19 @@ function renderCallCard(call: ChatCall, item?: ChatItem): string {
     .map(([k, v]) => `${k}=${v}`)
     .join(", ");
   const raw = item
-    ? `<details class="raw-result"><summary>Raw result</summary><pre class="output">${escapeHtml(JSON.stringify({ inputs: item.inputs, outputs: item.outputs, validation: item.validation, error: item.error, url: item.url }, null, 2))}</pre></details>`
+    ? `<details class="raw-result"><summary>${he.chat.raw}</summary><pre class="output">${escapeHtml(JSON.stringify({ inputs: item.inputs, outputs: item.outputs, validation: item.validation, error: item.error, url: item.url }, null, 2))}</pre></details>`
     : "";
   const reason = item?.validation?.reason ? `<div class="muted">${escapeHtml(item.validation.reason)}</div>` : "";
   const err = item?.error ? `<div class="muted">${escapeHtml(item.error)}</div>` : "";
   return `<div class="card tool-card">
     <div class="row">
-      <strong>${escapeHtml(call.workflow_name || call.tool || "workflow")}</strong>
-      <span class="pill ${pill}">${escapeHtml(status)}</span>
+      <strong>${escapeHtml(call.workflow_name || call.tool || he.workflow.title)}</strong>
+      <span class="pill ${pill}">${escapeHtml(chatStatusLabel(status))}</span>
       ${verdictPill}
     </div>
-    <div class="mono muted">${escapeHtml(inputs || "no inputs")}</div>
+    <div class="mono muted">${escapeHtml(inputs || he.chat.noInputs)}</div>
     ${reason}${err}
-    ${item?.action_ending && item.status === "succeeded" ? `<div class="muted">Action completed.</div>` : ""}
+    ${item?.action_ending && item.status === "succeeded" ? `<div class="muted">${he.chat.actionDone}</div>` : ""}
     ${raw}
   </div>`;
 }
@@ -215,11 +230,14 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
   chatState.job = { status: "planning", message, calls: [], items: [], target: chatState.target };
   rerenderChat();
   try {
+    // Exclude the current user turn from history (it is sent as `message`).
     const history = chatState.messages
       .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(0, -1)
       .slice(-8)
       .map((m) => ({ role: m.role, content: m.content }));
-    const body = {
+    const settings = loadSettings();
+    const body: Record<string, unknown> = {
       message,
       history,
       target: chatState.target,
@@ -228,6 +246,9 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
       job_id: opts?.jobId,
       results: opts?.results,
     };
+    if (settings.openrouterKey) {
+      body.llm = { api_key: settings.openrouterKey, model: settings.model || undefined };
+    }
     const response = await backendFetch("/api/chat", { method: "POST", body: JSON.stringify(body) });
     if (!response.ok) {
       const text = await response.text();
@@ -245,8 +266,13 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
       chatState.job = job;
     }
     if (!job) throw new Error("Chat returned no job.");
-    if (job.status === "awaiting_results" && chatState.target === "extension") {
-      const results = await runCallsInExtension(job.calls || []);
+    if (
+      job.status === "awaiting_results" &&
+      chatState.target === "extension" &&
+      Array.isArray(job.calls) &&
+      job.calls.length > 0
+    ) {
+      const results = await runCallsInExtension(job.calls);
       await sendChat(message, { jobId: job.id, results });
       return;
     }
@@ -392,7 +418,7 @@ export function handleChatClick(action: string, target: HTMLElement): boolean {
   if (action === "chat-save-preset") {
     const message = String((document.getElementById("chat-input") as HTMLTextAreaElement | null)?.value || chatState.messages.filter((m) => m.role === "user").at(-1)?.content || "").trim();
     if (!message) return true;
-    const name = window.prompt("Preset name", message.slice(0, 32)) || "";
+    const name = window.prompt(he.chat.presetName, message.slice(0, 32)) || "";
     if (name) {
       savePreset(name, message, chatState.target);
       rerenderChat();
@@ -411,4 +437,3 @@ export function handleChatClick(action: string, target: HTMLElement): boolean {
   }
   return false;
 }
-

@@ -340,16 +340,23 @@ async def run_step(
     if typ == "navigation":
         if not url:
             raise StepFailed("navigation step is missing url")
+        from browser_platform.nav_policy import assert_safe_navigation_url
+
         if not is_navigable_url(str(url)):
             raise StepFailed(f"navigation step is not an http(s) URL: {url!r}")
+        # Local user Chrome may hit intranet hosts; still block file:// and odd schemes.
+        try:
+            safe = assert_safe_navigation_url(str(url), allow_private=True)
+        except ValueError as exc:
+            raise StepFailed(str(exc)) from exc
         # A recorded post-submit navigation is often the form action URL. Replaying
         # it with page.goto() would GET the same path and wipe the POST body.
         try:
             current = page.url
         except Exception:
             current = ""
-        if not _same_page_url(current, str(url)):
-            await page.goto(str(url), wait_until="domcontentloaded")
+        if not _same_page_url(current, safe):
+            await page.goto(safe, wait_until="domcontentloaded")
         # Public sites (notably Wikipedia) may return a short rate-limit error page on the first hit.
         for _ in range(2):
             title = ""

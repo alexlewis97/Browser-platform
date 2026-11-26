@@ -555,13 +555,16 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+let recordingTabId: number | null = null;
+
 async function ensureRecorder(tabId: number): Promise<void> {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   const url = tab?.url || "";
   if (!/^https?:/i.test(url)) return;
   if (recorderInjected.has(tabId)) {
     try {
-      const ping = await withTimeout(chrome.tabs.sendMessage(tabId, { kind: "bp-record-drain" }), 2000, "recorder ping");
+      // Non-destructive liveness check — never drain here.
+      const ping = await withTimeout(chrome.tabs.sendMessage(tabId, { kind: "bp-record-ping" }), 2000, "recorder ping");
       if (ping) return;
     } catch {
       recorderInjected.delete(tabId);
@@ -575,23 +578,34 @@ async function ensureRecorder(tabId: number): Promise<void> {
   recorderInjected.add(tabId);
 }
 
-async function injectAllHttpTabs(): Promise<void> {
-  const tabs = await chrome.tabs.query({});
-  await Promise.all((tabs || []).map((tab) => (tab.id != null ? ensureRecorder(tab.id).catch(() => undefined) : Promise.resolve())));
+async function injectRecordingTab(): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (tab?.id == null || !tab.url || !/^https?:/i.test(tab.url)) {
+    recordingTabId = null;
+    return;
+  }
+  recordingTabId = tab.id;
+  await ensureRecorder(tab.id).catch(() => undefined);
 }
 
-async function drainAllTabs(): Promise<RecordedPageEvent[]> {
+async function drainRecordingTab(): Promise<RecordedPageEvent[]> {
   const extra: RecordedPageEvent[] = [];
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) {
-    if (tab.id == null || !tab.url || !/^https?:/i.test(tab.url)) continue;
-    try {
-      await ensureRecorder(tab.id);
-      const res = (await chrome.tabs.sendMessage(tab.id, { kind: "bp-record-drain" })) as { events?: RecordedPageEvent[] };
-      for (const ev of res?.events || []) extra.push(ev);
-    } catch {
-      /* tab may not have the recorder */
+  const tabId = recordingTabId;
+  if (tabId == null) return extra;
+  try {
+    await ensureRecorder(tabId);
+    const res = (await chrome.tabs.sendMessage(tabId, { kind: "bp-record-drain" })) as { events?: RecordedPageEvent[] };
+    for (const ev of res?.events || []) {
+      if (ev && typeof ev === "object") {
+        const copy = { ...ev };
+        if (typeof copy.value === "string" && /(password|passwd|secret)/i.test(String((copy.element as { name?: string } | undefined)?.name || ""))) {
+          copy.value = null;
+        }
+        extra.push(copy);
+      }
     }
+  } catch {
+    /* tab may not have the recorder */
   }
   return extra;
 }
@@ -601,11 +615,14 @@ function sortEvents(events: RecordedPageEvent[]): RecordedPageEvent[] {
 }
 
 async function startRecording(): Promise<void> {
+  if (currentRun) {
+    throw new Error("A workflow run is already in progress.");
+  }
   recording.active = true;
   recording.events = [];
   recording.startedAt = Date.now();
   recorderInjected.clear();
-  await injectAllHttpTabs();
+  await injectRecordingTab();
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (tab?.id != null && tab.url && /^https?:/i.test(tab.url)) {
     rememberEvent({ type: "navigation", ts: Date.now(), url: tab.url, changed: true });
@@ -616,9 +633,10 @@ async function startRecording(): Promise<void> {
 }
 
 async function stopRecording(): Promise<RecordedPageEvent[]> {
-  const drained = await drainAllTabs();
+  const drained = await drainRecordingTab();
   for (const ev of drained) rememberEvent(ev);
   recording.active = false;
+  recordingTabId = null;
   void chrome.action.setBadgeText({ text: "" });
   emitRecord();
   return sortEvents(recording.events);

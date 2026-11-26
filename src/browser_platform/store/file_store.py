@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from pathlib import Path
 from threading import Lock
@@ -11,6 +12,15 @@ from typing import Any
 from browser_platform.models.run import RunRecord
 from browser_platform.models.workflow import StoredWorkflow, WorkflowDefinition
 from browser_platform.redaction import redact
+
+_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+
+
+def safe_workflow_id(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if not value or not _SAFE_ID.fullmatch(value):
+        raise ValueError("workflow id must match [A-Za-z0-9._-]{1,80}")
+    return value
 
 
 class FileStore:
@@ -42,10 +52,21 @@ class FileStore:
     def _save_index(self, index: dict[str, Any]) -> None:
         self._write_json(self._index_path, index)
 
+    def _workflow_file(self, workflow_id: str) -> Path:
+        wf_id = safe_workflow_id(workflow_id)
+        path = (self.workflows_dir / f"{wf_id}.workflow.json").resolve()
+        root = self.workflows_dir.resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("workflow path escapes data dir") from exc
+        return path
+
     def create_workflow(self, definition: WorkflowDefinition, workflow_id: str | None = None) -> StoredWorkflow:
         with self._lock:
-            wf_id = workflow_id or definition.id or uuid.uuid4().hex
-            path = self.workflows_dir / f"{wf_id}.workflow.json"
+            raw = workflow_id or definition.id or uuid.uuid4().hex
+            wf_id = safe_workflow_id(raw)
+            path = self._workflow_file(wf_id)
             definition.id = wf_id
             self._write_json(path, definition.model_dump(exclude_none=True))
             index = self._index()
@@ -55,36 +76,55 @@ class FileStore:
 
     def update_workflow(self, workflow_id: str, definition: WorkflowDefinition) -> StoredWorkflow:
         with self._lock:
+            wf_id = safe_workflow_id(workflow_id)
             index = self._index()
-            if workflow_id not in index:
-                raise KeyError(workflow_id)
-            path = Path(index[workflow_id]["path"])
-            definition.id = workflow_id
+            if wf_id not in index:
+                raise KeyError(wf_id)
+            path = self._workflow_file(wf_id)
+            definition.id = wf_id
             self._write_json(path, definition.model_dump(exclude_none=True))
-            index[workflow_id] = {"path": str(path), "name": definition.name, "version": definition.version}
+            index[wf_id] = {"path": str(path), "name": definition.name, "version": definition.version}
             self._save_index(index)
-            return StoredWorkflow(id=workflow_id, path=str(path), definition=definition)
+            return StoredWorkflow(id=wf_id, path=str(path), definition=definition)
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        with self._lock:
+            wf_id = safe_workflow_id(workflow_id)
+            index = self._index()
+            if wf_id not in index:
+                raise KeyError(wf_id)
+            path = self._workflow_file(wf_id)
+            if path.is_file():
+                path.unlink()
+            index.pop(wf_id, None)
+            self._save_index(index)
 
     def _workflow_path(self, workflow_id: str, recorded: str | None = None) -> Path:
-        """Prefer a recorded path, but fall back to this data dir after a host move."""
-        candidates = []
+        """Prefer a recorded path under workflows_dir; never follow escapes."""
+        wf_id = safe_workflow_id(workflow_id)
+        preferred = self._workflow_file(wf_id)
+        if preferred.is_file():
+            return preferred
         if recorded:
-            candidates.append(Path(recorded))
-        candidates.append(self.workflows_dir / f"{workflow_id}.workflow.json")
-        for path in candidates:
-            if path.is_file():
-                return path
-        return candidates[0]
+            candidate = Path(recorded).resolve()
+            try:
+                candidate.relative_to(self.workflows_dir.resolve())
+            except ValueError:
+                return preferred
+            if candidate.is_file():
+                return candidate
+        return preferred
 
     def get_workflow(self, workflow_id: str) -> StoredWorkflow:
+        wf_id = safe_workflow_id(workflow_id)
         index = self._index()
-        if workflow_id not in index:
-            raise KeyError(workflow_id)
-        path = self._workflow_path(workflow_id, index[workflow_id].get("path"))
+        if wf_id not in index:
+            raise KeyError(wf_id)
+        path = self._workflow_path(wf_id, index[wf_id].get("path"))
         data = self._read_json(path)
         definition = WorkflowDefinition.model_validate(data)
-        definition.id = workflow_id
-        return StoredWorkflow(id=workflow_id, path=str(path), definition=definition)
+        definition.id = wf_id
+        return StoredWorkflow(id=wf_id, path=str(path), definition=definition)
 
     def list_workflows(self) -> list[StoredWorkflow]:
         index = self._index()

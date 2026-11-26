@@ -24,10 +24,11 @@ class Settings(BaseSettings):
     action_timeout_ms: int = 8_000
     host: str = "127.0.0.1"
     port: int = 8745
-    # Shared access token for a publicly tunneled API. Empty = no auth.
+    # Shared access token for a publicly tunneled API. Empty = loopback-only.
     access_token: str = ""
-    # Default: no token needed on localhost; still required for non-local requests.
-    require_token_on_localhost: bool = False
+    # When a token is set it is required everywhere by default (including localhost).
+    # Set false only for trusted same-machine clients that cannot send the header.
+    require_token_on_localhost: bool = True
     # Comma-separated browser origins (Vercel URL). Localhost / 127.0.0.1 any port are always allowed.
     cors_origins: str = ",".join(DEFAULT_CORS_ORIGINS)
     # Auto-start the user's Chrome with --remote-debugging-port if 9222 is free.

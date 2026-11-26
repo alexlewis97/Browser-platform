@@ -141,12 +141,18 @@ class ChatOrchestrator:
         job_id: str | None = None,
         results: list[dict[str, Any]] | None = None,
         emit: Emit | None = None,
+        llm_api_key: str = "",
+        llm_model: str = "",
     ) -> dict[str, Any]:
         started = _now()
         if job_id:
             job = self.jobs.get(job_id)
             if job is None:
                 raise KeyError("Unknown or expired chat job.")
+            if llm_api_key:
+                job["llm_api_key"] = llm_api_key
+            if llm_model:
+                job["llm_model"] = llm_model
             if results is not None:
                 job["items"] = _normalize_client_results(job, results)
                 await self.synthesize(job, emit=emit)
@@ -155,6 +161,9 @@ class ChatOrchestrator:
             if confirm and job.get("status") in {"needs_confirmation", "planned"}:
                 job["confirmed"] = True
                 if target == "extension" or job.get("target") == "extension":
+                    if not (job.get("calls") or []):
+                        job["elapsed_ms"] = round((_now() - started) * 1000, 1)
+                        return job
                     job["status"] = "awaiting_results"
                     job["target"] = "extension"
                     await _emit(emit, {"type": "planned", "job": public_job(job)})
@@ -163,7 +172,14 @@ class ChatOrchestrator:
                 await self.synthesize(job, emit=emit)
                 job["elapsed_ms"] = round((_now() - started) * 1000, 1)
                 return job
-        job = await self.plan(message, history=history or [], target=target, emit=emit)
+        job = await self.plan(
+            message,
+            history=history or [],
+            target=target,
+            emit=emit,
+            llm_api_key=llm_api_key,
+            llm_model=llm_model,
+        )
         needs = job.get("status")
         if needs == "needs_confirmation" and confirm:
             job["confirmed"] = True
@@ -181,6 +197,10 @@ class ChatOrchestrator:
             job["elapsed_ms"] = round((_now() - started) * 1000, 1)
             return job
         if job.get("target") == "extension":
+            # Only hand off to the extension when there are tool calls to run.
+            if job.get("status") in {"failed", "succeeded"} or not (job.get("calls") or []):
+                job["elapsed_ms"] = round((_now() - started) * 1000, 1)
+                return job
             job["status"] = "awaiting_results"
             await _emit(emit, {"type": "planned", "job": public_job(job)})
             job["elapsed_ms"] = round((_now() - started) * 1000, 1)
@@ -197,6 +217,8 @@ class ChatOrchestrator:
         history: list[dict[str, Any]],
         target: str = "cloud",
         emit: Emit | None = None,
+        llm_api_key: str = "",
+        llm_model: str = "",
     ) -> dict[str, Any]:
         tools = self.catalog()
         job: dict[str, Any] = {
@@ -211,6 +233,8 @@ class ChatOrchestrator:
             "question": None,
             "confirm_reason": None,
             "flagged": [],
+            "llm_api_key": (llm_api_key or "").strip(),
+            "llm_model": (llm_model or "").strip(),
         }
         self.jobs.put(job)
         await _emit(emit, {"type": "planning", "job_id": job["id"]})
@@ -219,9 +243,10 @@ class ChatOrchestrator:
             job["error"] = "No saved workflows are available to use as tools."
             await _emit(emit, {"type": "error", "error": job["error"]})
             return job
-        if not env_api_key():
+        api_key = job["llm_api_key"] or env_api_key()
+        if not api_key:
             job["status"] = "failed"
-            job["error"] = "Chat planning needs OPENROUTER_API_KEY on the server."
+            job["error"] = "Chat planning needs an OpenRouter key (send llm.api_key or set OPENROUTER_API_KEY)."
             await _emit(emit, {"type": "error", "error": job["error"]})
             return job
         tool_lines = []
@@ -237,16 +262,19 @@ class ChatOrchestrator:
             "Do not answer from memory when a tool can fetch the live result."
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        # Do not re-append the current user turn if the client already put it in history.
         for turn in history[-8:]:
             role = turn.get("role")
             content = turn.get("content")
-            if role in {"user", "assistant"} and content:
+            if role in {"user", "assistant"} and content and str(content).strip() != message.strip():
                 messages.append({"role": role, "content": str(content)[:1500]})
         messages.append({"role": "user", "content": message[:4000]})
         assistant, usage = await chat_complete(
             messages,
             tools=openai_tools(tools),
             max_tokens=800,
+            api_key=api_key,
+            model=job["llm_model"] or None,
         )
         job["usage"] = merge_usage(job.get("usage"), usage)
         job["plan_usage"] = usage
@@ -494,7 +522,8 @@ class ChatOrchestrator:
             for item in flagged
         ]
         fallback = _fallback_answer(job, compact)
-        if not env_api_key():
+        api_key = (job.get("llm_api_key") or "").strip() or env_api_key()
+        if not api_key:
             job["answer"] = fallback
             job["status"] = _status_from_items(compact, job["flagged"])
             if job["status"] != "succeeded" and not job.get("error"):
@@ -525,6 +554,8 @@ class ChatOrchestrator:
                     },
                 ],
                 max_tokens=500,
+                api_key=api_key,
+                model=(job.get("llm_model") or None),
             )
             job["usage"] = merge_usage(job.get("usage"), usage)
             job["synthesis_usage"] = usage

@@ -70,12 +70,7 @@ function Get-UpdateUrl([string]$Root, [string]$Override) {
 
 function Update-FromZip([string]$Root, [string]$Url) {
     if (-not $Url) {
-        Write-Host "No update URL configured. To update:"
-        Write-Host "  1. Download the latest browser-platform-windows.zip"
-        Write-Host "  2. Unzip it over this folder (keep your existing copy, or replace it)"
-        Write-Host "  3. Re-run install.ps1"
-        Write-Host "Or pass -UpdateUrl https://.../browser-platform-windows.zip"
-        return
+        throw "No update URL configured. Pass -UpdateUrl or set update-url.txt (refusing to pretend the upgrade succeeded)."
     }
     if ($Url -notmatch "^https://") {
         throw "Update URL must be HTTPS."
@@ -86,16 +81,31 @@ function Update-FromZip([string]$Root, [string]$Url) {
     $zip = Join-Path $tmp "browser-platform-windows.zip"
     try {
         Invoke-WebRequest -Uri $Url -OutFile $zip -UseBasicParsing
+        # Prefer a sibling .sha256 file published next to the zip.
+        $shaUrl = if ($Url -match "\.sha256$") { $Url } else { "$Url.sha256" }
+        $expected = $null
+        try {
+            $shaBody = (Invoke-WebRequest -Uri $shaUrl -UseBasicParsing).Content
+            if ($shaBody -match "([A-Fa-f0-9]{64})") { $expected = $Matches[1].ToLowerInvariant() }
+        } catch {
+            throw "Update refused: could not download $shaUrl (publish a sha256 next to the zip)."
+        }
+        if (-not $expected) { throw "Update refused: sha256 file did not contain a 64-hex digest." }
+        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+            throw "Update refused: zip sha256 mismatch (expected $expected, got $actual)."
+        }
+        Write-Host "  sha256 ok ($actual)"
         $extract = Join-Path $tmp "extracted"
         Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
-        $source = $extract
-        $inner = Get-ChildItem -LiteralPath $extract -Directory | Select-Object -First 1
-        $files = Get-ChildItem -LiteralPath $extract -File
-        if ($inner -and -not ($files | Where-Object { $_.Name -eq "install.ps1" })) {
-            if (Test-Path -LiteralPath (Join-Path $inner.FullName "install.ps1")) {
-                $source = $inner.FullName
-            }
+        # Prefer the directory that actually contains install.ps1.
+        $withInstall = Get-ChildItem -LiteralPath $extract -Recurse -Filter "install.ps1" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($withInstall) {
+            $sourceCandidate = Split-Path -Parent $withInstall.FullName
+        } else {
+            $sourceCandidate = $null
         }
+        $source = if ($sourceCandidate) { $sourceCandidate } else { $extract }
         Write-Step "Applying update (preserving .venv and local data)"
         $exclude = @(".venv", "data", ".env", "node_modules", ".install-stamp")
         Get-ChildItem -LiteralPath $source -Force | ForEach-Object {

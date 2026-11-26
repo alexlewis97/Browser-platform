@@ -18,6 +18,7 @@ from browser_platform.workflowuse.adapter import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.skipif(not workflow_use_available(), reason="workflow-use optional extra not installed")
 def test_official_schema_loads_without_package_init():
     cls = official_schema_class()
     assert cls is not None

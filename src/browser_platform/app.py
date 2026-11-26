@@ -24,7 +24,7 @@ from browser_platform.fuzzy.hitl import ConfirmationBroker, EventHub
 from browser_platform.cache.result_cache import ResultCache
 from browser_platform.chrome_launch import maybe_launch_cdp
 from browser_platform.config import Settings, load_settings
-from browser_platform.local_access import CORS_ORIGIN_REGEX, access_token_ok
+from browser_platform.local_access import CORS_ORIGIN_REGEX, access_token_ok, validate_public_bind
 from browser_platform.orchestrator.runner import WorkflowRunner
 from browser_platform.pomerado.adapter import PomeradoAdapter
 from browser_platform.pomerado.chromium import ensure_pomerado_chromium, profile_dir_for
@@ -37,11 +37,16 @@ from browser_platform.store.file_store import FileStore
 
 logger = logging.getLogger("browser_platform")
 
-OPEN_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+ALWAYS_OPEN_PATHS = frozenset({"/health"})
+DOCS_PATHS = frozenset({"/docs", "/openapi.json", "/redoc"})
 
 
-def _is_open_path(path: str, method: str) -> bool:
-    if path in OPEN_PATHS:
+def _is_open_path(path: str, method: str, settings: Settings | None) -> bool:
+    if path in ALWAYS_OPEN_PATHS:
+        return True
+    # Docs stay open only when no access token is configured (local-only mode).
+    token = (getattr(settings, "access_token", "") or "") if settings is not None else ""
+    if path in DOCS_PATHS and not token:
         return True
     # Static UI (same-origin) never requires a token.
     if method in {"GET", "HEAD"} and not path.startswith("/api") and not path.startswith("/ws"):
@@ -52,9 +57,10 @@ def _is_open_path(path: str, method: str) -> bool:
 class AccessTokenMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         settings: Settings | None = getattr(request.app.state, "settings", None)
-        if request.method == "OPTIONS" or _is_open_path(request.url.path, request.method):
+        if request.method == "OPTIONS" or _is_open_path(request.url.path, request.method, settings):
             return await call_next(request)
-        if access_token_ok(request, settings):
+        # HTTP routes: header-only token (no query string — leaks in access logs).
+        if access_token_ok(request, settings, allow_query=False):
             return await call_next(request)
         return JSONResponse({"detail": "invalid or missing access token"}, status_code=401)
 
@@ -141,6 +147,7 @@ def create_app(
     apply_stored_openai_key()
     root = root or Path(__file__).resolve().parents[2]
     settings = (settings or load_settings(root)).resolve(root)
+    validate_public_bind(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
     store = FileStore(settings.data_dir)
@@ -235,16 +242,22 @@ def create_app(
                 pass
         # Leave launched Chrome and Pomerado Chromium running so profiles / logins stay intact.
 
+    # Hide OpenAPI docs when an access token is configured (tunneled / shared hosts).
+    docs_enabled = not bool((settings.access_token or "").strip())
     app = FastAPI(
         title="browser-platform",
         description="Deterministic-first browser subagent orchestrator.",
         version="0.1.0",
         lifespan=lifespan,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
     )
     # Auth is registered first so CORS (added next) runs first and can answer OPTIONS.
     app.add_middleware(AccessTokenMiddleware)
     origins = [o for o in settings.cors_origin_list if o != "*"]
     allow_all = "*" in settings.cors_origin_list
+    # Exact configured origins + localhost regex only (not every *.vercel.app / chrome-extension).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if allow_all else origins,

@@ -9,7 +9,16 @@ export type BackendDiscovery = {
 
 const URL_RE = /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/i;
 const LOCAL_RE = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
-const ORACLE_RE = /^https:\/\/browser\.129-159-156-75\.sslip\.io$/i;
+
+function extraAllowedHosts(): Set<string> {
+  const raw = (process.env.BROWSER_PLATFORM_ALLOWED_BACKEND_HOSTS || "").trim();
+  return new Set(
+    raw
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
 
 export function normalizeBackendUrl(raw: unknown): string | null {
   const url = String(raw || "").trim().replace(/\/+$/, "");
@@ -19,8 +28,9 @@ export function normalizeBackendUrl(raw: unknown): string | null {
     const host = parsed.hostname.toLowerCase();
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
     if (parsed.pathname && parsed.pathname !== "/") return null;
-    if (URL_RE.test(url) || LOCAL_RE.test(url) || ORACLE_RE.test(url)) return url;
+    if (URL_RE.test(url) || LOCAL_RE.test(url)) return url;
     if (host.endsWith(".trycloudflare.com")) return url;
+    if (extraAllowedHosts().has(host)) return url;
     return null;
   } catch {
     return null;
@@ -44,7 +54,7 @@ export async function readDiscovery(): Promise<BackendDiscovery | null> {
 
 export async function writeDiscovery(backendUrl: string, updatedAt?: string): Promise<BackendDiscovery> {
   const url = normalizeBackendUrl(backendUrl);
-  if (!url) throw new Error("backendUrl must be a trycloudflare, sslip, or localhost URL.");
+  if (!url) throw new Error("backendUrl must be a trycloudflare, localhost, or allowlisted host URL.");
   const payload: BackendDiscovery = { backendUrl: url, updatedAt: updatedAt || new Date().toISOString() };
   await put(DISCOVERY_PATH, JSON.stringify(payload, null, 2) + "\n", {
     access: "private",
