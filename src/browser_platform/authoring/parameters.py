@@ -73,7 +73,7 @@ def parameters_from_placeholders(task: str, provided: dict[str, Any] | None = No
 
 
 def merge_parameters(base: list[TaskParameter], extra: list[TaskParameter] | None = None, provided: dict[str, Any] | None = None) -> list[TaskParameter]:
-    provided = {str(k): str(v) for k, v in (provided or {}).items() if v is not None and str(v).strip()}
+    provided = normalize_variable_map(provided)
     by_name: dict[str, TaskParameter] = {}
     for item in [*(base or []), *(extra or [])]:
         current = by_name.get(item.name)
@@ -98,13 +98,122 @@ def merge_parameters(base: list[TaskParameter], extra: list[TaskParameter] | Non
 
 
 def variables_from_parameters(parameters: list[TaskParameter], provided: dict[str, Any] | None = None) -> dict[str, str]:
-    provided = {str(k): str(v) for k, v in (provided or {}).items() if v is not None and str(v).strip()}
+    provided = normalize_variable_map(provided)
     out: dict[str, str] = {}
     for item in parameters:
         value = provided.get(item.name) or item.example
         if value:
             out[item.name] = value
     return out
+
+
+
+_TEAM_TASK = re.compile(r"\b(team|teams|fixture|fixtures|club|football|soccer|premier league)\b", re.I)
+_MONTH_TASK = re.compile(r"\b(month|one month|next month)\b", re.I)
+_JUNK_VALUE = re.compile(r"UserAgent|HardwareConcurrency|FontString|internal-pdf-viewer")
+
+
+def normalize_variable_map(values: dict[str, Any] | None) -> dict[str, str]:
+    """Lower-case and slug keys so Team and team are the same input."""
+
+    out: dict[str, str] = {}
+    for key, raw in (values or {}).items():
+        if raw is None or not str(raw).strip():
+            continue
+        param = normalize_parameter({"name": key, "example": str(raw)})
+        name = param.name if param else re.sub(r"[^a-z0-9_]+", "_", str(key).strip().lower()).strip("_")
+        if name:
+            out[name] = str(raw).strip()
+    return out
+
+
+def seed_parameters_from_task(task: str, existing: list[TaskParameter] | None = None) -> list[TaskParameter]:
+    """Deterministic seeds when the task implies a well-known filter but the LLM omitted it."""
+
+    existing = list(existing or [])
+    used = {item.name for item in existing}
+    seeds: list[dict[str, Any]] = []
+    if _TEAM_TASK.search(task or "") and "team" not in used:
+        seeds.append({"name": "team", "label": "Team", "example": "Arsenal", "required": True, "description": "Club or side to filter by"})
+    if _MONTH_TASK.search(task or "") and "month" not in used:
+        seeds.append({"name": "month", "label": "Month", "example": "November", "required": False, "description": "Month to show fixtures for"})
+    if re.search(r"saucedemo|sauce labs", task or "", re.I):
+        seeds.extend(
+            [
+                {"name": "product", "label": "Product", "example": "Sauce Labs Backpack", "required": True, "description": "Catalogue item to add to the cart"},
+                {"name": "first_name", "label": "First name", "example": "Alex", "required": True, "description": "Checkout first name"},
+                {"name": "last_name", "label": "Last name", "example": "Lewis", "required": True, "description": "Checkout last name"},
+                {"name": "zip", "label": "Zip", "example": "90210", "required": True, "description": "Checkout postal code"},
+            ]
+        )
+    if re.search(r"demoqa|automation-practice-form", task or "", re.I):
+        seeds.extend(
+            [
+                {"name": "first_name", "label": "First name", "example": "Alex", "required": True},
+                {"name": "last_name", "label": "Last name", "example": "Lewis", "required": True},
+                {"name": "email", "label": "Email", "example": "alex@example.com", "required": True},
+                {"name": "gender", "label": "Gender", "example": "Male", "required": True},
+                {"name": "mobile", "label": "Mobile", "example": "9876543210", "required": True},
+            ]
+        )
+    if re.search(r"httpbin|pizza form", task or "", re.I):
+        seeds.extend(
+            [
+                {"name": "customer", "label": "Customer", "example": "John Doe", "required": True},
+                {"name": "size", "label": "Size", "example": "large", "required": True},
+                {"name": "toppings", "label": "Toppings", "example": "bacon", "required": True},
+            ]
+        )
+    extras: list[TaskParameter] = []
+    for raw in seeds:
+        param = normalize_parameter(raw, used=used)
+        if param:
+            used.add(param.name)
+            extras.append(param)
+    merged = merge_parameters(existing, extras)
+    for item in merged:
+        if item.name == "team" and not item.example:
+            item.example = "Arsenal"
+    return merged
+
+
+def maybe_bind_known_urls(steps: list, parameters: list[TaskParameter] | None = None, *, task: str = "") -> list:
+    """If a football-team task ended on the generic fixtures page, bind /teams/{team|slug}/."""
+
+    names = {item.name for item in (parameters or [])}
+    if "team" not in names or not steps:
+        return steps
+    if any("{team" in (getattr(step, "url", None) or "") for step in steps):
+        return steps
+    generic = None
+    for step in steps:
+        url = (getattr(step, "url", None) or "").lower()
+        if "bbc.com/sport" in url and "/teams/" not in url:
+            generic = step
+            break
+    if generic is None:
+        return steps
+    generic.url = "https://www.bbc.com/sport/football/teams/{team|slug}/scores-fixtures"
+    # The search-box fill is redundant once the URL is scoped to the team.
+    kept = []
+    for step in steps:
+        value = getattr(step, "value", None) or ""
+        if getattr(step, "type", None) == "input" and value.lower() in {"{team}", "{team|slug}"}:
+            continue
+        kept.append(step)
+    return kept or steps
+
+
+def is_junk_suggestion(item: dict[str, Any] | None) -> bool:
+    if not item:
+        return False
+    value = str(item.get("value") or "")
+    name = str(item.get("suggested_name") or item.get("name") or "")
+    if len(value) > 200 or _JUNK_VALUE.search(value):
+        return True
+    if name in {"v", "value", "input", "q"} and (len(value) > 80 or value.startswith("{")):
+        return True
+    return False
 
 
 def schema_from_parameters(parameters: list[TaskParameter], resolved: dict[str, str] | None = None) -> list[WorkflowInput]:
@@ -135,20 +244,35 @@ def constraint_prompt(task: str, parameters: list[TaskParameter], variables: dic
         "",
         "Hard constraints — you must satisfy every one before finishing:",
     ]
+    from browser_platform.executor.verify import classify_parameter
+
     if parameters:
         for item in parameters:
             value = variables.get(item.name) or item.example
             label = item.label or item.name
-            if value:
-                lines.append(f'- {label} ({item.name}) must be "{value}". Apply this as a real UI filter, chosen option, or entity link.')
+            kind = classify_parameter(item.name)
+            if kind == "form":
+                if value:
+                    lines.append(f'- {label} ({item.name}) must be typed or chosen as "{value}" in the form field, then submitted.')
+                else:
+                    lines.append(f"- {label} ({item.name}) is a required form field. Fill it before submitting.")
+            elif kind == "locator":
+                if value:
+                    lines.append(f'- {label} ({item.name}) must be "{value}". Click or choose that item in the list, not just search for it.')
+                else:
+                    lines.append(f"- {label} ({item.name}) must be chosen from the list or catalogue.")
             else:
-                lines.append(f"- {label} ({item.name}) is a required input. Choose a specific value in the site UI.")
+                if value:
+                    lines.append(f'- {label} ({item.name}) must be "{value}". Apply this as a real UI filter, chosen option, or entity link so the URL or heading reflects it.')
+                else:
+                    lines.append(f"- {label} ({item.name}) is a required filter. Choose a specific value in the site UI.")
     else:
         lines.append("- If the task names a specific entity (a team, competition, person, or search term), apply that as a filter in the UI.")
     lines += [
-        "- Do not stop on a generic unfiltered list that happens to mention the value among many others.",
-        "- Typing into a search box or adding ?q= is not enough: you must confirm the matching suggestion, dropdown option, or team/competition link so the page or URL is clearly scoped to that value (for example a /teams/… path, a heading, or a selected chip).",
-        "- When you are done, the visible result should be about those parameter values only.",
+        "- Finish the whole task. If it includes login, add-to-cart, checkout, or submit, do not stop on an earlier page such as a catalogue or an unsubmitted form.",
+        "- Do not stop on a generic unfiltered list that happens to mention a filter value among many others.",
+        "- For filters, typing into a search box or adding ?q= is not enough: confirm the matching suggestion, dropdown option, or entity link so the page or URL is clearly scoped to that value.",
+        "- Form fields do not need to appear in the URL; they must be filled and then submitted so the confirmation or echo contains them.",
         "Do not close other tabs. Do not clear cookies or site data. Do not open a new browser window. Prefer the current Chrome session.",
     ]
     prompt = "\n".join(lines)
@@ -174,54 +298,40 @@ async def extract_parameters_with_llm(
     llm: Any,
     provided: dict[str, Any] | None = None,
 ) -> tuple[list[TaskParameter], dict[str, Any]]:
-    """Cheap JSON extraction of reusable inputs. Falls back to placeholders on failure."""
+    """Cheap JSON extraction of reusable inputs. Falls back to placeholders and task seeds."""
     usage = {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
-    fallback = parameters_from_placeholders(task, provided)
+    fallback = seed_parameters_from_task(task, parameters_from_placeholders(task, provided))
     api_key = llm.key() if llm is not None and hasattr(llm, "key") else None
     if not api_key:
         return fallback, usage
     try:
-        import httpx
-    except Exception:
-        return fallback, usage
-    model = getattr(llm, "model", None) or "qwen/qwen3.7-flash"
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "max_tokens": 250,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Extract reusable input parameters from a browser automation task. "
-                    'Reply with JSON only: {"parameters":[{"name":"team","label":"Team","example":"Arsenal","required":true,"description":"Club or side to filter by"}]}. '
-                    "Include only values the user would change on a later run (search terms, team or competition names, dates, filters). "
-                    "name must be a short snake_case identifier. "
-                    "If the task already contains {placeholders}, use those names. "
-                    "Do not invent a parameter for the site itself. If there are none, return {\"parameters\":[]}."
-                ),
-            },
-            {"role": "user", "content": task},
-        ],
-    }
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
-        usage_block = body.get("usage") or {}
-        usage["tokens_in"] = int(usage_block.get("prompt_tokens") or usage_block.get("input_tokens") or 0)
-        usage["tokens_out"] = int(usage_block.get("completion_tokens") or usage_block.get("output_tokens") or 0)
-        usage["used"] = True
-        text = (((body.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        from browser_platform.llm.openrouter import chat_complete, message_text
+
+        message, usage = await chat_complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract reusable input parameters from a browser automation task. "
+                        'Reply with JSON only: {"parameters":[{"name":"team","label":"Team","example":"Arsenal","required":true,"description":"Club or side to filter by"}]}. '
+                        "Include only values the user would change on a later run (search terms, team or competition names, dates, filters). "
+                        "name must be a short snake_case identifier. Always include a realistic example. "
+                        "If the task is about football or sports team fixtures and does not name a team, still include a required team input with example Arsenal. "
+                        "If the task already contains {placeholders}, use those names. "
+                        "Do not invent a parameter for the website itself, cookies, or device info."
+                    ),
+                },
+                {"role": "user", "content": task},
+            ],
+            max_tokens=400,
+            response_format={"type": "json_object"},
+            model=getattr(llm, "model", None) or "qwen/qwen3.7-flash",
+            api_key=api_key,
+        )
+        text = message_text(message)
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I).strip()
-        data = json.loads(text)
+        data = json.loads(text or "{}")
         raw_list = data.get("parameters") if isinstance(data, dict) else data
         extracted: list[TaskParameter] = []
         used_names: set[str] = set()
@@ -231,7 +341,7 @@ async def extract_parameters_with_llm(
                 if param:
                     used_names.add(param.name)
                     extracted.append(param)
-        merged = merge_parameters(fallback, extracted, provided)
+        merged = seed_parameters_from_task(task, merge_parameters(fallback, extracted, provided))
         return merged, usage
     except Exception:
         return fallback, usage

@@ -130,6 +130,7 @@ async def create_workflow_from_task_endpoint(payload: FromTaskRequest, request: 
             timeout=payload.timeout,
             confirm_variables=payload.confirm_variables,
             replay_variables=getattr(payload, "replay_variables", None),
+            explore=getattr(payload, "explore", True),
             confirmation_broker=getattr(state, "confirmation_broker", None),
             event_hub=getattr(state, "event_hub", None),
             on_status=_remember,
@@ -183,6 +184,72 @@ async def post_from_task_confirmation(job_id: str, payload: FromTaskConfirmation
     if not broker.resolve(job_id, decision):
         raise HTTPException(status_code=409, detail="job is not waiting for confirmation")
     return {"ok": True, "job_id": job_id, "action": decision.action}
+
+
+
+
+@router.post("/api/workflows/from-task/{job_id}/explore")
+async def post_from_task_explore(job_id: str, payload: dict, request: Request) -> dict[str, Any]:
+    """Accept or reject verified explore-mode optional inputs in the review UI."""
+
+    from browser_platform.authoring.explore import apply_proposals, strip_proposals
+
+    state = _state(request)
+    jobs = getattr(state, "from_task_jobs", None) or {}
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="from-task job not found")
+    if not job.workflow_id or job.definition is None:
+        raise HTTPException(status_code=409, detail="job has no saved workflow yet")
+    explore = dict(job.explore or {})
+    verified = list(explore.get("verified") or [])
+    accepted = [str(n) for n in (payload or {}).get("accepted") or [item.get("name") for item in verified]]
+    rejected = [str(n) for n in (payload or {}).get("rejected") or []]
+    keep = [item for item in verified if item.get("name") in accepted and item.get("name") not in rejected]
+    drop = [name for name in {*(item.get("name") for item in verified), *rejected} if name not in {i.get("name") for i in keep}]
+    definition = apply_proposals(job.definition, keep) if keep else job.definition
+    if drop:
+        definition = strip_proposals(definition, drop)
+    stored = state.store.update_workflow(job.workflow_id, definition)
+    job.definition = stored.definition
+    if job.explore is not None:
+        job.explore = {**explore, "accepted": [item["name"] for item in keep], "rejected": drop, "applied": bool(keep)}
+    jobs[job_id] = job
+    return {"ok": True, "job_id": job_id, "workflow_id": stored.id, "accepted": [item["name"] for item in keep], "rejected": drop, "definition": stored.definition.model_dump(exclude_none=True)}
+
+
+@router.post("/api/workflows/{workflow_id}/explore")
+async def post_workflow_explore(workflow_id: str, request: Request) -> dict[str, Any]:
+    """Run bounded explore-mode on an existing library workflow and apply verified options."""
+
+    from browser_platform.authoring.explore import explore_definition
+
+    state = _state(request)
+    try:
+        stored = state.store.get_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    apply = bool((body or {}).get("apply", True))
+    result = await explore_definition(
+        stored.definition,
+        task=(body or {}).get("task") or stored.definition.description or stored.definition.name,
+        variables=(body or {}).get("variables") or {item.name: item.default for item in (stored.definition.input_schema or []) if item.default is not None},
+        enabled=True,
+    )
+    if apply and result.get("definition"):
+        from browser_platform.models.workflow import WorkflowDefinition
+
+        stored = state.store.update_workflow(workflow_id, WorkflowDefinition.model_validate(result["definition"]))
+        result["workflow_id"] = stored.id
+        result["definition"] = stored.definition.model_dump(exclude_none=True)
+    else:
+        result["workflow_id"] = workflow_id
+    return result
 
 
 

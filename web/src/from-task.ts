@@ -70,7 +70,33 @@ export type FromTaskJob = {
   parameters?: FromTaskParameter[];
   confirmation?: FromTaskConfirmation | null;
   input_validation?: import("./validation").InputValidation | null;
+  explore?: FromTaskExplore | null;
   error?: string | null;
+};
+
+export type FromTaskExploreProposal = {
+  name: string;
+  label?: string;
+  reason?: string;
+  description?: string;
+  verified?: boolean;
+  verify_with?: string;
+  runtime_default?: string;
+  default_url?: string;
+  alt_url?: string;
+  dropped_reason?: string;
+};
+
+export type FromTaskExplore = {
+  enabled?: boolean;
+  proposals?: FromTaskExploreProposal[];
+  verified?: FromTaskExploreProposal[];
+  dropped?: FromTaskExploreProposal[];
+  accepted?: string[];
+  rejected?: string[];
+  usage?: FromTaskUsage;
+  applied?: boolean;
+  error?: string;
 };
 
 export type FromTaskStart = {
@@ -79,6 +105,7 @@ export type FromTaskStart = {
   start_url?: string;
   name?: string;
   confirm_variables?: boolean;
+  explore?: boolean;
   llm?: Record<string, string>;
 };
 
@@ -101,6 +128,17 @@ export function confirmFromTaskVariables(
   return apiRequest(`/api/workflows/from-task/${encodeURIComponent(jobId)}/confirmation`, {
     method: "POST",
     body: JSON.stringify({ action: "confirm", variables, parameters }),
+  });
+}
+
+export function applyFromTaskExplore(
+  jobId: string,
+  accepted: string[],
+  rejected: string[] = [],
+): Promise<{ ok: boolean; job_id: string; accepted: string[]; rejected: string[] }> {
+  return apiRequest(`/api/workflows/from-task/${encodeURIComponent(jobId)}/explore`, {
+    method: "POST",
+    body: JSON.stringify({ accepted, rejected }),
   });
 }
 

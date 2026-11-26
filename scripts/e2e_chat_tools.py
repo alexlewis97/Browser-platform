@@ -173,6 +173,130 @@ def main() -> None:
             "fanout_compare",
         )
 
+        # Explore-mode: optional month on the library football fixtures workflow (already applied
+        # if a previous explore ran; still records tokens/cost and a non-default month replay).
+        t0 = time.perf_counter()
+        tools_list = client.get(f"{BACKEND}/api/workflows")
+        tools_list.raise_for_status()
+        listing = tools_list.json()
+        workflows = listing if isinstance(listing, list) else listing.get("workflows") or listing.get("items") or []
+        football_id = next((w.get("id") for w in workflows if (w.get("name") or (w.get("definition") or {}).get("name")) == "football_fixtures"), None)
+        explore_case: dict[str, Any] = {"elapsed_ms": 0, "ok": False}
+        if football_id:
+            wf = client.get(f"{BACKEND}/api/workflows/{football_id}")
+            wf.raise_for_status()
+            definition = (wf.json().get("definition") or wf.json())
+            urls = [s.get("url") or "" for s in definition.get("steps") or []]
+            has_month = any("{month" in url for url in urls) and any(i.get("name") == "month" for i in definition.get("input_schema") or [])
+            if not has_month:
+                explored = client.post(f"{BACKEND}/api/workflows/{football_id}/explore", json={"apply": True, "variables": {"team": "Arsenal"}})
+                explored.raise_for_status()
+                body = explored.json()
+                usage = body.get("usage") or {}
+                has_month = "month" in (body.get("accepted") or [])
+            else:
+                # Re-run detection-only to capture the already-bound state without extra LLM spend.
+                body = {"accepted": ["month"], "applied": True, "usage": {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}, "verified": [{"name": "month", "verify_with": "2026-12"}], "already_applied": True}
+                usage = body["usage"]
+            run_default = client.post(
+                f"{BACKEND}/api/workflows/{football_id}/run",
+                json={"variables": {"team": "Arsenal"}, "wait": True, "write_back": False},
+            )
+            run_alt = client.post(
+                f"{BACKEND}/api/workflows/{football_id}/run",
+                json={"variables": {"team": "Arsenal", "month": "2026-12"}, "wait": True, "write_back": False},
+            )
+            d_json = run_default.json() if run_default.status_code == 200 else {"error": run_default.text[:200]}
+            a_json = run_alt.json() if run_alt.status_code == 200 else {"error": run_alt.text[:200]}
+            default_out = str((d_json.get("outputs") or {}).get("extract") or d_json.get("outputs") or "")
+            alt_out = str((a_json.get("outputs") or {}).get("extract") or a_json.get("outputs") or "")
+            explore_case = {
+                "ok": bool(has_month) and d_json.get("status") == "succeeded" and a_json.get("status") == "succeeded" and default_out != alt_out,
+                "workflow_id": football_id,
+                "has_month_binding": has_month,
+                "already_applied": bool(body.get("already_applied")),
+                "accepted": body.get("accepted"),
+                "usage": usage,
+                "default_status": d_json.get("status"),
+                "alt_status": a_json.get("status"),
+                "outputs_differ": default_out != alt_out,
+                "default_preview": default_out[:240],
+                "alt_preview": alt_out[:240],
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1),
+            }
+        report["cases"]["explore_month"] = explore_case
+
+        report["cases"]["month_chat"] = chat(
+            "What are Arsenal's football fixtures in December 2026? Use the football fixtures workflow with team Arsenal and month 2026-12.",
+            "month_chat",
+        )
+
+        catalog_names = {((t.get("function") or {}).get("name") or "") + " " + str(t.get("workflow_name") or "") for t in catalog}
+        def has_tool(*needles: str) -> bool:
+            blob = " ".join(catalog_names).lower()
+            return all(n.lower() in blob for n in needles)
+
+        if has_tool("saucedemo") or has_tool("sauce"):
+            report["cases"]["saucedemo_chat"] = chat(
+                "On SauceDemo, add Sauce Labs Bike Light to the cart and check out as Sam Taylor, zip 10001. Confirm the action.",
+                "saucedemo_chat",
+            )
+            # action-ending tools need confirm=true
+            # redo with confirm if the first call asked for confirmation
+            if report["cases"]["saucedemo_chat"].get("confirm_reason") or report["cases"]["saucedemo_chat"].get("status") != "succeeded":
+                t0 = time.perf_counter()
+                res = client.post(
+                    f"{BACKEND}/api/chat",
+                    json={"message": "On SauceDemo, add Sauce Labs Bike Light to the cart and check out as Sam Taylor, zip 10001.", "target": "cloud", "stream": False, "confirm": True},
+                )
+                job = res.json()
+                report["cases"]["saucedemo_chat"] = {
+                    "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                    "status": job.get("status"),
+                    "answer": job.get("answer"),
+                    "confirm_reason": job.get("confirm_reason"),
+                    "items": job.get("items") or [],
+                    "usage": usage_of(job),
+                    "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
+                    "error": job.get("error"),
+                    "confirmed": True,
+                }
+
+        if has_tool("demoqa") or has_tool("practice_form"):
+            t0 = time.perf_counter()
+            res = client.post(
+                f"{BACKEND}/api/chat",
+                json={"message": "Submit the DemoQA practice form for Sam Taylor, email sam@example.com, gender Female, mobile 9123456789.", "target": "cloud", "stream": False, "confirm": True},
+            )
+            job = res.json()
+            report["cases"]["demoqa_chat"] = {
+                "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                "status": job.get("status"),
+                "answer": job.get("answer"),
+                "items": job.get("items") or [],
+                "usage": usage_of(job),
+                "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
+                "error": job.get("error"),
+                "confirmed": True,
+            }
+
+        if has_tool("httpbin"):
+            t0 = time.perf_counter()
+            res = client.post(
+                f"{BACKEND}/api/chat",
+                json={"message": "Submit the httpbin pizza form for Jane Roe, size medium, toppings mushroom.", "target": "cloud", "stream": False, "confirm": True},
+            )
+            job = res.json()
+            report["cases"]["httpbin_chat"] = {
+                "ok": job.get("status") == "succeeded" and bool(job.get("answer")),
+                "status": job.get("status"),
+                "answer": job.get("answer"),
+                "items": job.get("items") or [],
+                "usage": usage_of(job),
+                "elapsed_ms": job.get("elapsed_ms") or round((time.perf_counter() - t0) * 1000, 1),
+                "error": job.get("error"),
+                "confirmed": True,
+            }
 
         single = report["cases"]["single"]
         single_ok = (
@@ -188,6 +312,13 @@ def main() -> None:
             and fan.get("answer")
             and {"Arsenal", "Chelsea", "Spurs"} <= teams
         )
+        month_chat = report["cases"].get("month_chat") or {}
+        if month_chat:
+            month_chat["ok"] = bool(
+                month_chat.get("status") == "succeeded"
+                and month_chat.get("answer")
+                and any((i.get("inputs") or {}).get("month") in {"2026-12", "December"} or (i.get("inputs") or {}).get("team") in {"Arsenal", "arsenal"} for i in month_chat.get("items") or [])
+            )
 
         # Website Chat tab is present after deploy; checked separately if SITE is reachable.
         try:

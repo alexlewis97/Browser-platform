@@ -10,7 +10,7 @@ from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeou
 
 from browser_platform.executor.locators import locator_for
 from browser_platform.executor.selectors import SelectorAttempt
-from browser_platform.executor.verify import missing_parameters
+from browser_platform.executor.verify import classify_parameter, missing_parameters, value_echoed
 from browser_platform.interpolate import interpolate, interpolate_url
 from browser_platform.models.workflow import ExpectedState, WorkflowStep
 
@@ -56,6 +56,9 @@ def _interpolate_expected(expected: ExpectedState, variables: dict[str, Any] | N
     values = expected.parameter_values
     if values:
         values = [str(interpolate(item, variables) or item) for item in values]
+    echoes = expected.echo_values
+    if echoes:
+        echoes = [str(interpolate(item, variables) or item) for item in echoes]
     return expected.model_copy(
         update={
             "url_includes": interpolate(expected.url_includes, variables),
@@ -63,6 +66,7 @@ def _interpolate_expected(expected: ExpectedState, variables: dict[str, Any] | N
             "text_contains": interpolate(expected.text_contains, variables),
             "heading": interpolate(expected.heading, variables),
             "parameter_values": values,
+            "echo_values": echoes,
         }
     )
 
@@ -75,6 +79,7 @@ async def assert_expected(
 ) -> None:
     if not expected:
         return
+    raw_params = list(expected.parameter_values or [])
     expected = _interpolate_expected(expected, variables)
     if expected.url_includes and expected.url_includes not in page.url:
         raise StepFailed(f"url did not include {expected.url_includes!r} (was {page.url})")
@@ -93,13 +98,36 @@ async def assert_expected(
             selected = await page.locator("[aria-selected=true], [aria-current=page], option:checked").all_inner_texts()
         except Exception:
             selected = []
-        values = {f"param_{i}": value for i, value in enumerate(expected.parameter_values) if value}
-        missing = missing_parameters(url=page.url, title=title, headings=headings, text=body, selected=selected, values=values)
+        raw_items = raw_params
+        # Names must stay (product, team, …). Interpolating first and calling them param_0
+        # made locators look like filters that have to appear in the confirmation URL.
+        values: dict[str, str] = {}
+        kinds: dict[str, str] = {}
+        for raw in raw_items:
+            if not raw:
+                continue
+            text = str(raw)
+            name = text
+            if text.startswith("{") and "}" in text:
+                name = text[1:text.index("}")].split("|")[0]
+            interpolated = str(interpolate(text, variables) or text)
+            values[name] = interpolated
+            kinds[name] = classify_parameter(name)
+        # Replay has no recorder events. A locator already clicked earlier in the run
+        # does not have to still be visible on a checkout confirmation page.
+        check = {name: value for name, value in values.items() if kinds.get(name) != "locator"}
+        missing = missing_parameters(url=page.url, title=title, headings=headings, text=body, selected=selected, values=check, kinds=kinds)
         if missing:
             names = ", ".join(item.split("=", 1)[-1] for item in missing)
             raise StepFailed(
                 f"The page is not filtered for {names}. URL was {page.url}. "
                 "Apply the filter in the UI (dropdown, option, or team link), not only a search box."
+            )
+    if expected.echo_values:
+        missing_echo = [value for value in expected.echo_values if value and not value_echoed(title=title, text=body, value=str(value))]
+        if missing_echo:
+            raise StepFailed(
+                f"The confirmation did not echo {', '.join(missing_echo)}. URL was {page.url}."
             )
     if element is not None:
         # Visibility is implied if we already acted on it; still check if attached.

@@ -98,11 +98,44 @@ RECORDER_JS = r"""
     }
     return "//" + parts.join("/");
   }
+  function isFillable(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const tag = node.tagName.toLowerCase();
+    if (["input", "textarea", "select"].includes(tag)) return true;
+    if (node.isContentEditable) return true;
+    const role = (node.getAttribute("role") || "").toLowerCase();
+    return ["textbox", "searchbox", "combobox", "spinbutton"].includes(role);
+  }
+  function associatedControl(el) {
+    if (!el || el.nodeType !== 1) return el;
+    if (isFillable(el)) return el;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "label") {
+      const forId = el.getAttribute("for") || el.htmlFor;
+      if (forId) {
+        const target = document.getElementById(forId);
+        if (target) return associatedControl(target) || target;
+      }
+      const inner = el.querySelector("input, textarea, select, [contenteditable='true']");
+      if (inner) return inner;
+    }
+    if (el.id) {
+      const esc = escape(el.id);
+      const via = document.querySelector("[aria-labelledby~='" + esc + "'], [aria-labelledby='" + esc + "']");
+      if (via) return associatedControl(via) || via;
+    }
+    const wrap = el.closest && el.closest("label");
+    if (wrap && wrap !== el) return associatedControl(wrap);
+    const group = (el.parentElement) || el;
+    const sibling = group.querySelector && group.querySelector("input, textarea, select, [contenteditable='true']");
+    if (sibling) return sibling;
+    return el;
+  }
   function describe(el) {
     if (!el || el.nodeType !== 1) return null;
     const text = ((el.innerText || el.textContent || "").replace(/\s+/g, " ").trim()).slice(0, 160);
     const tag = el.tagName.toLowerCase();
-    const role = el.getAttribute("role") || ({ a: "link", button: "button", input: "textbox", select: "combobox", textarea: "textbox" }[tag] || tag);
+    const role = el.getAttribute("role") || ({ a: "link", button: "button", input: "textbox", select: "combobox", textarea: "textbox", label: "label" }[tag] || tag);
     const name = el.getAttribute("aria-label") || el.getAttribute("name") || el.getAttribute("placeholder") || text;
     return {
       tag, id: el.id || null, role, name: (name || "").slice(0, 160), text,
@@ -111,15 +144,22 @@ RECORDER_JS = r"""
       ariaLabel: el.getAttribute("aria-label"),
       type: el.getAttribute("type"),
       href: el.getAttribute("href"),
+      htmlFor: el.getAttribute("for") || el.htmlFor || null,
       css: cssPath(el),
       xpath: xpath(el),
     };
   }
   const events = [];
   const lastValues = new Map();
+  function emit(rec) {
+    try {
+      if (typeof window.__bpPushEvent === "function") window.__bpPushEvent(rec);
+    } catch (err) {}
+  }
   function push(type, el, extra) {
     const rec = { type, ts: Date.now(), url: location.href, element: describe(el), ...(extra || {}) };
     events.push(rec);
+    emit(rec);
   }
   function fieldKey(el) {
     if (!el) return "";
@@ -143,9 +183,10 @@ RECORDER_JS = r"""
     return el.value != null ? String(el.value) : "";
   }
   function noteField(el, reason) {
-    if (!el || el.nodeType !== 1 || skipField(el)) return;
+    el = associatedControl(el);
+    if (!el || el.nodeType !== 1 || skipField(el) || !isFillable(el)) return;
     const tag = (el.tagName || "").toLowerCase();
-    if (!["input", "textarea", "select"].includes(tag)) return;
+    if (!["input", "textarea", "select"].includes(tag) && !el.isContentEditable) return;
     const key = fieldKey(el);
     if (!key) return;
     const value = fieldValue(el);
@@ -182,16 +223,16 @@ RECORDER_JS = r"""
     }
   }, true);
   document.addEventListener("input", (e) => {
-    const el = e.target;
-    if (!el) return;
+    const el = associatedControl(e.target);
+    if (!el || !isFillable(el)) return;
     const tag = (el.tagName || "").toLowerCase();
     if (tag === "select") return;
     lastValues.set(fieldKey(el), fieldValue(el));
     push("input", el, { value: el.value, source: "input" });
   }, true);
   document.addEventListener("change", (e) => {
-    const el = e.target;
-    if (!el) return;
+    const el = associatedControl(e.target);
+    if (!el || !isFillable(el)) return;
     const tag = (el.tagName || "").toLowerCase();
     lastValues.set(fieldKey(el), fieldValue(el));
     if (tag === "select") push("select_change", el, { value: el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value, selected: el.value, source: "change" });
@@ -204,6 +245,15 @@ RECORDER_JS = r"""
     }
   }, true);
   setInterval(snapshotFields, 200);
+  window.addEventListener("pagehide", () => {
+    snapshotFields();
+    try {
+      if (typeof window.__bpPushEvent === "function" && events.length) {
+        window.__bpPushEvent(events.slice());
+        events.length = 0;
+      }
+    } catch (err) {}
+  }, true);
   window.__bpRecorder = {
     events,
     drain() { snapshotFields(); const out = events.slice(); events.length = 0; return out; },
@@ -214,11 +264,64 @@ RECORDER_JS = r"""
 """
 
 
-def strategies_for_element(element: dict[str, Any] | None, *, include_text: bool = True) -> list[SelectorStrategy]:
+def is_label_element(element: dict[str, Any] | None) -> bool:
+    """True when the captured node is a <label> (or a label-like stand-in), not a fillable field."""
+
+    if not element:
+        return False
+    tag = str(element.get("tag") or "").lower()
+    role = str(element.get("role") or "").lower()
+    typ = str(element.get("type") or "").lower()
+    el_id = str(element.get("id") or "")
+    if tag in {"input", "textarea", "select"} or typ in {"text", "email", "password", "tel", "search", "number", "date"}:
+        return False
+    if tag == "label" or role == "label":
+        return True
+    if el_id.lower().endswith("-label") or el_id.lower().endswith("_label") or el_id.lower().endswith("label"):
+        return True
+    return False
+
+
+def label_input_selectors(element: dict[str, Any] | None) -> list[str]:
+    """CSS selectors that resolve a label to its associated input."""
+
+    if not element:
+        return []
+    selectors: list[str] = []
+    for_id = element.get("htmlFor") or element.get("for")
+    el_id = element.get("id")
+    if for_id:
+        selectors.append(f"#{for_id}")
+    if el_id:
+        selectors.append(f"[aria-labelledby='{el_id}']")
+        selectors.append(f"label#{el_id} ~ input, label#{el_id} ~ textarea, label#{el_id} + input")
+        selectors.append(f"#{el_id} ~ input, #{el_id} ~ textarea, #{el_id} + input")
+    return selectors
+
+
+def resolve_fill_element(element: dict[str, Any] | None) -> dict[str, Any] | None:
+    """If a fill landed on a label, retarget selectors at the associated input."""
+
+    if not element or not is_label_element(element):
+        return element
+    updated = dict(element)
+    associated = label_input_selectors(element)
+    if associated:
+        updated["css"] = associated[0]
+        updated["associated_selectors"] = associated
+        updated["id"] = element.get("htmlFor") or element.get("for") or None
+        updated["tag"] = "input"
+        updated["resolved_from_label"] = element.get("id") or element.get("text")
+    return updated
+
+
+def strategies_for_element(element: dict[str, Any] | None, *, include_text: bool = True, for_fill: bool = False) -> list[SelectorStrategy]:
     """Build a priority-ordered selector chain from a captured element."""
 
     if not element:
         return []
+    if for_fill or is_label_element(element):
+        element = resolve_fill_element(element) or element
     strategies: list[SelectorStrategy] = []
     seen: set[tuple[str, str]] = set()
 
@@ -232,8 +335,10 @@ def strategies_for_element(element: dict[str, Any] | None, *, include_text: bool
         strategies.append(SelectorStrategy(type=type_, value=value, priority=priority, metadata=meta))
 
     el_id = element.get("id")
-    if el_id:
+    if el_id and not str(el_id).lower().endswith("label"):
         add("css", f"#{el_id}", 10, source="id")
+    for i, sel in enumerate(element.get("associated_selectors") or []):
+        add("css", sel, 8 + i, source="label_for")
     aria = element.get("ariaLabel")
     if aria:
         add("aria_label", aria, 20, source="aria")

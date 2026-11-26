@@ -7,7 +7,7 @@ from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
-from browser_platform.authoring.elements import RECORDER_JS, strategies_for_element
+from browser_platform.authoring.elements import RECORDER_JS, is_label_element, resolve_fill_element, strategies_for_element
 from browser_platform.models.workflow import SelectorStrategy
 
 
@@ -30,6 +30,7 @@ class RecorderSession:
     context: BrowserContext
     events: list[RecordedEvent] = field(default_factory=list)
     _attached: set[int] = field(default_factory=set)
+    _sigs: set[tuple] = field(default_factory=set)
 
 
 async def attach_recorder(cdp_url: str) -> RecorderSession:
@@ -67,6 +68,13 @@ async def _bind_page(session: RecorderSession, page: Page) -> None:
     except Exception:
         pass
     try:
+        async def on_push(source, item):  # noqa: ARG001
+            ingest_raw_events(session, [item] if isinstance(item, dict) else item)
+
+        await page.expose_binding("__bpPushEvent", on_push)
+    except Exception:
+        pass
+    try:
         await page.evaluate(RECORDER_JS)
     except Exception:
         pass
@@ -84,6 +92,46 @@ async def _bind_page(session: RecorderSession, page: Page) -> None:
         pass
 
 
+
+def _event_sig(ev: RecordedEvent) -> tuple:
+    element = ev.element or {}
+    return (ev.type, ev.url, ev.value, ev.key, ev.ts, element.get("id"), element.get("css") or element.get("cssSelector"))
+
+
+def ingest_raw_events(session: RecorderSession, raw: Any) -> None:
+    """Append in-page recorder records to the session, skipping duplicates."""
+
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        element = item.get("element")
+        typ = item.get("type") or "click"
+        value = item.get("value")
+        if typ in {"input", "select_change"} and isinstance(element, dict) and is_label_element(element):
+            label_text = str(element.get("text") or element.get("name") or "").strip()
+            if value and label_text and str(value).strip() == label_text:
+                continue
+            element = resolve_fill_element(element)
+        ev = RecordedEvent(
+            type=typ,
+            url=item.get("url"),
+            value=value,
+            key=item.get("key"),
+            text=(element or {}).get("text") if isinstance(element, dict) else None,
+            element=element if isinstance(element, dict) else None,
+            selectors=strategies_for_element(
+                element if isinstance(element, dict) else None,
+                for_fill=typ in {"input", "select_change"},
+            ),
+            ts=item.get("ts"),
+        )
+        sig = _event_sig(ev)
+        if sig in session._sigs:
+            continue
+        session._sigs.add(sig)
+        session.events.append(ev)
+
+
 async def collect_events(session: RecorderSession) -> list[RecordedEvent]:
     """Flush in-page recorder buffers and merge with navigation events."""
 
@@ -93,20 +141,7 @@ async def collect_events(session: RecorderSession) -> list[RecordedEvent]:
             raw = await page.evaluate("() => (window.__bpRecorder && window.__bpRecorder.drain) ? window.__bpRecorder.drain() : []")
         except Exception:
             raw = []
-        for item in raw or []:
-            element = item.get("element") if isinstance(item, dict) else None
-            typ = item.get("type") if isinstance(item, dict) else "click"
-            ev = RecordedEvent(
-                type=typ,
-                url=item.get("url") if isinstance(item, dict) else None,
-                value=item.get("value") if isinstance(item, dict) else None,
-                key=item.get("key") if isinstance(item, dict) else None,
-                text=(element or {}).get("text") if isinstance(element, dict) else None,
-                element=element if isinstance(element, dict) else None,
-                selectors=strategies_for_element(element if isinstance(element, dict) else None),
-                ts=item.get("ts") if isinstance(item, dict) else None,
-            )
-            session.events.append(ev)
+        ingest_raw_events(session, raw)
     return stabilize_event_order(compact_events(session.events))
 
 

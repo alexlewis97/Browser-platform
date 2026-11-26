@@ -1,6 +1,6 @@
 import { api, type MintJob, type MintTraceStep, type RunRecord, type StepTelemetry, type WorkflowDefinition, type WorkflowInput, type WorkflowSummary } from "./api";
 import { HITL_MODES, cancelRun, confirmRun, extractConfirmation, formatScore, getConfirmation, openRunSocket, resolveScreenshotSrc, type ConfirmationPrompt, type HitlMode } from "./hitl";
-import { cancelFromTask, confirmFromTaskVariables, formatLatency, formatTokens, getFromTaskJob, isLiveJob, parseVariableLines, startFromTask, type FromTaskJob, type FromTaskSuggestion } from "./from-task";
+import { applyFromTaskExplore, cancelFromTask, confirmFromTaskVariables, formatLatency, formatTokens, getFromTaskJob, isLiveJob, parseVariableLines, startFromTask, type FromTaskExplore, type FromTaskJob, type FromTaskSuggestion } from "./from-task";
 import {
   bindRecordScreen,
   cancelRemote,
@@ -1137,6 +1137,10 @@ function renderFromTaskForm(): string {
         <input type="checkbox" name="confirm_variables" checked />
         <span>Ask me to confirm, edit, or add the extracted inputs before the demonstration starts</span>
       </label>
+      <label class="check">
+        <input type="checkbox" name="explore" checked />
+        <span>Explore the finished page for optional filters (month, tabs, sort) and propose them for review</span>
+      </label>
       <p class="muted">${escapeHtml(keyNote)}</p>
       <button class="btn primary" type="submit">Start demonstration</button>
     </form>`,
@@ -1194,7 +1198,7 @@ function renderFromTaskConfirmation(job: FromTaskJob): string {
           </label>`;
           })
           .join("")
-      : `<p class="muted">No inputs were detected. Add one below if this task should be reusable with a filter or search term.</p>`;
+      : `<p class="muted">No inputs were detected automatically. Add a field below (for example <strong>team</strong> with example Arsenal) so the demonstration can apply a real filter.</p>`;
     return `<div class="card confirm-panel" id="from-task-confirm" data-job-id="${escapeHtml(job.id)}" data-kind="parameters">
     <p class="eyebrow">Needs confirmation · inputs</p>
     <h2>Confirm the inputs this workflow will use</h2>
@@ -1257,6 +1261,35 @@ function renderFromTaskConfirmation(job: FromTaskJob): string {
   </div>`;
 }
 
+
+function renderExploreReview(job: FromTaskJob): string {
+  const explore = job.explore as FromTaskExplore | null | undefined;
+  if (!explore || explore.enabled === false) return "";
+  const verified = explore.verified || [];
+  const dropped = explore.dropped || [];
+  const accepted = new Set(explore.accepted || verified.map((item) => item.name));
+  const usage = explore.usage ? `<div class="muted">Explore · ${escapeHtml(formatTokens(explore.usage))}${explore.usage.cost_usd != null ? " · $" + Number(explore.usage.cost_usd).toFixed(6) : ""}</div>` : "";
+  if (!verified.length && !dropped.length && !explore.error) {
+    return `<div class="card" id="from-task-explore" style="margin-top:16px"><h3 style="margin:0 0 8px;font-size:1rem">Optional inputs</h3><p class="muted">Explore mode ran and did not find a verified extra filter.</p>${usage}</div>`;
+  }
+  const rows = verified.map((item) => {
+    const checked = accepted.has(item.name) ? "checked" : "";
+    return `<label class="check"><input type="checkbox" name="explore-${escapeHtml(item.name)}" data-explore-name="${escapeHtml(item.name)}" ${checked} /><span><strong>${escapeHtml(item.label || item.name)}</strong> — ${escapeHtml(item.reason || item.description || "Optional filter")}. Default is the current value at run time${item.verify_with ? `, verified with ${escapeHtml(item.verify_with)}` : ""}.</span></label>`;
+  }).join("");
+  const droppedBlock = dropped.length
+    ? `<p class="muted">Dropped (did not change the page): ${dropped.map((item) => escapeHtml(item.name) + (item.dropped_reason ? " (" + escapeHtml(item.dropped_reason) + ")" : "")).join(", ")}</p>`
+    : "";
+  return `<form id="from-task-explore" class="card" style="margin-top:16px" data-job-id="${escapeHtml(job.id)}">
+    <h3 style="margin:0 0 8px;font-size:1rem">Optional inputs we found</h3>
+    <p class="muted">Turn these off if you do not want them on the workflow. Month defaults to the current month when you run, and is not pinned.</p>
+    ${rows || ""}
+    ${droppedBlock}
+    ${explore.error ? `<div class="banner err">${escapeHtml(explore.error)}</div>` : ""}
+    ${usage}
+    ${verified.length ? `<div class="btn-row" style="margin-top:12px"><button class="btn primary" type="submit" data-action="from-task-explore-save">Save optional inputs</button></div>` : ""}
+  </form>`;
+}
+
 function renderFromTaskResult(job: FromTaskJob): string {
   const def = job.definition;
   const wfId = job.workflow_id;
@@ -1292,6 +1325,7 @@ function renderFromTaskResult(job: FromTaskJob): string {
     </div>
     <div style="margin-top:16px">${steps}</div>
     ${outputs ? `<div style="margin-top:12px">${outputs}</div>` : ""}
+    ${renderExploreReview(job)}
     ${findingsCard((job as FromTaskJob & { input_validation?: InputValidation }).input_validation, { applyAction: "from-task-apply-finding" })}
     <div class="btn-row" style="margin-top:16px">
       ${wfId ? `<a class="btn" href="#/workflows/${encodeURIComponent(wfId)}">Open workflow</a>
@@ -1618,6 +1652,25 @@ async function onClick(event: Event): Promise<void> {
     await render();
     return;
   }
+  if (action === "from-task-explore-save") {
+    event.preventDefault();
+    const form = target.closest("#from-task-explore") as HTMLFormElement | null;
+    const jobId = form?.dataset.jobId || parseRoute().id;
+    if (!jobId || !form) return;
+    const boxes = [...form.querySelectorAll<HTMLInputElement>("input[data-explore-name]")];
+    const accepted = boxes.filter((box) => box.checked).map((box) => box.dataset.exploreName || "").filter(Boolean);
+    const rejected = boxes.filter((box) => !box.checked).map((box) => box.dataset.exploreName || "").filter(Boolean);
+    const btn = form.querySelector("button");
+    if (btn) btn.setAttribute("disabled", "true");
+    try {
+      await applyFromTaskExplore(jobId, accepted, rejected);
+      flashMessage = { kind: "ok", text: accepted.length ? "Saved optional inputs." : "Removed the optional inputs." };
+    } catch (err) {
+      flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
+    }
+    await render();
+    return;
+  }
   if (action === "from-task-apply-finding") {
     event.preventDefault();
     const route = parseRoute();
@@ -1815,11 +1868,13 @@ async function onClick(event: Event): Promise<void> {
             const label = row.querySelector<HTMLInputElement>('input[name^="label"]');
             if (!isParams && accept && !accept.checked) return;
             if (name?.value.trim() && value) {
-              variables[name.value.trim()] = value.value;
+              const rawName = name.value.trim();
+              const slug = rawName.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || rawName;
+              variables[slug] = value.value;
               if (isParams) {
                 parameters.push({
-                  name: name.value.trim(),
-                  label: label?.value.trim() || name.value.trim(),
+                  name: slug,
+                  label: label?.value.trim() || rawName,
                   example: value.value,
                   required: accept ? accept.checked : true,
                 });
@@ -1832,6 +1887,17 @@ async function onClick(event: Event): Promise<void> {
         root.innerHTML = renderFromTaskProgress(job);
         if (isLiveJob(job.status)) startFromTaskPolling(jobId);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/not waiting for confirmation|409/.test(message)) {
+          try {
+            const job = await getFromTaskJob(jobId);
+            root.innerHTML = renderFromTaskProgress(job);
+            if (isLiveJob(job.status)) startFromTaskPolling(jobId);
+            return;
+          } catch {
+            /* fall through to the error banner */
+          }
+        }
         if (btn) btn.disabled = false;
         if (status) status.innerHTML = bannerError(err);
       }
@@ -2049,9 +2115,11 @@ async function onSubmit(event: Event): Promise<void> {
     const values = formValues(form);
     const settings = loadSettings();
     const confirmBox = form.querySelector<HTMLInputElement>('input[name="confirm_variables"]');
+    const exploreBox = form.querySelector<HTMLInputElement>('input[name="explore"]');
     const payload: Parameters<typeof startFromTask>[0] = {
       task: values.task || "",
       confirm_variables: Boolean(confirmBox?.checked),
+      explore: exploreBox ? exploreBox.checked : true,
     };
     const startUrl = values.start_url?.trim();
     if (startUrl) payload.start_url = startUrl;

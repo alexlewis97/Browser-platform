@@ -71,6 +71,7 @@ class FromTaskRequest(BaseModel):
     replay: bool = True
     wait: bool = True
     confirm_variables: bool | None = None
+    explore: bool = True
     replay_variables: dict[str, Any] | None = None
     max_steps: int = 25
     timeout: float = 300

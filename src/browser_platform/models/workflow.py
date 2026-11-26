@@ -87,6 +87,7 @@ class ExpectedState(BaseModel):
     text_contains: str | None = None
     heading: str | None = None
     parameter_values: list[str] | None = None
+    echo_values: list[str] | None = None
     field_selector: str | None = None
     field_value: str | None = None
     network_url_includes: str | None = None

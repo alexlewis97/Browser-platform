@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from browser_platform.authoring.elements import is_label_element, resolve_fill_element, strategies_for_element
 from browser_platform.workflow_inputs import pretty_label
 from browser_platform.models.workflow import WorkflowInput
 
@@ -59,10 +60,14 @@ def generalize_events(
         raw = str(text)
         name = by_value.get(raw)
         if name is None:
-            # Case-insensitive / slug match against known variable values.
             lowered = raw.lower().strip()
             for literal, var in list(by_value.items()):
-                if literal.lower() == lowered or literal.lower() in lowered or lowered in literal.lower():
+                lit = str(literal).lower().strip()
+                if lit == lowered:
+                    name = var
+                    break
+                # Allow a slightly longer recorded string that starts with the known value.
+                if len(lit) >= 4 and (lowered.startswith(lit) or lit.startswith(lowered) and abs(len(lit) - len(lowered)) <= 2):
                     name = var
                     break
         return raw, name
@@ -89,15 +94,29 @@ def generalize_events(
         typ = _get(ev, "type")
         if typ not in {"input", "select_change", "click"}:
             continue
-        candidates = []
-        for key in ("value", "text"):
-            raw = _get(ev, key)
-            if raw:
-                candidates.append((key, str(raw)))
         element = _get(ev, "element") if isinstance(_get(ev, "element"), dict) else {}
-        for key in ("name", "text"):
-            if element.get(key):
-                candidates.append(("element." + key, str(element[key])))
+        if typ in {"input", "select_change"} and is_label_element(element):
+            label_text = str(element.get("text") or element.get("name") or "").strip()
+            if _get(ev, "value") and str(_get(ev, "value")).strip() == label_text:
+                # A fill of the label's own text is noise, not a typed parameter.
+                continue
+            resolved_el = resolve_fill_element(element)
+            _set(ev, "element", resolved_el)
+            _set(ev, "selectors", strategies_for_element(resolved_el, for_fill=True))
+            element = resolved_el or {}
+        candidates = []
+        if typ in {"input", "select_change"}:
+            raw = _get(ev, "value")
+            if raw:
+                candidates.append(("value", str(raw)))
+        else:
+            for key in ("value", "text"):
+                raw = _get(ev, key)
+                if raw:
+                    candidates.append((key, str(raw)))
+            for key in ("name", "text"):
+                if element.get(key):
+                    candidates.append(("element." + key, str(element[key])))
         bound = False
         for _source, text in candidates:
             raw, name = _bind_text(text)
@@ -153,6 +172,11 @@ def generalize_events(
         if typ in {"input", "select_change"}:
             value = ev.value if hasattr(ev, "value") else ev.get("value")
             text = "" if value is None else str(value)
+            element = ev.element if hasattr(ev, "element") else ev.get("element")
+            if isinstance(element, dict) and is_label_element(element):
+                label_text = str(element.get("text") or element.get("name") or "").strip()
+                if text and label_text and text.strip() == label_text:
+                    continue
             if text.startswith("{"):
                 filtered.append(ev)
                 continue
@@ -253,12 +277,35 @@ def url_placeholder(name: str, literal: str, variant: str) -> str:
 
 
 def apply_variables_to_url(url: str | None, by_value: dict[str, str]) -> str | None:
-    if not url:
+    """Replace a parameter value in path segments or query values, never in the hostname."""
+
+    if not url or not by_value:
         return url
-    updated = url
-    for literal, name in by_value.items():
-        for variant in value_url_variants(literal):
-            if variant and variant in updated:
-                updated = updated.replace(variant, url_placeholder(name, literal, variant))
-                break
-    return updated
+    from urllib.parse import parse_qsl, urlparse, urlunparse, unquote
+
+    parsed = urlparse(url)
+
+    def bind_piece(piece: str) -> str:
+        if not piece or piece.startswith("{"):
+            return piece
+        decoded = unquote(piece)
+        for literal, name in by_value.items():
+            variants = [item for item in value_url_variants(literal) if item]
+            exact = next((item for item in variants if decoded == item), None)
+            if exact is not None:
+                return url_placeholder(name, literal, exact)
+            folded = next((item for item in variants if decoded.lower() == item.lower()), None)
+            if folded is not None:
+                # Use the URL's own spelling so Browser_automation stays {term}, not {term|slug_}.
+                return url_placeholder(name, literal, decoded)
+        return piece
+
+    path = "/".join(bind_piece(part) for part in parsed.path.split("/"))
+    query = parsed.query
+    if query:
+        parts: list[str] = []
+        for key, value in parse_qsl(query, keep_blank_values=True):
+            parts.append(f"{key}={bind_piece(value)}")
+        # Preserve raw query if parse_qsl dropped a non-pair token.
+        query = "&".join(parts) if parts else query
+    return urlunparse(parsed._replace(path=path, query=query))

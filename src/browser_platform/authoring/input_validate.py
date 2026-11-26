@@ -147,6 +147,17 @@ def deterministic_findings(definition: WorkflowDefinition, *, task: str = "") ->
                 }
             )
 
+        if "team" in {i.name.lower() for i in inputs} and "bbc.com/sport" in url.lower() and "/teams/" not in url.lower() and "{team" not in url:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "unbound_team_url",
+                    "message": "The workflow has a Team input but the URL is the generic fixtures page, not /teams/{team}/.",
+                    "suggestion_label": "Bind the team in the fixtures URL",
+                    "patch": {"op": "bind_football_team_url", "name": "team"},
+                }
+            )
+
     # Example values should interpolate to a usable URL or fill.
     sample = examples
     for step in definition.steps or []:
@@ -325,6 +336,11 @@ def apply_patch(definition: WorkflowDefinition, patch: dict[str, Any] | None) ->
                 item.label = str(patch.get("value") or item.label)
             elif field in {"example", "default"}:
                 item.default = patch.get("value")
+    elif op == "bind_football_team_url" and name:
+        for step in definition.steps or []:
+            url = (step.url or "").lower()
+            if "bbc.com/sport" in url and "/teams/" not in url:
+                step.url = "https://www.bbc.com/sport/football/teams/{" + name + "|slug}/scores-fixtures"
     elif op == "bind_url" and name and patch.get("example"):
         example = str(patch.get("example"))
         for step in definition.steps or []:

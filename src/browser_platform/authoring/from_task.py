@@ -10,23 +10,29 @@ from typing import Any, Awaitable, Callable
 from pydantic import BaseModel, ConfigDict, Field
 
 from browser_platform.authoring.compact import compact_steps, estimate_cost_usd, maybe_llm_prune, usage_from_history
+from browser_platform.authoring.elements import resolve_fill_element, strategies_for_element
 from browser_platform.authoring.generalize import generalize_events, placeholders_in_task
 from browser_platform.authoring.parameters import (
     TaskParameter,
     constraint_prompt,
     extract_parameters_with_llm,
+    is_junk_suggestion,
+    maybe_bind_known_urls,
     merge_parameters,
+    normalize_variable_map,
     parameters_from_placeholders,
     retry_constraint_prompt,
     schema_from_parameters,
+    seed_parameters_from_task,
     variables_from_parameters,
 )
-from browser_platform.executor.verify import missing_parameters
+from browser_platform.executor.verify import classify_parameter, missing_parameters
 from browser_platform.models.workflow import ExpectedState
 from browser_platform.authoring.recorder import (
     RecordedEvent,
     attach_recorder,
     collect_events,
+    harvest_field_snapshots,
     detach_recorder,
     poll_field_changes,
 )
@@ -70,6 +76,7 @@ class FromTaskResult(BaseModel):
     parameters: list[dict[str, Any]] = Field(default_factory=list)
     confirmation: dict[str, Any] | None = None
     input_validation: dict[str, Any] | None = None
+    explore: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -131,15 +138,17 @@ def events_to_steps(events: list[RecordedEvent], *, extract_goal: str = "result"
                 )
             )
         elif ev.type == "input":
+            element = resolve_fill_element(ev.element) or ev.element or {}
+            selectors = ev.selectors or strategies_for_element(element, for_fill=True)
             steps.append(
                 WorkflowStep(
                     type="input",
                     description="Fill field",
                     value=ev.value,
-                    target_text=(ev.element or {}).get("placeholder") or ev.text,
-                    cssSelector=(ev.element or {}).get("css"),
-                    xpath=(ev.element or {}).get("xpath"),
-                    selectorStrategies=ev.selectors or None,
+                    target_text=element.get("placeholder") or ev.text,
+                    cssSelector=element.get("css"),
+                    xpath=element.get("xpath"),
+                    selectorStrategies=selectors or None,
                 )
             )
         elif ev.type == "select_change":
@@ -202,13 +211,29 @@ def _parameters_payload(parameters: list[TaskParameter]) -> list[dict[str, Any]]
 
 
 def attach_parameter_checks(steps: list[WorkflowStep], parameters: list[TaskParameter]) -> list[WorkflowStep]:
-    names = [item.name for item in parameters if item.required is not False]
-    if not names or not steps:
+    from browser_platform.executor.verify import classify_parameter
+
+    if not parameters or not steps:
         return steps
     extract = next((step for step in reversed(steps) if step.type in {"extract", "extract_page_content"}), None)
     if extract is None:
         return steps
-    extract.expected_state = ExpectedState(parameter_values=["{" + name + "}" for name in names])
+    filters: list[str] = []
+    echos: list[str] = []
+    for item in parameters:
+        if item.required is False:
+            continue
+        kind = classify_parameter(item.name, steps=steps)
+        if kind == "form":
+            echos.append(item.name)
+        elif kind == "filter":
+            filters.append(item.name)
+        # locators are enforced by the click/select step that binds them, not by
+        # the confirmation page (checkout receipts often omit the product name).
+    extract.expected_state = ExpectedState(
+        parameter_values=["{" + name + "}" for name in filters] or None,
+        echo_values=["{" + name + "}" for name in echos] or None,
+    )
     return steps
 
 
@@ -271,10 +296,11 @@ async def _open_demo_tab(recorder, start_url: str | None) -> None:
 
 def _required_values(parameters: list[TaskParameter], variables: dict[str, Any]) -> dict[str, str]:
     values: dict[str, str] = {}
+    mapped = normalize_variable_map(variables)
     for item in parameters:
         if item.required is False:
             continue
-        value = variables.get(item.name) or item.example
+        value = mapped.get(item.name) or (variables or {}).get(item.name) or item.example
         if value:
             values[item.name] = str(value)
     return values
@@ -322,6 +348,7 @@ async def create_workflow_from_task(
     event_hub=None,
     on_status=None,
     replay_variables: dict[str, Any] | None = None,
+    explore: bool = True,
 ) -> FromTaskResult:
     """Demonstrate the task with browser-use, save a workflow, and optionally replay it."""
 
@@ -340,6 +367,7 @@ async def create_workflow_from_task(
             parameters, extract_usage = await extract_parameters_with_llm(task, llm=llm, provided=variables)
         else:
             parameters = parameters_from_placeholders(task, variables)
+        parameters = seed_parameters_from_task(task, parameters)
         resolved_vars = variables_from_parameters(parameters, variables)
         job.parameters = _parameters_payload(parameters)
         job.variables = resolved_vars or dict(variables or {})
@@ -372,7 +400,7 @@ async def create_workflow_from_task(
                 if on_status:
                     on_status(job)
                 return job
-            chosen = dict(decision.variables or {})
+            chosen = normalize_variable_map(decision.variables or {})
             extra_params = list(getattr(decision, "parameters", None) or [])
             if extra_params:
                 from browser_platform.authoring.parameters import normalize_parameter
@@ -420,32 +448,8 @@ async def create_workflow_from_task(
                     raise RuntimeError("llm config is required to run browser-use")
                 if not browser_use_available():
                     raise RuntimeError("browser-use is not installed")
-                history = await _run_browser_use_task(
-                    task=task,
-                    cdp_url=cdp_url,
-                    llm=llm,
-                    start_url=start_url,
-                    variables=variables,
-                    max_steps=max_steps,
-                    timeout=timeout,
-                    parameters=parameters,
-                )
-                state = await snapshot_page_state(recorder)
-                required = _required_values(parameters, variables)
-                missing = missing_parameters(
-                    url=state["url"],
-                    title=state["title"],
-                    headings=state["headings"],
-                    text=state["text"],
-                    selected=state["selected"],
-                    values=required,
-                )
-                if missing:
-                    retry_prompt = retry_constraint_prompt(
-                        demonstration_task(task, variables, start_url, parameters),
-                        missing,
-                        state["url"],
-                    )
+                demo_error = None
+                try:
                     history = await _run_browser_use_task(
                         task=task,
                         cdp_url=cdp_url,
@@ -455,9 +459,66 @@ async def create_workflow_from_task(
                         max_steps=max_steps,
                         timeout=timeout,
                         parameters=parameters,
-                        prompt_override=retry_prompt,
                     )
+                except Exception as exc:
+                    demo_error = f"{type(exc).__name__}: {exc}"
+                    history = None
+                state = await snapshot_page_state(recorder)
+                try:
+                    await harvest_field_snapshots(recorder)
+                except Exception:
+                    pass
+                preview_events = list(getattr(recorder, "events", None) or [])
+                try:
+                    # Peek without draining the in-page buffer used by collect_events later.
+                    for page in list(getattr(recorder, "context").pages):
+                        raw = await page.evaluate("() => (window.__bpRecorder && window.__bpRecorder.snapshot) ? window.__bpRecorder.snapshot() : []")
+                        preview_events.extend(raw or [])
+                except Exception:
+                    pass
+                required = _required_values(parameters, variables)
+                missing = missing_parameters(
+                    url=state["url"],
+                    title=state["title"],
+                    headings=state["headings"],
+                    text=state["text"],
+                    selected=state["selected"],
+                    values=required,
+                    events=preview_events,
+                    task=task,
+                )
+                if missing and not demo_error:
+                    retry_prompt = retry_constraint_prompt(
+                        demonstration_task(task, variables, start_url, parameters),
+                        missing,
+                        state["url"],
+                    )
+                    try:
+                        history = await _run_browser_use_task(
+                            task=task,
+                            cdp_url=cdp_url,
+                            llm=llm,
+                            start_url=start_url,
+                            variables=variables,
+                            max_steps=max_steps,
+                            timeout=timeout,
+                            parameters=parameters,
+                            prompt_override=retry_prompt,
+                        )
+                    except Exception as exc:
+                        demo_error = f"{type(exc).__name__}: {exc}"
                     state = await snapshot_page_state(recorder)
+                    try:
+                        await harvest_field_snapshots(recorder)
+                    except Exception:
+                        pass
+                    preview_events = list(getattr(recorder, "events", None) or [])
+                    try:
+                        for page in list(getattr(recorder, "context").pages):
+                            raw = await page.evaluate("() => (window.__bpRecorder && window.__bpRecorder.snapshot) ? window.__bpRecorder.snapshot() : []")
+                            preview_events.extend(raw or [])
+                    except Exception:
+                        pass
                     missing = missing_parameters(
                         url=state["url"],
                         title=state["title"],
@@ -465,8 +526,10 @@ async def create_workflow_from_task(
                         text=state["text"],
                         selected=state["selected"],
                         values=required,
+                        events=preview_events,
+                        task=task,
                     )
-                if missing:
+                if missing or demo_error:
                     tokens_in = tokens_out = 0
                     cost = None
                     if history is not None:
@@ -480,12 +543,16 @@ async def create_workflow_from_task(
                         latency_ms=round((time.perf_counter() - started) * 1000, 1),
                     )
                     job.status = "failed"
-                    job.error = (
-                        "The demonstration finished without applying the required filter(s): "
-                        + ", ".join(missing)
-                        + f". The page was {state['url'] or 'unknown'}. "
-                        "Select the matching option or entity page so the URL or heading reflects each value."
-                    )
+                    parts = []
+                    if demo_error:
+                        parts.append(demo_error)
+                    if missing:
+                        parts.append(
+                            "The demonstration did not finish the task: "
+                            + "; ".join(missing)
+                            + f" The page was {state['url'] or 'unknown'}."
+                        )
+                    job.error = " ".join(parts)
                     if on_status:
                         on_status(job)
                     return job
@@ -507,6 +574,7 @@ async def create_workflow_from_task(
         schema = param_schema
         if confirm_variables is None:
             confirm_variables = bool(suggestions) and not (variables or {})
+        suggestions = [item for item in (suggestions or []) if not is_junk_suggestion(item)]
         if suggestions and confirm_variables and confirmation_broker is not None:
             job.suggestions = suggestions
             job.variables = resolved or job.variables
@@ -533,15 +601,29 @@ async def create_workflow_from_task(
                 if on_status:
                     on_status(job)
                 return job
-            chosen = dict(decision.variables or {})
+            chosen = normalize_variable_map(decision.variables or {})
             if decision.text and "=" in decision.text and not chosen:
                 for part in decision.text.split(","):
                     if "=" in part:
                         k, v = part.split("=", 1)
                         chosen[k.strip()] = v.strip()
+                chosen = normalize_variable_map(chosen)
             events, schema, resolved = apply_variable_promotions(
                 events, suggestions, chosen, resolved, accept_suggestions=not chosen
             )
+            resolved = normalize_variable_map(resolved)
+            # Re-base the schema on the confirmed parameters so names stay snake_case.
+            param_schema = schema_from_parameters(parameters, resolved)
+            seen = {item.name for item in param_schema}
+            for item in schema:
+                raw = {"name": item.name, "label": item.label, "example": item.default, "required": item.required}
+                from browser_platform.authoring.parameters import normalize_parameter
+                parsed = normalize_parameter(raw)
+                if parsed and parsed.name not in seen:
+                    item.name = parsed.name
+                    param_schema.append(item)
+                    seen.add(parsed.name)
+            schema = param_schema
             # Always keep explicit placeholders in the schema.
             for name in placeholders_in_task(task):
                 if name not in {inp.name for inp in schema}:
@@ -549,6 +631,32 @@ async def create_workflow_from_task(
         steps = events_to_steps(events, extract_goal=_extract_goal(task))
         steps_before = len(steps)
         steps, compact_stats = compact_steps(steps)
+        form_names = [item.name for item in (parameters or []) if classify_parameter(item.name, steps=steps) == "form"]
+        bound_values = " ".join(str(step.value or "") for step in steps if step.type in {"input", "select_change"})
+        missing_fills = [name for name in form_names if "{" + name + "}" not in bound_values]
+        if missing_fills:
+            tokens_in, tokens_out, cost = (0, 0, None)
+            if history is not None:
+                tokens_in, tokens_out, cost = usage_from_history(history)
+            job.creation = FromTaskUsage(
+                tokens_in=int(tokens_in or 0) + int(extract_usage.get("tokens_in") or 0),
+                tokens_out=int(tokens_out or 0) + int(extract_usage.get("tokens_out") or 0),
+                cost_usd=estimate_cost_usd(int(tokens_in or 0), int(tokens_out or 0), cost or 0),
+                latency_ms=round((time.perf_counter() - started) * 1000, 1),
+                steps=len(steps),
+                steps_before=steps_before,
+                steps_after=len(steps),
+                compaction=compact_stats,
+            )
+            job.status = "failed"
+            job.error = (
+                "The recording did not capture form fills for "
+                + ", ".join(missing_fills)
+                + ". Values were probably set without input events and then lost on navigation."
+            )
+            if on_status:
+                on_status(job)
+            return job
         llm_prune = {"used": False, "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
         if llm is not None:
             steps, llm_prune = await maybe_llm_prune(steps, task=task, llm=llm)
@@ -556,8 +664,23 @@ async def create_workflow_from_task(
                 compact_stats = {**compact_stats, "method": "deterministic+llm", "steps_after": len(steps), "llm": llm_prune}
             else:
                 compact_stats = {**compact_stats, "llm": llm_prune}
+        steps = maybe_bind_known_urls(steps, parameters, task=task)
         steps = attach_parameter_checks(steps, parameters)
         steps_after = len(steps)
+        resolved = normalize_variable_map(resolved)
+        from browser_platform.authoring.parameters import normalize_parameter
+        merged_schema = schema_from_parameters(parameters, resolved)
+        seen = {item.name for item in merged_schema}
+        for item in schema or []:
+            parsed = normalize_parameter({"name": item.name, "label": item.label, "example": item.default, "required": item.required})
+            if not parsed or parsed.name in seen:
+                continue
+            item.name = parsed.name
+            if not item.default:
+                item.default = resolved.get(item.name)
+            seen.add(item.name)
+            merged_schema.append(item)
+        schema = merged_schema or schema
         definition = WorkflowDefinition(
             name=job.name,
             description=task,
@@ -567,6 +690,28 @@ async def create_workflow_from_task(
             workflow_analysis=f"Created from a browser-use demonstration of: {task}",
             cache_results=False,
         )
+        try:
+            from browser_platform.authoring.explore import explore_definition
+
+            page_state = None
+            if recorder is not None:
+                try:
+                    page_state = await snapshot_page_state(recorder)
+                except Exception:
+                    page_state = None
+            explore_result = await explore_definition(
+                definition,
+                task=task,
+                variables=resolved,
+                llm=llm if explore else None,
+                page_state=page_state,
+                enabled=bool(explore),
+            )
+            job.explore = {k: v for k, v in explore_result.items() if k != "definition"}
+            if explore_result.get("definition"):
+                definition = WorkflowDefinition.model_validate(explore_result["definition"])
+        except Exception as exc:
+            job.explore = {"enabled": bool(explore), "error": type(exc).__name__, "proposals": [], "verified": [], "dropped": []}
         tokens_in = tokens_out = 0
         cost = None
         if history is not None:
@@ -578,8 +723,11 @@ async def create_workflow_from_task(
         prune_cost = (llm_prune or {}).get("cost_usd") or 0.0
         extract_in = int(extract_usage.get("tokens_in") or 0)
         extract_out = int(extract_usage.get("tokens_out") or 0)
-        tokens_in += prune_in + extract_in
-        tokens_out += prune_out + extract_out
+        explore_usage = ((job.explore or {}).get("usage") or {}) if isinstance(job.explore, dict) else {}
+        explore_in = int(explore_usage.get("tokens_in") or 0)
+        explore_out = int(explore_usage.get("tokens_out") or 0)
+        tokens_in += prune_in + extract_in + explore_in
+        tokens_out += prune_out + extract_out + explore_out
         cost = estimate_cost_usd(tokens_in, tokens_out, (cost or 0) + float(prune_cost or 0))
         job.creation = FromTaskUsage(
             tokens_in=tokens_in,

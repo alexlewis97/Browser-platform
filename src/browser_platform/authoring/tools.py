@@ -35,7 +35,7 @@ def is_action_ending(definition: WorkflowDefinition | None) -> bool:
     if last is None:
         return False
     typ = (last.type or "").lower()
-    return typ in {"click", "submit"} or is_submit_like(last)
+    return typ in {"click", "submit"} or (typ == "key_press" and is_submit_like(last))
 
 
 def _json_type(item: WorkflowInput) -> str:

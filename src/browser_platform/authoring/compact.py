@@ -241,9 +241,36 @@ def _best_variable_navigation(steps: list[WorkflowStep]) -> WorkflowStep | None:
     return search[-1] if search else navs[-1]
 
 
+
+_SESSION_URL = re.compile(
+    r"checkout|cart\.html|inventory\.html|/cart|/login|/signin|signup|/account|/post/?$|checkout-complete|thank",
+    re.I,
+)
+
+
+def _is_session_action_flow(steps: list[WorkflowStep]) -> bool:
+    """True when the demo walked a login/cart/checkout/submit path that cannot start at the last URL."""
+
+    navs = [step for step in steps if step.type == "navigation" and step.url]
+    if any(_SESSION_URL.search(step.url or "") for step in navs):
+        return True
+    # A checkout/login click alone is not enough (search forms also "submit"); require a later page.
+    click_ok = any(
+        step.type == "click"
+        and re.search(r"\b(log\s?in|sign\s?in|checkout|finish|add to cart)\b", str(step.target_text or step.description or ""), re.I)
+        for step in steps
+    )
+    paths = {(urlparse(step.url).netloc, urlparse(step.url).path) for step in navs}
+    if click_ok and len(paths) >= 2:
+        return True
+    return False
+
+
 def prefer_direct_variable_url(steps: list[WorkflowStep]) -> list[WorkflowStep]:
     """If a captured URL already embeds {term}, start there and keep only the tail to extract."""
 
+    if _is_session_action_flow(steps):
+        return steps
     best = _best_variable_navigation(steps)
     if best is None:
         return steps
@@ -311,6 +338,8 @@ def causal_path_to_extract(steps: list[WorkflowStep]) -> list[WorkflowStep]:
     """Keep the last visit plus any earlier fills that still parameterize the task."""
 
     if not steps:
+        return steps
+    if _is_session_action_flow(steps):
         return steps
     extract = next((s for s in reversed(steps) if _is_extract(s)), None)
     terminal = extract or last_action(steps)

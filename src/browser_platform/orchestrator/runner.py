@@ -70,6 +70,21 @@ async def _page_meta(session: CdpSession | None) -> dict[str, Any]:
     return meta
 
 
+
+def apply_schema_defaults(definition, variables: dict[str, Any] | None) -> dict[str, Any]:
+    """Fill missing inputs from the workflow schema so optional defaults actually run."""
+
+    out = dict(variables or {})
+    for item in getattr(definition, "input_schema", None) or []:
+        name = getattr(item, "name", None)
+        if not name or out.get(name) not in (None, ""):
+            continue
+        default = getattr(item, "default", None)
+        if default not in (None, ""):
+            out[name] = default
+    return out
+
+
 class WorkflowRunner:
     def __init__(
         self,
@@ -127,6 +142,7 @@ class WorkflowRunner:
         self.store.save_run(run)
         session: CdpSession | None = None
         definition = stored.definition
+        variables = apply_schema_defaults(definition, variables)
         outputs: dict[str, Any] = {}
         original_version = definition.version
         definition = definition.model_copy(deep=True)
