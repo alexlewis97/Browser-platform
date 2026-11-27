@@ -820,13 +820,22 @@ class ChatOrchestrator:
                 job["notes"].append("Chose the page view matching the question's tense (past or upcoming).")
             # Entity-kind mismatch (a competition sent to a club input): never call the tool with
             # the wrong kind of value; the intent is reported as not covered instead.
-            dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated")]
+            for call in prepared:
+                for r in call.get("resolved") or []:
+                    job["notes"].append(f"Spelling resolved: '{r['resolved_from']}' -> {r['value']} ({call['tool']}.{r['param']}).")
+            dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated") or c.get("ambiguous")]
             if dropped:
                 step_intent = {sid: i.get("ask") for i in intents for sid in i.get("steps") or []}
                 uncovered = list(job.get("uncovered") or [])
                 for call in dropped:
                     ask = step_intent.get(call.get("_plan_step")) or message
-                    if call.get("kind_mismatch"):
+                    if call.get("ambiguous"):
+                        mm = call["ambiguous"][0]
+                        reason = (
+                            f"{ask} (not run: '{mm['value']}' for {call['tool']}.{mm['param']} is ambiguous; "
+                            f"did you mean {' or '.join(mm['options'])}?)"
+                        )
+                    elif call.get("kind_mismatch"):
                         mm = call["kind_mismatch"][0]
                         reason = (
                             f"{ask} (not covered: '{mm['value']}' is {mm['value_kind'] or 'a different kind of thing'}, "
@@ -839,7 +848,7 @@ class ChatOrchestrator:
                             f"and the request did not name one; '{mm['value']}' would have been a guess)"
                         )
                     uncovered.append(reason)
-                    job["notes"].append(("kind mismatch: " if call.get("kind_mismatch") else "unstated value: ") + reason)
+                    job["notes"].append(("ambiguous value: " if call.get("ambiguous") else "kind mismatch: " if call.get("kind_mismatch") else "unstated value: ") + reason)
                 job["uncovered"] = uncovered
                 gone = {c["id"] for c in dropped}
                 prepared = [c for c in prepared if c["id"] not in gone and not (set(c.get("after") or []) & gone)]
@@ -965,6 +974,7 @@ class ChatOrchestrator:
             "workflow_name": call["workflow_name"],
             "inputs": dict(call.get("arguments") or {}),
             "raw_inputs": dict(call.get("raw_arguments") or call.get("arguments") or {}),
+            **({"resolved": list(call["resolved"])} if call.get("resolved") else {}),
             **({"page_view": pv} if (pv := page_view_meta(stored.definition if stored is not None else None, call.get("arguments"))) else {}),
             "action_ending": bool(call.get("action_ending")),
             "status": "running",
@@ -1151,6 +1161,11 @@ class ChatOrchestrator:
             await _emit(emit, {"type": "answer", "text": job["answer"], "job_id": job["id"]})
             return job
         try:
+            from browser_platform.orchestrator.facts_order import answer_conflicts, answer_from_computed, computed_facts, for_prompt
+
+            computed = computed_facts(compact, str(job.get("message") or ""))
+            if computed:
+                job["computed"] = for_prompt(computed)
             synth_messages = [
                     {
                         "role": "system",
@@ -1168,6 +1183,8 @@ class ChatOrchestrator:
                             "Report the page's data as it is; never second-guess it from your own knowledge (for example who plays in a league). "
                             "When the question asks about one day and the results cover a longer period, answer for that day only. "
                             "results[].page_view, when present, says which of the page's own views the facts come from (page_label is the page's name for it). "
+                            "computed, when present, is parsed from results[].facts by code: events_on_question_dates are the items on the question's dates, "
+                            "and computed_order is the ordering the question asks for (rank 1 first). Use them for which items fall on a day and for any ordering. "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
                         ),
@@ -1176,6 +1193,7 @@ class ChatOrchestrator:
                         "role": "user",
                         "content": json.dumps(
                             {"question": job.get("message"), **date_context(str(job.get("message") or "")),
+                             **({"computed": job["computed"]} if job.get("computed") else {}),
                              "results": compact, "flagged": job.get("flagged") or []},
                             ensure_ascii=False,
                         )[:9000],
@@ -1218,6 +1236,34 @@ class ChatOrchestrator:
                         text, problems = retry_text, []
                 except Exception:
                     pass
+            conflicts = answer_conflicts(text, computed) if (computed and text and not problems) else []
+            if conflicts:
+                # The lead contradicts the code-computed data: one rewrite, then answer from the data.
+                try:
+                    fix_msg, fix_usage = await chat_complete(
+                        [
+                            synth_messages[0],
+                            synth_messages[1],
+                            {"role": "assistant", "content": text[:1500]},
+                            {"role": "user", "content": "This contradicts computed: " + "; ".join(conflicts)
+                             + ". Rewrite the answer so it agrees with computed and results[].facts."},
+                        ],
+                        max_tokens=500,
+                        api_key=api_key,
+                        model=(job.get("llm_model") or None),
+                    )
+                    job["usage"] = merge_usage(job.get("usage"), fix_usage)
+                    job["token_breakdown"]["synthesis_consistency"] = fix_usage
+                    fixed = message_text(fix_msg)
+                except Exception:
+                    fixed = ""
+                still = (not fixed) or answer_conflicts(fixed, computed) or ungrounded_claims(fixed, compact, str(job.get("message") or ""), full_facts)
+                job["consistency"] = {"conflicts": conflicts, "rewritten": bool(fixed and not still), "from_computed": bool(still)}
+                if still:
+                    text = answer_from_computed(computed) or text
+                    job.setdefault("notes", []).append("The answer was built from the computed dates and times: the summary contradicted them.")
+                else:
+                    text = fixed
             if problems:
                 logger.warning("grounding rejected draft for job %s: %s | draft=%r", job.get("id"), problems[:10], (text or "")[:800])
                 job["grounding"] = {"ok": False, "ungrounded": problems[:10]}
@@ -1308,6 +1354,7 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
         "needs_repair": bool(item.get("needs_repair")),
         "fallbacks": item.get("fallbacks") or [],
         **({"page_view": item["page_view"]} if item.get("page_view") else {}),
+        **({"resolved": item["resolved"]} if item.get("resolved") else {}),
     }
 
 

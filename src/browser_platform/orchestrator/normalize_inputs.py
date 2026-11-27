@@ -328,6 +328,83 @@ def stated_in(value: str, context: str) -> bool:
     return False
 
 
+def _edit_distance(a: str, b: str) -> int:
+    """Optimal string alignment distance: insert, delete, substitute, swap adjacent letters."""
+
+    d = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        d[i][0] = i
+    for j in range(len(b) + 1):
+        d[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[len(a)][len(b)]
+
+
+def _similar(a: str, b: str) -> float:
+    """Spelling similarity of two words (0..1) from edit distance; words under 4 letters only match exactly."""
+
+    if a == b:
+        return 1.0
+    if min(len(a), len(b)) < 4:
+        return 0.0
+    return 1.0 - _edit_distance(a, b) / max(len(a), len(b))
+
+
+FUZZY_THRESHOLD = 0.8
+
+
+def fuzzy_user_span(value: str, context: str) -> str | None:
+    """The user's word that is a misspelling of a significant word of ``value`` (\"chelse\" for
+    Chelsea), or None. Used to accept a planner's corrected spelling as stated by the user."""
+
+    words = [t for t in _tokens(context) if len(t) >= 4]
+    best: tuple[float, str] | None = None
+    for vt in _tokens(value):
+        if len(vt) < 4 or vt in _GENERIC_TOKENS:
+            continue
+        for w in words:
+            score = _similar(vt, w)
+            if score >= FUZZY_THRESHOLD and (best is None or score > best[0]):
+                best = (score, w)
+    return best[1] if best else None
+
+
+def fuzzy_known(value: str, known: Iterable[str]) -> tuple[str | None, list[str]]:
+    """Best spelling match for ``value`` among an input's own enum/example values.
+
+    Returns (match, []) for one clear best match at or above the threshold, (None, tied) when
+    two or more candidates tie for best, and (None, []) when nothing is close enough."""
+
+    vt = [t for t in _tokens(value) if t not in _GENERIC_TOKENS] or _tokens(value)
+    compact = "".join(_tokens(value))
+    if not vt:
+        return None, []
+    scored: list[tuple[float, str]] = []
+    for cand in dict.fromkeys(str(k) for k in known if str(k or "").strip()):
+        ct = [t for t in _tokens(cand) if t not in _GENERIC_TOKENS] or _tokens(cand)
+        if not ct:
+            continue
+        # Every word the user gave must be close to some word of the candidate.
+        per = [max(_similar(a, b) for b in ct) for a in vt]
+        score = min(per) if per else 0.0
+        score = max(score, _similar(compact, "".join(_tokens(cand))))
+        if score >= FUZZY_THRESHOLD:
+            scored.append((score, cand))
+    if not scored:
+        return None, []
+    scored.sort(key=lambda x: -x[0])
+    top = scored[0][0]
+    tied = [c for sc, c in scored if top - sc < 0.02]
+    if len(tied) > 1:
+        return None, tied[:4]
+    return scored[0][1], []
+
+
 async def normalize_prepared_calls(
     calls: list[dict[str, Any]],
     *,
@@ -353,13 +430,42 @@ async def normalize_prepared_calls(
         call["arguments"] = args
         for name, value in list(args.items()):
             if isinstance(value, (list, tuple)):
+                # Each list item the user named is resolved against the input's own values;
+                # an item is never dropped (unmatched items are passed on as given).
+                known = _examples(_schema_item(definition, name))
+                if known:
+                    fixed = []
+                    for v in value:
+                        best, tied = fuzzy_known(str(v), known) if not match_canonical_example(str(v), known) else (None, [])
+                        if best and best != v:
+                            call.setdefault("resolved", []).append({"param": name, "value": best, "resolved_from": str(v)})
+                            fixed.append(best)
+                        else:
+                            if tied:
+                                call.setdefault("ambiguous", []).append({"param": name, "value": str(v), "options": tied})
+                            fixed.append(match_canonical_example(str(v), known) or v)
+                    args[name] = fixed
                 continue
             text = "" if value is None else str(value).strip()
             if not text or not is_entity_parameter(name, definition):
                 continue
             hints = parameter_hints(definition, name)
             check = bool(user_words) and not stated_in(text, user_words or "")
+            if check:
+                # The planner may already have corrected the user's spelling ("chelse" -> Chelsea).
+                span = fuzzy_user_span(text, user_words or "")
+                if span:
+                    check = False
+                    call.setdefault("resolved", []).append({"param": name, "value": text, "resolved_from": span})
             local = apply_local_canonical(text, hints)
+            if not local and hints.get("examples"):
+                best, tied = fuzzy_known(text, hints.get("examples") or [])
+                if best:
+                    local = best
+                    call.setdefault("resolved", []).append({"param": name, "value": best, "resolved_from": text})
+                elif tied:
+                    call.setdefault("ambiguous", []).append({"param": name, "value": text, "options": tied})
+                    continue
             if local and local != text:
                 args[name] = _choose_form(local, path_slug(local), hints.get("examples") or [])
                 if check:
