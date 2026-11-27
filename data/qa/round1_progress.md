@@ -66,3 +66,19 @@
   - TEST 5/6: Wolves/Everton/Leeds, Bournemouth/Palce (tie), Brentford/Nottm Forest this weekend, Celtic/Rangers, PL today all OK. Chelsea/Arsnal: typo resolved, but the answer is "Arsenal first" because Chelsea's tonight game has no printed date on the team page.
   - Typos 4/4 resolved; 0 dropped.
 - Open: team pages print today's game without a date. The team fixtures tool has no explore-detected default_view (an authoring gap, BRO-19 area), so code can't date it. The consistency rewrite never fired live (unit-tested only).
+
+## 13:13-13:28 Round 3 pre bugs (generic; planner/answer + workflow_inputs only)
+- ddf93d8:
+  - Fuzzy scoring is per whole word: exact > truncation prefix ("man") > abbreviation ("utd") > edit distance. Two different words that share a prefix score 0. Every user word must match a distinct option word. A tie keeps the planner's value (recorded as fuzzy_ties).
+  - Verified empty pages ("no events to show") get data_status=empty and succeed.
+  - Only an enum is closed: examples and value_map labels are hints, so unknown plausible slugs pass. BRO-19's closed-enum needs_input is kept; their tests were updated to that contract.
+  - Enum view controls are not required in extracts.
+- ca90bd0 (lost in BRO-19's amend/reset; content re-committed in 1a167ff): the normaliser never swaps one user-named entity for another.
+- 1a167ff: a focused "implied value" question runs before declining an unstated required value. The span is verified by code, and the result is recorded as `inferred`.
+- Deploys: 13:20 (backup src-backup-r3-1320.tgz), 13:24 and 13:27 (normalize_inputs.py.bak-HHMM). /health ok, waited for zero live jobs.
+- Live:
+  - TRAIN (QA's cases) 5/5: man city weekend → City; liverpool/man utd → United; arsnal/liverpool pts → PL table; Championship 15 Jun 2026 → succeeded "no events"; Scottish Premiership table.
+  - TEST 6/9:
+    - OK: man utd weekend, spurs/chelse points, PL 20 Jun 2026 empty, barcelona table position (La Liga inferred), man city/newcastle points, "show me the league table" (correctly asks).
+    - Fail: Eredivisie (planner slug 'eredivisie' → not-found page, honest failure); celtic/hearts still declined (implied question variance); villa/brighton (right table, but the answer says Villa above while the facts show Brighton 2nd / Villa 12th).
+- Open: table-position comparisons are not covered by computed_order (dates/times only); the implied-value question is not 100% reliable.
