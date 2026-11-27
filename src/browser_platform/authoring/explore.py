@@ -124,6 +124,7 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                     default_source="runtime" if proposal.get("runtime_default") else ("page" if proposal.get("default") not in (None, "") else None),
                     **({"examples": list(proposal["examples"])} if proposal.get("examples") else {}),
                     **({"enum": list(proposal["enum"])} if proposal.get("enum") else {}),
+                    **({"default_view": proposal["default_view"]} if proposal.get("default_view") else {}),
                 )
             )
             names.add(name)

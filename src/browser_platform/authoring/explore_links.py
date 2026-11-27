@@ -143,6 +143,8 @@ def propose_from_link_families(
         if not current:
             shown = f" ('{self_label}')" if self_label else ""
             proposal["description"] += f" Leave it out for the page's default view{shown}."
+            if self_label:
+                proposal["default_view"] = self_label
         proposals.append(proposal)
         used.add(name)
     return proposals

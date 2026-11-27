@@ -126,6 +126,9 @@ def _input_entry(item: Any, definition: WorkflowDefinition | None = None) -> dic
     enum = getattr(item, "enum", None)
     if isinstance(enum, list) and enum:
         entry["enum"] = list(enum)[:20]
+    default_view = getattr(item, "default_view", None)
+    if default_view and not entry["required"]:
+        entry["default_view"] = str(default_view)[:30]
     if item.sensitive:
         entry["sensitive"] = True
     return entry
@@ -300,6 +303,9 @@ def card(manifest: dict[str, Any]) -> str:
         extra = ""
         if item.get("enum"):
             extra = "=" + "|".join(str(v) for v in item["enum"][:6])
+            if item.get("default_view"):
+                # What the page shows when the argument is left out (e.g. a "Today" view).
+                extra += f" (omit={item['default_view']})"
         elif item.get("grain"):
             # Typed dates: the planner passes the user's words; code resolves them.
             extra = ":" + {"date": "day", "month": "month", "year": "year"}[item["grain"]]
