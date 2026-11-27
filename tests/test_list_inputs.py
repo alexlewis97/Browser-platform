@@ -125,3 +125,14 @@ def test_view_inferred_from_tense_and_known_values_mapped():
     assert resolve_input_values(d, {"kind": "Grand Prix 1"})["kind"] == "grand-prix-one"
     free = WorkflowInput(name="q", examples=["wireless mouse pad"])
     assert match_known_value(free, "wireless mouse") == "wireless mouse"
+
+
+def test_view_control_not_required_in_extract():
+    from browser_platform.workflow_inputs import inputs_for_output_validation
+
+    d = WorkflowDefinition.model_validate({
+        "name": "Listing", "steps": [{"type": "navigation", "url": "https://ex.org/{kind}?view={view}"}, {"type": "extract", "extractionGoal": "x"}],
+        "input_schema": [{"name": "view", "type": "string", "required": False, "enum": ["archive", "upcoming"], "default_view": "Now"},
+                         {"name": "kind", "type": "string", "required": True}],
+    })
+    assert inputs_for_output_validation({"view": "archive", "kind": "cup"}, definition=d) == {"kind": "cup"}

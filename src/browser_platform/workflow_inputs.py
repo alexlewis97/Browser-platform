@@ -488,6 +488,10 @@ def inputs_for_output_validation(
         if raw_inputs is not None and (raw in (None, "") or is_placeholder_value(raw)):
             continue
         item = items.get(key)
+        # A page view control (explore found its default view) selects a view of the same
+        # page; its value need not be printed in the extract.
+        if item is not None and getattr(item, "default_view", None):
+            continue
         if raw_inputs is None and has_runtime_default(item, definition) and str(value) == str(concrete_default(item, definition)):
             continue
         out[key] = value

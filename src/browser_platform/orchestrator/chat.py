@@ -1307,6 +1307,7 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
         "attempts": item.get("attempts"),
         "needs_repair": bool(item.get("needs_repair")),
         "fallbacks": item.get("fallbacks") or [],
+        **({"page_view": item["page_view"]} if item.get("page_view") else {}),
     }
 
 
