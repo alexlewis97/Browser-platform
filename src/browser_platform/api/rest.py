@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from browser_platform.api.schemas import FromRecordingRequest, FromRecordingSaveRequest, ConfirmationRequest, FromTaskConfirmation, FromTaskRequest, MintRequest, RunRequest, WorkflowCreate, WorkflowReplace
+from browser_platform.api.schemas import FromRecordingRequest, FromRecordingSaveRequest, ConfirmationRequest, FromTaskConfirmation, FromTaskRequest, MintRequest, RunRequest, WorkflowCreate, WorkflowReplace, WorkflowVisibility
 from browser_platform.fuzzy.hitl import ConfirmationDecision
 from browser_platform.models.llm import resolve_llm
 from browser_platform.models.workflow import WorkflowDefinition
@@ -82,13 +82,52 @@ async def create_workflow(payload: WorkflowCreate, request: Request) -> dict[str
     return {"id": stored.id, "path": stored.path, "definition": stored.definition.model_dump(exclude_none=True)}
 
 
+def _workflow_summary(w) -> dict[str, Any]:
+    definition = w.definition
+    return {
+        "id": w.id,
+        "name": definition.name,
+        "description": definition.description or "",
+        "version": definition.version,
+        "path": w.path,
+        "published": bool(getattr(definition, "published", True)),
+        "input_schema": [item.model_dump(exclude_none=True) for item in (definition.input_schema or [])],
+    }
+
+
+def _catalog_item(w) -> dict[str, Any]:
+    item = _workflow_summary(w)
+    item.pop("path", None)
+    return item
+
+
 @router.get("/api/workflows")
 async def list_workflows(request: Request) -> dict[str, Any]:
-    items = [
-        {"id": w.id, "name": w.definition.name, "version": w.definition.version, "path": w.path}
-        for w in _state(request).store.list_workflows()
-    ]
+    items = [_workflow_summary(w) for w in _state(request).store.list_workflows()]
     return {"workflows": items}
+
+
+@router.get("/api/catalog")
+async def list_catalog(request: Request) -> dict[str, Any]:
+    """Public list of published workflows for the end-user run site. No access token."""
+    items = [_catalog_item(w) for w in _state(request).store.list_workflows() if getattr(w.definition, "published", True)]
+    return {"workflows": items}
+
+
+@router.get("/api/catalog/{workflow_id}")
+async def get_catalog_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
+    """Public definition of a published workflow, for running in the user's extension."""
+    try:
+        stored = _state(request).store.get_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    if not getattr(stored.definition, "published", True):
+        raise HTTPException(status_code=404, detail="workflow not found")
+    return {
+        "id": stored.id,
+        "definition": stored.definition.model_dump(exclude_none=True),
+        **_catalog_item(stored),
+    }
 
 
 
@@ -318,6 +357,27 @@ async def replace_workflow(workflow_id: str, payload: WorkflowReplace, request: 
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"id": stored.id, "path": stored.path, "definition": stored.definition.model_dump(exclude_none=True)}
+
+
+@router.put("/api/workflows/{workflow_id}/published")
+async def set_workflow_published(workflow_id: str, payload: WorkflowVisibility, request: Request) -> dict[str, Any]:
+    """Admin toggle: show or hide a workflow on the end-user run site."""
+    state = _state(request)
+    try:
+        stored = state.store.get_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    definition = stored.definition
+    definition.published = bool(payload.published)
+    try:
+        stored = state.store.update_workflow(workflow_id, definition)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "id": stored.id,
+        "published": bool(stored.definition.published),
+        "definition": stored.definition.model_dump(exclude_none=True),
+    }
 
 
 @router.delete("/api/workflows/{workflow_id}")

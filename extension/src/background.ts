@@ -32,6 +32,53 @@ type ContentResult = { ok: true; data?: unknown } | { ok: false; error: string }
 
 let currentRun: RunState | null = null;
 let hitlWaiter: { resolve: (c: Candidate | null) => void; reject: (e: Error) => void } | null = null;
+type RunRequestPayload = {
+  definition: InstalledWorkflow["definition"];
+  values?: Record<string, string>;
+  id?: string;
+  name?: string;
+  tabId?: number;
+};
+type PendingRunConfirm = {
+  payload: RunRequestPayload;
+  resolve: (accepted: boolean) => void;
+  windowId?: number;
+  onRemoved?: (id: number) => void;
+};
+const pendingRunConfirms = new Map<string, PendingRunConfirm>();
+
+function settleRunConfirm(requestId: string, accepted: boolean): boolean {
+  const pending = pendingRunConfirms.get(requestId);
+  if (!pending) return false;
+  pendingRunConfirms.delete(requestId);
+  if (pending.onRemoved) chrome.windows.onRemoved.removeListener(pending.onRemoved);
+  if (pending.windowId != null) {
+    void chrome.windows.remove(pending.windowId).catch(() => undefined);
+  }
+  pending.resolve(accepted);
+  return true;
+}
+
+async function confirmRunRequest(payload: RunRequestPayload): Promise<boolean> {
+  const requestId = crypto.randomUUID();
+  const created = await chrome.windows.create({
+    url: chrome.runtime.getURL(`confirm.html?id=${encodeURIComponent(requestId)}`),
+    type: "popup",
+    width: 420,
+    height: 620,
+    focused: true,
+  });
+  return await new Promise<boolean>((resolve) => {
+    const windowId = created.id;
+    const pending: PendingRunConfirm = { payload, resolve, windowId };
+    const onRemoved = (id: number) => {
+      if (windowId != null && id === windowId) settleRunConfirm(requestId, false);
+    };
+    pending.onRemoved = onRemoved;
+    pendingRunConfirms.set(requestId, pending);
+    chrome.windows.onRemoved.addListener(onRemoved);
+  });
+}
 const injected = new Set<number>();
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -766,6 +813,59 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       if (kind === "bp-last-inputs") {
         sendResponse({ ok: true, values: await loadLastInputs((message as { id: string }).id) });
+        return;
+      }
+      if (kind === "bp-confirm-details") {
+        const requestId = String((message as { id?: string }).id || "");
+        const pending = pendingRunConfirms.get(requestId);
+        if (!pending) {
+          sendResponse({ ok: false, error: "לא נמצאה בקשת הרצה, או שפג תוקפה." });
+          return;
+        }
+        sendResponse({
+          ok: true,
+          name: pending.payload.name || pending.payload.definition?.name || "זרימה",
+          description: pending.payload.definition?.description || "",
+          values: pending.payload.values || {},
+        });
+        return;
+      }
+      if (kind === "bp-confirm-decision") {
+        const requestId = String((message as { id?: string }).id || "");
+        const accepted = Boolean((message as { accepted?: boolean }).accepted);
+        if (!settleRunConfirm(requestId, accepted)) {
+          sendResponse({ ok: false, error: "לא נמצאה בקשת הרצה, או שכבר טופלה." });
+          return;
+        }
+        sendResponse({ ok: true, accepted });
+        return;
+      }
+      if (kind === "bp-run-request") {
+        const payload = message as RunRequestPayload;
+        if (!payload.definition) throw new Error("No workflow definition to run.");
+        if (pendingRunConfirms.size) throw new Error("A run confirmation is already open.");
+        if (currentRun && (currentRun.status === "running" || currentRun.status === "hitl")) {
+          throw new Error("A workflow is already running.");
+        }
+        const accepted = await confirmRunRequest(payload);
+        if (!accepted) {
+          sendResponse({ ok: false, cancelled: true, error: "ההרצה בוטלה." });
+          return;
+        }
+        const installed: InstalledWorkflow = {
+          id: payload.id || "adhoc",
+          name: payload.name || payload.definition.name || "workflow",
+          description: payload.definition.description || "",
+          type: "workflow-use",
+          version: String(payload.definition.version || "1"),
+          sha256: "",
+          installedAt: new Date().toISOString(),
+          source: "file",
+          definition: payload.definition,
+        };
+        const tabId = payload.tabId || await targetTab();
+        const run = await runWorkflow(tabId, installed, payload.values || {});
+        sendResponse({ ok: run.status === "ok", confirmed: true, run });
         return;
       }
       if (kind === "bp-run-definition") {

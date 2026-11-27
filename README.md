@@ -146,7 +146,9 @@ The e2e smoke test launches a local Chromium with `--remote-debugging-port` (sta
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/health` | Liveness |
+| GET | `/api/catalog`, `/api/catalog/{id}` | Public catalogue of published workflows for the end-user run site (no access token) |
 | POST/GET/PUT | `/api/workflows` | Create / list / update / fetch a workflow-use document |
+| PUT | `/api/workflows/{id}/published` | Admin toggle: show or hide a workflow on the end-user run site. Existing workflows default to published. |
 | DELETE | `/api/workflows/{id}` | Delete a workflow (requires the access token when one is configured). Clears result and action caches and version snapshots; past run records are kept and flagged `workflow_deleted` |
 | POST | `/api/workflows/from-task` | Create a workflow from a natural-language task (browser-use demo + 0-token replay). `wait: false` returns a job immediately |
 | GET | `/api/workflows/from-task/{job_id}` | Poll a from-task job (status, creation vs replay tokens/time, saved workflow) |
@@ -284,6 +286,19 @@ You may send `"text": "Anna Cohen"` instead of `candidate_id`. To abandon the ru
 A confirm or cancel against a run that is not waiting returns **409**. Auth is the same access token as the rest of the API (`X-Browser-Platform-Token` / `Authorization` / `access_token` query).
 
 
+
+## End-user run site
+
+The admin site at [browser-platform-web.vercel.app](https://browser-platform-web.vercel.app) is for creating, exploring and publishing workflows. End users use a separate site, [browser-platform-run.vercel.app](https://browser-platform-run.vercel.app):
+
+- Browse and search published workflows
+- Fill in inputs (explore-mode optional defaults are pre-filled)
+- Click Run — the site asks the installed Chrome extension to confirm, then the workflow runs in the user's own browser session
+- Progress, results and per-browser run history stay on the user's device
+
+Unpublished workflows stay on the admin site only. The extension must allow `https://browser-platform-run.vercel.app` (`externally_connectable` and the web-bridge content script).
+
+This is a separate Vercel project so the authoring UI is never shipped to end users.
 
 ## Chrome extension (workflow-use replay)
 

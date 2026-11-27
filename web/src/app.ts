@@ -292,11 +292,16 @@ async function renderWorkflows(): Promise<string> {
               <div class="row">
                 <div class="grow">
                   <strong>${escapeHtml(w.name)}</strong>
+                  <div class="muted" style="margin-top:4px">${escapeHtml(w.description || he.workflows.noDescription)}</div>
                   <div class="meta">v${escapeHtml(w.version)} · ${escapeHtml(w.id.slice(0, 8))}</div>
                 </div>
-                <span class="muted">${he.common.open}</span>
+                <span class="pill ${w.published !== false ? "ok" : ""}">${w.published !== false ? he.workflows.visibleToUsers : he.workflows.hiddenFromUsers}</span>
               </div>
             </a>
+            <label class="check" data-action="toggle-published" data-id="${escapeHtml(w.id)}">
+              <input type="checkbox" ${w.published !== false ? "checked" : ""} />
+              <span>${he.workflows.showOnRunSite}</span>
+            </label>
             <div class="btn-row" style="margin-top:10px">
               <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.publish}</button>
               <button type="button" class="btn danger" data-action="delete-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.delete}</button>
@@ -461,6 +466,11 @@ async function renderWorkflow(id: string): Promise<string> {
       `<div class="card">
         <p class="sub" style="margin:0 0 12px">${escapeHtml(def.description || he.workflows.noDescription)}</p>
         <div class="mono muted">id ${escapeHtml(stored.id)} · v${escapeHtml(def.version || "1")}</div>
+        <label class="check" data-action="toggle-published" data-id="${escapeHtml(stored.id)}">
+          <input type="checkbox" ${def.published !== false ? "checked" : ""} />
+          <span>${he.workflows.showOnRunSite}</span>
+        </label>
+        <p class="muted" style="margin-top:-4px">${he.workflows.runSiteHint}</p>
         <div style="margin-top:14px">${steps}</div>
         ${typeof def.mint_job_id === "string" && def.mint_job_id ? `<p style="margin:16px 0 0"><a class="btn" href="#/mint/${encodeURIComponent(String(def.mint_job_id))}">${he.workflow.mintTrace}</a></p>` : ""}
         <div class="btn-row" style="margin-top:14px">
@@ -1751,6 +1761,24 @@ async function onClick(event: Event): Promise<void> {
         if (btn) btn.disabled = false;
         if (status) status.innerHTML = bannerError(err);
       }
+    })();
+    return;
+  }
+  if (action === "toggle-published") {
+    const root = target.closest("[data-action='toggle-published']") as HTMLElement | null;
+    const input = (root?.querySelector("input[type='checkbox']") || target) as HTMLInputElement | null;
+    const id = root?.dataset.id;
+    if (!id || !input) return;
+    const published = input.checked;
+    input.disabled = true;
+    void (async () => {
+      try {
+        await api.setPublished(id, published);
+        flashMessage = { kind: "ok", text: published ? he.flash.workflowVisible : he.flash.workflowHidden };
+      } catch (err) {
+        flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
+      }
+      await render();
     })();
     return;
   }

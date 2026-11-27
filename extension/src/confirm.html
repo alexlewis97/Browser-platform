@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>אישור הרצה</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="confirm.css" />
+  </head>
+  <body>
+    <header>
+      <p class="eyebrow">פלטפורמת דפדפן</p>
+      <h1>לאשר הרצה בדפדפן הזה?</h1>
+    </header>
+    <main>
+      <p id="error" class="error" hidden></p>
+      <section class="card">
+        <h2 id="name">זרימה</h2>
+        <p id="description" class="muted"></p>
+        <div id="values"></div>
+      </section>
+      <p class="hint">הזרימה תרוץ בלשונית שלכם, עם ההרשאות וההתחברויות שלכם.</p>
+      <div class="actions">
+        <button type="button" id="confirm" class="primary">הרצה</button>
+        <button type="button" id="cancel">ביטול</button>
+      </div>
+    </main>
+    <script type="module" src="confirm.js"></script>
+  </body>
+</html>

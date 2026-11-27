@@ -41,12 +41,26 @@ ALWAYS_OPEN_PATHS = frozenset({"/health"})
 DOCS_PATHS = frozenset({"/docs", "/openapi.json", "/redoc"})
 
 
+def _is_public_catalog_path(path: str) -> bool:
+    """GET /api/catalog and GET /api/catalog/{id} are public (end-user run site)."""
+    value = path.rstrip("/") or "/"
+    if value == "/api/catalog":
+        return True
+    prefix = "/api/catalog/"
+    if value.startswith(prefix):
+        rest = value[len(prefix):]
+        return bool(rest) and "/" not in rest
+    return False
+
+
 def _is_open_path(path: str, method: str, settings: Settings | None) -> bool:
     if path in ALWAYS_OPEN_PATHS:
         return True
     # Docs stay open only when no access token is configured (local-only mode).
     token = (getattr(settings, "access_token", "") or "") if settings is not None else ""
     if path in DOCS_PATHS and not token:
+        return True
+    if method in {"GET", "HEAD"} and _is_public_catalog_path(path):
         return True
     # Static UI (same-origin) never requires a token.
     if method in {"GET", "HEAD"} and not path.startswith("/api") and not path.startswith("/ws"):

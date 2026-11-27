@@ -14,6 +14,7 @@ await esbuild.build({
     recorder: join(root, "src/recorder.ts"),
     "web-bridge": join(root, "src/web-bridge.ts"),
     sidepanel: join(root, "src/sidepanel.ts"),
+    confirm: join(root, "src/confirm.ts"),
   },
   bundle: true,
   format: "esm",
@@ -26,5 +27,7 @@ await esbuild.build({
 
 cpSync(join(root, "src/sidepanel.html"), join(outdir, "sidepanel.html"));
 cpSync(join(root, "src/sidepanel.css"), join(outdir, "sidepanel.css"));
+cpSync(join(root, "src/confirm.html"), join(outdir, "confirm.html"));
+cpSync(join(root, "src/confirm.css"), join(outdir, "confirm.css"));
 writeFileSync(join(outdir, "manifest.json"), readFileSync(join(root, "manifest.json")));
 console.log("wrote", outdir);

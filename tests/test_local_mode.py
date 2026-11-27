@@ -118,6 +118,8 @@ def test_cors_allows_localhost_ports_and_exact_vercel(data_dir: Path):
     assert origin_allowed("http://localhost:5173") == "http://localhost:5173"
     assert origin_allowed("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
     assert origin_allowed("https://browser-platform-web.vercel.app") == "https://browser-platform-web.vercel.app"
+    # Official run site is always included with the default frontend origins.
+    assert origin_allowed("https://browser-platform-run.vercel.app") == "https://browser-platform-run.vercel.app"
     # Preview vercel apps are no longer wildcard-allowed.
     assert origin_allowed("https://preview.vercel.app") != "https://preview.vercel.app"
     preflight = client.options(
@@ -129,6 +131,16 @@ def test_cors_allows_localhost_ports_and_exact_vercel(data_dir: Path):
     )
     assert preflight.headers.get("access-control-allow-origin") == "http://localhost:8745"
     assert origin_allowed("https://evil.example") != "https://evil.example"
+
+
+def test_cors_allows_run_site_in_default_origins(data_dir: Path):
+    settings = _settings(data_dir)
+    client = TestClient(create_app(settings, root=ROOT))
+    origin = "https://browser-platform-run.vercel.app"
+    response = client.get("/health", headers={"Origin": origin})
+    assert response.headers.get("access-control-allow-origin") == origin
+    admin = "https://browser-platform-web.vercel.app"
+    assert client.get("/health", headers={"Origin": admin}).headers.get("access-control-allow-origin") == admin
 
 
 def test_public_bind_requires_token(data_dir: Path):

@@ -44,6 +44,8 @@ extension/playwright-report/
 extension/blob-report/
 
 # Web build output
+web-run/site/
+web-run/dist/
 web/.next/
 web/out/
 web/build/
@@ -59,6 +61,8 @@ web/dist/
 
 # Archives and Windows installers
 *.zip
+!releases/browser-platform-extension.zip
+!web-run/public/browser-platform-extension.zip
 *.exe
 *.msi
 

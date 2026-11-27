@@ -14,7 +14,7 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "[::1]"})
 CORS_ORIGIN_REGEX = (
     r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 )
-DEFAULT_CORS_ORIGINS = ("https://browser-platform-web.vercel.app",)
+DEFAULT_CORS_ORIGINS = ("https://browser-platform-web.vercel.app", "https://browser-platform-run.vercel.app")
 
 _FORWARD_HEADERS = (
     "x-forwarded-for",

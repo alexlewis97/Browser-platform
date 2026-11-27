@@ -1,8 +1,8 @@
 import { refreshDiscovery, isNetworkError } from "./discover";
 import { isManualBackendOverride, loadSettings, type Settings } from "./storage";
 
-export type WorkflowSummary = { id: string; name: string; version: string; path?: string };
 export type WorkflowInput = { name: string; type?: string; required?: boolean; default?: string | number | boolean; label?: string; description?: string };
+export type WorkflowSummary = { id: string; name: string; version: string; path?: string; description?: string; published?: boolean; input_schema?: WorkflowInput[] };
 export type WorkflowStep = {
   type: string;
   description?: string;
@@ -18,6 +18,7 @@ export type WorkflowDefinition = {
   version?: string;
   steps: WorkflowStep[];
   input_schema?: WorkflowInput[];
+  published?: boolean;
   [key: string]: unknown;
 };
 export type StoredWorkflow = { id: string; path?: string; definition: WorkflowDefinition };
@@ -188,6 +189,11 @@ export const api = {
     request<StoredWorkflow>(`/api/workflows/${id}`, { method: "PUT", body: JSON.stringify({ definition }) }),
   deleteWorkflow: (id: string) =>
     request<{ ok: boolean; id: string; runs_kept?: number }>(`/api/workflows/${id}`, { method: "DELETE" }),
+  setPublished: (id: string, published: boolean) =>
+    request<{ id: string; published: boolean }>(`/api/workflows/${id}/published`, {
+      method: "PUT",
+      body: JSON.stringify({ published }),
+    }),
   startRun: (id: string, body: Record<string, unknown>) =>
     request<RunRecord>(`/api/workflows/${id}/run`, { method: "POST", body: JSON.stringify({ ...body, wait: false }) }),
   listRuns: () => request<{ runs: RunRecord[] }>("/api/runs"),

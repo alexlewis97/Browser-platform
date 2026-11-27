@@ -76,7 +76,15 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [part.strip() for part in self.cors_origins.split(",") if part.strip()]
+        configured = [part.strip() for part in self.cors_origins.split(",") if part.strip()]
+        if "*" in configured:
+            return configured
+        # Official frontends stay allowed even when an older env list omits a new site.
+        seen: list[str] = []
+        for origin in [*DEFAULT_CORS_ORIGINS, *configured]:
+            if origin not in seen:
+                seen.append(origin)
+        return seen
 
 
 def load_settings(root: Path | None = None) -> Settings:

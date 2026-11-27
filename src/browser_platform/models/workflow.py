@@ -178,6 +178,8 @@ class WorkflowDefinition(BaseModel):
     fuzzy: FuzzyMatchConfig | None = None
     hitl: HitlConfig | None = None
     aliases: list[AliasMapping] = Field(default_factory=list)
+    # Visible on the end-user run site. Missing on existing documents => published.
+    published: bool = True
 
     @field_validator("version", mode="before")
     @classmethod
@@ -209,6 +211,7 @@ class WorkflowDefinition(BaseModel):
                 "fuzzy",
                 "hitl",
                 "aliases",
+                "published",
             },
             exclude_none=True,
         )

@@ -107,3 +107,9 @@ class FromRecordingSaveRequest(BaseModel):
     review: list[dict[str, Any]] = Field(default_factory=list)
     parameters: list[dict[str, Any]] | None = None
     variables: dict[str, Any] | None = None
+
+
+class WorkflowVisibility(BaseModel):
+    """Toggle whether a workflow is listed on the end-user run site."""
+
+    published: bool

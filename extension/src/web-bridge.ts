@@ -7,10 +7,13 @@ const EXT = "bp-ext";
 
 const ALLOWED_ORIGINS = new Set([
   "https://browser-platform-web.vercel.app",
+  "https://browser-platform-run.vercel.app",
   "http://localhost:8745",
   "http://127.0.0.1:8745",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
 ]);
 
 /** Kinds the page may invoke. Keep this tight — no settings/token reads. */
@@ -20,6 +23,7 @@ const ALLOWED_KINDS = new Set([
   "bp-record-stop",
   "bp-record-status",
   "bp-run-definition",
+  "bp-run-request",
 ]);
 
 function originAllowed(origin: string): boolean {
@@ -60,6 +64,14 @@ function scrubResult(kind: string, result: unknown): unknown {
 }
 
 window.postMessage({ source: EXT, direction: "hello", ok: true }, "*");
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || typeof message !== "object" || (message as { kind?: string }).kind !== "bp-run") return;
+  window.postMessage(
+    { source: EXT, direction: "progress", kind: "bp-run", run: (message as { run?: unknown }).run },
+    window.location.origin,
+  );
+});
 
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
