@@ -318,6 +318,21 @@ async def post_from_task_explore(job_id: str, payload: dict, request: Request) -
     return {"ok": True, "job_id": job_id, "workflow_id": stored.id, "accepted": [item["name"] for item in keep], "rejected": drop, "definition": stored.definition.model_dump(exclude_none=True)}
 
 
+def _explore_sample_variables(definition: Any) -> dict[str, Any]:
+    """Values used only to open the page while exploring: the default, else the first example.
+
+    Required inputs often have no default (no silent entity defaults); exploring still needs a
+    real page, so a sample example is used for the visit and never saved as a default."""
+
+    out: dict[str, Any] = {}
+    for item in definition.input_schema or []:
+        if item.default not in (None, ""):
+            out[item.name] = item.default
+        elif getattr(item, "examples", None):
+            out[item.name] = item.examples[0]
+    return out
+
+
 @router.post("/api/workflows/{workflow_id}/explore")
 async def post_workflow_explore(workflow_id: str, request: Request) -> dict[str, Any]:
     """Run bounded explore-mode on an existing library workflow and apply verified options."""
@@ -338,7 +353,7 @@ async def post_workflow_explore(workflow_id: str, request: Request) -> dict[str,
     result = await explore_definition(
         stored.definition,
         task=(body or {}).get("task") or stored.definition.description or stored.definition.name,
-        variables=(body or {}).get("variables") or {item.name: item.default for item in (stored.definition.input_schema or []) if item.default is not None},
+        variables=(body or {}).get("variables") or _explore_sample_variables(stored.definition),
         enabled=True,
     )
     if apply and result.get("definition"):
@@ -351,6 +366,42 @@ async def post_workflow_explore(workflow_id: str, request: Request) -> dict[str,
         result["workflow_id"] = workflow_id
     return result
 
+
+
+@router.post("/api/workflows/{workflow_id}/derive")
+async def post_workflow_derive(workflow_id: str, request: Request) -> dict[str, Any]:
+    """Create a new tool from a sibling view explore found, then explore it for parameters.
+
+    Body: {"view": {...one item of explore's sibling_views...}, "apply": false}. With apply
+    false (default) nothing is saved and the proposed definition is returned."""
+
+    from browser_platform.authoring.explore import derive_view_definition, explore_definition
+    from browser_platform.models.workflow import WorkflowDefinition
+
+    state = _state(request)
+    try:
+        stored = state.store.get_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    view = (body or {}).get("view") or {}
+    try:
+        derived = derive_view_definition(stored.definition, view)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    explored = await explore_definition(derived, task=derived.description or derived.name,
+                                        variables=_explore_sample_variables(derived), enabled=True)
+    if explored.get("definition"):
+        derived = WorkflowDefinition.model_validate(explored["definition"])
+    result: dict[str, Any] = {"definition": derived.model_dump(exclude_none=True), "explore": {
+        k: explored.get(k) for k in ("accepted", "dropped", "usage")}, "saved": False}
+    if bool((body or {}).get("apply")):
+        saved = state.store.create_workflow(derived)
+        result.update({"saved": True, "workflow_id": saved.id})
+    return result
 
 
 @router.post("/api/workflows/from-recording")

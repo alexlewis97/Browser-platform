@@ -12,3 +12,9 @@
 - 11:08 train_final2 (latest code): 14/19, 0 grounding rejections. Running TEST once (test_final).
 - 11:10 TEST (once, test_final): 17/19 harness passes. Fails = bbc_l1_ch_fixtures + bbc_l2_empty_fixtures in Sports: honest "not covered" declines (no competition tool in Sports). Slider chat grounded (extract 75). 0 grounding rejections.
 - 11:12 steering: deploy round 1, then features: (1) competition/date params on BBC wfs via explore mode only, (2) relative dates, (3) dblclick/right-click step types (recorder, executor, from-task, extension), (4) list/array inputs. Skip slider/side-panel. Commit locally only.
+- 11:13 DEPLOYED round 1 (c85fefe src) to VM: backups /home/ubuntu/src-backup-qa1-202611270912.tgz + data-backup-qa1-202611270912.tgz; 19 src files; /health ok.
+  Live migration applied to 7 Sports wfs (recheck 0 changes). Live smoke chat 'Liverpool next match?' ok. Admin web deployed (browser-platform-web.vercel.app index-DZkoSW1Z.js). Staging removed.
+- Next: features (explore-mode params, dblclick/right-click, list inputs). Scope rule: authoring + orchestration only; ideas -> data/qa/ideas_backlog.md.
+
+## 11:13 deployed round 1 (c85fefe live, web deployed). Features started.
+- F1 explore link families: authoring/explore_links.py (typed path/query/child families, sibling views), derive endpoint POST /api/workflows/{id}/derive (apply=false default), explore sample variables from examples.

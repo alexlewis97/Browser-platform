@@ -144,6 +144,11 @@ def interpolate_url(url: Any, variables: dict[str, Any] | None) -> Any:
     if not isinstance(url, str):
         return interpolate(url, variables)
     updated = interpolate(url, variables or {})
+    if isinstance(updated, str) and "?" in updated:
+        # An optional query parameter whose input was not given is dropped, not sent empty.
+        base, _, query = updated.partition("?")
+        kept = [pair for pair in query.split("&") if pair and not re.fullmatch(r"[^=]+=(\{[^}]*\})?", pair)]
+        updated = base + ("?" + "&".join(kept) if kept else "")
     if not isinstance(updated, str) or not (variables or {}):
         return updated
     from urllib.parse import unquote, urlparse, urlunparse

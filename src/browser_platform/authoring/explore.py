@@ -122,6 +122,7 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                     runtime_default=proposal.get("runtime_default"),
                     # Explore reads the default off the live page and verifies it.
                     default_source="runtime" if proposal.get("runtime_default") else ("page" if proposal.get("default") not in (None, "") else None),
+                    **({"examples": list(proposal["examples"])} if proposal.get("examples") else {}),
                 )
             )
             names.add(name)
@@ -143,6 +144,28 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
             placeholder = str(binding.get("placeholder") or ("{" + name + "}"))
             if needle and needle in url:
                 step.url = url.replace(needle, placeholder, 1)
+        elif kind == "url_segment":
+            path, query = _split_query(url)
+            head, sep, rest = path.partition("://")
+            host, _, tail = rest.partition("/") if sep else ("", "", path.lstrip("/"))
+            segs = [seg for seg in tail.split("/") if seg != ""]
+            pos = binding.get("position")
+            placeholder = str(binding.get("placeholder") or ("{" + name + "}"))
+            if binding.get("append") and isinstance(pos, int) and pos == len(segs):
+                segs.append(placeholder)
+                rebuilt = (f"{head}://{host}/" if sep else "/") + "/".join(segs)
+                step.url = _join_query(rebuilt, query)
+            elif isinstance(pos, int) and 0 <= pos < len(segs) and "{" not in segs[pos]:
+                segs[pos] = placeholder
+                rebuilt = (f"{head}://{host}/" if sep else "/") + "/".join(segs)
+                step.url = _join_query(rebuilt, query)
+        elif kind == "url_query":
+            key = str(binding.get("key") or name)
+            placeholder = str(binding.get("placeholder") or ("{" + name + "}"))
+            path, query = _split_query(url)
+            pairs = [pair for pair in query.split("&") if pair and not pair.startswith(key + "=")]
+            pairs.append(f"{key}={placeholder}")
+            step.url = _join_query(path, "&".join(pairs))
         elif kind == "url_template":
             template = str(binding.get("template") or "")
             if template:
@@ -290,7 +313,7 @@ async def verify_proposal(
         return result
     token = str(proposal.get("verify_with") or "")
     kind = (proposal.get("binding") or {}).get("kind") or ""
-    if token and kind in {"url_month", "url_replace", "url_template"}:
+    if token and kind in {"url_month", "url_replace", "url_template", "url_segment", "url_query"}:
         alt_loc = str(alt_res.url)
         if token not in alt_loc and not (proposal.get("name") == "month" and year_month(token) in alt_loc):
             result["dropped_reason"] = "alternate URL did not keep the proposed value"
@@ -374,6 +397,73 @@ async def explore_with_llm(
         return [], usage
 
 
+async def name_option_families(
+    families: list[dict[str, Any]], definition: WorkflowDefinition, *, llm: Any = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Give generic link-family options a meaningful input name (one tiny LLM call).
+
+    Typed families (date/month/year) and query keys already have names. Without a key the
+    neutral name is kept; the description still lists the page's own values."""
+
+    usage: dict[str, Any] = {"tokens_in": 0, "tokens_out": 0, "used": False}
+    todo = [f for f in families if (f.get("link_family") or {}).get("kind") == "option" and f["name"].startswith("option")]
+    if not todo:
+        return families, usage
+    api_key = (llm.key() if llm is not None and hasattr(llm, "key") else None)
+    if not api_key:
+        from browser_platform.llm.openrouter import env_api_key
+
+        api_key = env_api_key()
+    if not api_key:
+        return families, usage
+    import json
+
+    from browser_platform.llm.openrouter import chat_complete, message_text
+
+    taken = {i.name for i in definition.input_schema or []} | {f["name"] for f in families}
+    payload = [
+        {"id": i, "values": (f.get("link_family") or {}).get("options", [])[:8],
+         "labels": list(((f.get("link_family") or {}).get("labels") or {}).values())[:8]}
+        for i, f in enumerate(todo)
+    ]
+    try:
+        message, usage = await chat_complete(
+            [
+                {"role": "system", "content": (
+                    "Each item is a set of alternative values a web page offers as links for one URL place. "
+                    "Name the parameter in snake_case by what the values are (for example competition, category, "
+                    "league, region, sport). Reply JSON only: {\"names\":[{\"id\":0,\"name\":\"...\",\"kind\":\"what one value is\"}]}."
+                )},
+                {"role": "user", "content": json.dumps({"workflow": definition.name, "items": payload}, ensure_ascii=False)[:2000]},
+            ],
+            max_tokens=120,
+            response_format={"type": "json_object"},
+            api_key=api_key,
+        )
+        rows = (json.loads(message_text(message) or "{}") or {}).get("names") or []
+    except Exception:
+        return families, usage
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            item = todo[int(row.get("id"))]
+        except Exception:
+            continue
+        name = re.sub(r"[^a-z0-9_]+", "_", str(row.get("name") or "").lower()).strip("_")[:30]
+        if not name or name in taken:
+            continue
+        old = item["name"]
+        taken.add(name)
+        item["name"] = name
+        item["label"] = pretty_label(name)
+        kind_text = str(row.get("kind") or "").strip()[:40]
+        if kind_text:
+            item["description"] = f"Optional {kind_text}, as offered by the page's own links: " + item["description"].split("e.g. ", 1)[-1]
+        binding = item.get("binding") or {}
+        if binding.get("placeholder"):
+            binding["placeholder"] = binding["placeholder"].replace("{" + old, "{" + name, 1)
+    return families, usage
+
+
 async def explore_definition(
     definition: WorkflowDefinition,
     *,
@@ -399,6 +489,8 @@ async def explore_definition(
     if not enabled:
         return empty
     proposals = propose_from_definition(definition, task=task)
+    usage_extra: dict[str, Any] | None = None
+    sibling_views: list[dict[str, Any]] = []
     existing = {item.name for item in (definition.input_schema or [])} | {p["name"] for p in proposals}
     html = (page_state or {}).get("html") if isinstance(page_state, dict) else None
     start_url = ""
@@ -435,14 +527,26 @@ async def explore_definition(
             pass
     if html:
         seen = {p["name"] for p in proposals}
-        for item in propose_from_html(html, str(start_url or ""), existing=existing):
+        nav_index = next((i for i, step in enumerate(definition.steps or []) if step.url), 0)
+        nav_template = (definition.steps or [None])[nav_index].url if definition.steps else ""
+        from browser_platform.authoring.explore_links import propose_from_link_families
+
+        families = propose_from_link_families(
+            html, str(start_url or ""), existing=existing | seen, step_index=nav_index, step_template=nav_template or ""
+        )
+        from browser_platform.authoring.explore_links import propose_sibling_views
+
+        sibling_views = propose_sibling_views(html, str(start_url or ""), nav_template or "")
+        families, name_usage = await name_option_families(families, definition, llm=llm)
+        usage_extra = name_usage
+        for item in families + propose_from_html(html, str(start_url or ""), existing=existing):
             if item["name"] not in seen:
                 proposals.append(item)
                 seen.add(item["name"])
     extra, llm_usage = await explore_with_llm(definition, task=task, page_state=page_state, llm=llm, existing=proposals)
     usage = {
-        "tokens_in": int((llm_usage or {}).get("tokens_in") or 0),
-        "tokens_out": int((llm_usage or {}).get("tokens_out") or 0),
+        "tokens_in": int((llm_usage or {}).get("tokens_in") or 0) + int((usage_extra or {}).get("tokens_in") or 0),
+        "tokens_out": int((llm_usage or {}).get("tokens_out") or 0) + int((usage_extra or {}).get("tokens_out") or 0),
         "cost_usd": (llm_usage or {}).get("cost_usd") or 0.0,
         "used": bool((llm_usage or {}).get("used")),
         "model": (llm_usage or {}).get("model"),
@@ -473,4 +577,35 @@ async def explore_definition(
         "usage": usage,
         "applied": bool(verified),
         "definition": applied.model_dump(exclude_none=True) if verified else None,
+        "sibling_views": sibling_views,
     }
+
+
+def derive_view_definition(definition: WorkflowDefinition, view: dict[str, Any]) -> WorkflowDefinition:
+    """A new tool for a sibling view: same inputs, the navigation URL switched to the view,
+    a whole-page extract (the source tool's selectors belong to another page)."""
+
+    from browser_platform.models.workflow import WorkflowStep
+
+    derived = definition.model_copy(deep=True)
+    for attr, empty in (("id", None), ("workflow_analysis", None), ("repair_history", []), ("aliases", [])):
+        if hasattr(derived, attr):
+            setattr(derived, attr, empty)
+    label = str(view.get("label") or view.get("view") or "view").strip()
+    template = str(view.get("url_template") or "")
+    nav = next((step for step in derived.steps or [] if step.url), None)
+    if nav is None or not template:
+        raise ValueError("source tool has no navigation step or the view has no URL")
+    nav.url = template
+    nav.description = f"Open {template}"
+    used = set(re.findall(r"\{([a-zA-Z_][\w]*)", template))
+    derived.input_schema = [item for item in derived.input_schema or [] if item.name in used]
+    steps = [step for step in derived.steps or [] if step.type not in {"extract", "extract_page_content"}]
+    # Interactions that only made sense on the source page are dropped; navigation is kept.
+    steps = [step for step in steps if step.type in {"navigation", "wait"} or step is nav]
+    steps.append(WorkflowStep(type="extract", description="Extract the result", extractionGoal=label))
+    derived.steps = steps
+    base = re.sub(r"\s+(table|results|fixtures|scores|list)$", "", definition.name or "", flags=re.I).strip()
+    derived.name = f"{base or definition.name} {label}".strip()
+    derived.description = f"{label} for the same {', '.join(sorted(used)) or 'page'} as '{definition.name}' (derived from its page links)."
+    return derived
