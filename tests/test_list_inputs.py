@@ -57,3 +57,15 @@ def test_planner_coerces_and_chat_fans_out():
         {"id": "c2", "tool": "many", "workflow_id": "w2", "arguments": {"terms": ["x", "y"]}},
     ], Store(), [])
     assert [(c["id"], c["arguments"]["terms"]) for c in calls] == [("c1", "A"), ("c1_2", "B"), ("c2", ["x", "y"])]
+
+
+def test_weekend_expressions():
+    from datetime import date
+
+    from browser_platform.dates import resolve
+
+    fri, sun = date(2026, 11, 27), date(2026, 11, 29)
+    assert resolve("this weekend", "date", now=fri) == "2026-11-28"
+    assert resolve("next weekend", "date", now=fri) == "2026-12-05"
+    assert resolve("last weekend", "date", now=sun) == "2026-11-21"
+    assert resolve("next weekend", "month", now=fri) == "2026-12"

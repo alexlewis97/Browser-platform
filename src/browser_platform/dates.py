@@ -120,6 +120,15 @@ def parse_expression(text: str, *, now: datetime | date | None = None) -> tuple[
         return t0 - timedelta(days=t0.weekday() + 7), "date"
     if s in {"next week"}:
         return t0 + timedelta(days=7 - t0.weekday()), "date"
+    # Weekends anchor on their Saturday. "This weekend" on a Sunday is today's weekend.
+    if s in {"this weekend", "the weekend", "weekend", "coming weekend", "this coming weekend"}:
+        return t0 + timedelta(days=(5 - t0.weekday()) if t0.weekday() <= 5 else -1), "date"
+    if s in {"next weekend"}:
+        sat = t0 + timedelta(days=(5 - t0.weekday()) if t0.weekday() <= 5 else -1)
+        return sat + timedelta(days=7), "date"
+    if s in {"last weekend", "previous weekend"}:
+        sat = t0 + timedelta(days=(5 - t0.weekday()) if t0.weekday() <= 5 else -1)
+        return sat - timedelta(days=7), "date"
     m = re.fullmatch(r"(\w+) (day|days|week|weeks|month|months|year|years) ago", s)
     n = _num(m.group(1)) if m else None
     if m and n is not None:
@@ -225,7 +234,8 @@ def now_value(grain: str, *, now: datetime | date | None = None) -> str:
 _WD = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
 _REL = re.compile(
     r"\b(day before yesterday|day after tomorrow|yesterday|today|tonight|tomorrow|last night"
-    r"|(?:last|this|next|previous|coming) (?:week|month|year|" + _WD + r")"
+    r"|(?:last|this|next|previous|coming|this coming) (?:weekend|week|month|year|" + _WD + r")"
+    r"|the weekend"
     r"|(?:\d+|a|an|one|two|three|four|five|six|seven|ten) (?:days?|weeks?|months?|years?) ago"
     r"|in (?:\d+|a|an|one|two|three|four|five|six|seven|ten) (?:days?|weeks?|months?)"
     r"|(?:on )?(?:" + _WD + r"))(?:'s)?\b",
