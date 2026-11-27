@@ -18,3 +18,10 @@
 
 ## 11:13 deployed round 1 (c85fefe live, web deployed). Features started.
 - F1 explore link families: authoring/explore_links.py (typed path/query/child families, sibling views), derive endpoint POST /api/workflows/{id}/derive (apply=false default), explore sample variables from examples.
+
+## 11:20-12:25 features (local commits 2632ed7..4365c2f)
+- F1 explore link families + sibling views + derive (2 passes) + enum/default_view; retrieval prior fixed (new tools sank to last).
+- F3 double_click/right_click across executor, recorders, from-task/recording, extension (1.5.0), web remote recorder.
+- F4 list inputs (type list, join filter, chat fan-out, array schema, /run rejects lists for one-value inputs).
+- Harness: synthesis gets today + code-resolved dates, shared facts budget, weekend expressions.
+- Staging evals: reports in /tmp/bp-staging/reports on the VM (deleted at cleanup); copies in /workspace/feat1.

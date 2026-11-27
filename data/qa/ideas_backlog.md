@@ -9,3 +9,9 @@ Scope rule: only tool authoring or workspace orchestration, generic only. These 
 - Alias-as-fallback policy: should a matched alias count as a fallback (needs repair) or a normal match?
 - Daily date pickers rendered only by JavaScript (no links) are not detected by link families; a rendered-DOM pass could add them.
 - Sibling-view naming uses the link text; an LLM name/description pass would read better in the planner.
+- "Today's X fixtures" with a fixtures/results control: the planner picks filter=fixtures although the page's default (omitted) view is "Today"; the fixtures view leaves out today's games. Needs a better generic rule for controls whose omitted view is date-scoped.
+- Synthesis model sometimes contradicts itself on day-level questions over month data (n1 Serie A tomorrow). A stronger synthesis model or a code-side day filter for dated listings could help.
+- Month names in URLs (Portal:Current_events/October_2026) are not detected as month families; needs a "Month_YYYY" render filter.
+- The existing explore tab regex proposed a bogus "competition" tab on Wikipedia (pre-existing, not changed).
+- From-task authoring does not propose list-type inputs yet; authors can set type "list" by editing the definition.
+- The extension Playwright e2e specs need the Playwright chromium build and a token on the box to run.
