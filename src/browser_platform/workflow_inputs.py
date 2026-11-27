@@ -300,9 +300,10 @@ def _value_map(item: WorkflowInput) -> dict[str, str]:
 def known_values_for(item: WorkflowInput, *, closed: bool = False) -> list[str] | None:
     """Canonical values this input is known to accept, or None if it is free text.
 
-    Mapping may use identifier-like examples (slugs). Rejection (``closed=True``) only
-    applies to an enum, an explicit value_map, or a format of slug/id/code/key — a
-    list of examples alone is not a closed set (a team name is not an unknown slug).
+    Mapping may use identifier-like examples (slugs) and value_map labels. Rejection
+    (``closed=True``) only applies to an enum: examples and value_map labels are hints, not
+    a closed set, so an unknown but plausible slug (another competition, say) is passed
+    through to the site.
     """
 
     enum = [str(v) for v in (getattr(item, "enum", None) or []) if v not in (None, "")]
@@ -311,6 +312,8 @@ def known_values_for(item: WorkflowInput, *, closed: bool = False) -> list[str] 
     fmt = str(getattr(item, "format", "") or "").lower()
     if enum:
         return list(dict.fromkeys([*enum, *mapped]))
+    if closed:
+        return None
     if fmt in {"slug", "id", "code", "key"} or mapped:
         known = list(dict.fromkeys([*examples, *mapped]))
         return known or None
@@ -550,7 +553,8 @@ def inputs_for_output_validation(
         item = items.get(key)
         # A page view control (explore found its default view) selects a view of the same
         # page; its value need not be printed in the extract.
-        if item is not None and getattr(item, "default_view", None):
+        if item is not None and (getattr(item, "default_view", None) or getattr(item, "enum", None)):
+            # A closed choice of view (results|fixtures, tabs) is checked by the enum itself.
             continue
         if raw_inputs is None and has_runtime_default(item, definition) and str(value) == str(concrete_default(item, definition)):
             continue

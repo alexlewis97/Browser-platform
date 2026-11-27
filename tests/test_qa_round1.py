@@ -256,7 +256,7 @@ async def test_hitl_wait_does_not_count_against_step_timeout(tmp_path: Path):
 
 def test_empty_state_extract_is_no_data():
     assert data_status("") == "no_data"
-    assert data_status("There are no fixtures scheduled for this date.") == "no_data"
+    assert data_status("There are no fixtures scheduled for this date.") == "empty"
     assert data_status("Team A v Team B 15:00") == "ok"
     assert data_status("x", status="failed") == "failed"
 
@@ -337,3 +337,9 @@ def test_grounding_ignores_ids_and_urls():
     compact = [{"facts": "Name:Alex", "inputs": {}}]
     answer = "Done (workflow_id: 481ad4c93437446887f6f776d086827c, https://example.test/page/2024)."
     assert ungrounded_claims(answer, compact, "q") == []
+
+
+def test_site_empty_copy_is_a_verified_empty_result():
+    assert data_status("Championship Scores & Fixtures We have no events to show on this date") == "empty"
+    assert data_status("Results: nothing to display. No items to display right now.") == "empty"
+    assert data_status("   ") == "no_data"

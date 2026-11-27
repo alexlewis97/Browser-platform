@@ -230,6 +230,9 @@ async def llm_normalize_values(
         "refer to that value (a nickname, abbreviation or translation counts, e.g. \"Spurs\"), or \"\" when "
         "nothing in user_words refers to it (a value picked as an example, or to stand in for a whole league "
         "or group). "
+        'When nothing names it but exactly one value follows from what the user did name (for example the one '
+        'competition all the named clubs play in), keep it and add "implied_by": the exact words copied from '
+        "user_words it follows from. Never use implied_by to pick one of many (a club for a league, an example). "
         'Reply JSON only: '
         '{"values":[{"call":"c1","param":"team","canonical":"Official Name","slug":"official-name","fits":true}]}.'
     )
@@ -276,6 +279,11 @@ async def llm_normalize_values(
             mapped[(call_id, param)] = {"canonical": "", "slug": "", "fits": False, "kind": str(row.get("kind") or "").strip()[:60]}
             continue
         if (call_id, param) in checked and _not_from_user(row, user_words):
+            implied = " ".join(str(row.get("implied_by") or "").lower().split())
+            if implied and canonical and _span_in_user_words(implied, user_words) and not stated_in(canonical, implied):
+                # Not named, but the only value that follows from what was named: run it, and say so.
+                mapped[(call_id, param)] = {"canonical": canonical, "slug": slug or path_slug(canonical), "implied_by": implied}
+                continue
             mapped[(call_id, param)] = {"canonical": "", "slug": "", "stated": False}
             continue
         if not canonical:
@@ -299,6 +307,14 @@ def _not_from_user(row: dict[str, Any], user_words: str) -> bool:
     if not span:
         return True
     return span not in " ".join((user_words or "").lower().split())
+
+
+def _span_in_user_words(span: str, user_words: str) -> bool:
+    """Every word of the model's span is (a near spelling of) a word the user wrote."""
+
+    words = _tokens(user_words)
+    toks = _tokens(span)
+    return bool(toks) and all(any(t == w or (len(t) >= 4 and _similar(t, w) >= FUZZY_THRESHOLD) for w in words) for t in toks)
 
 
 _GENERIC_TOKENS = {"the", "and", "of", "fc", "cf", "afc", "club", "team", "city", "united", "town", "sport", "league", "cup"}
@@ -374,32 +390,83 @@ def fuzzy_user_span(value: str, context: str) -> str | None:
     return best[1] if best else None
 
 
+def _is_abbreviation(short: str, word: str) -> bool:
+    """``short`` abbreviates ``word``: same first letter and its letters in order ("utd" -> united)."""
+
+    if len(short) < 2 or len(short) >= len(word) or short[0] != word[0]:
+        return False
+    it = iter(word)
+    return all(ch in it for ch in short)
+
+
+def _token_match(a: str, b: str) -> float:
+    """How well one user word matches one option word. Whole-word identity beats a prefix or
+    abbreviation, which beat a spelling-close word; two different words that merely share a
+    prefix ("city" / "united") score 0."""
+
+    if a == b:
+        return 1.0
+    if len(a) >= 3 and b.startswith(a):
+        return 0.92  # a truncation: "man" for manchester, "totten" for tottenham
+    if _is_abbreviation(a, b):
+        return 0.88  # "utd" for united
+    if a.isdigit() or b.isdigit():
+        return 0.0
+    sim = _similar(a, b)
+    return sim if sim >= FUZZY_THRESHOLD else 0.0
+
+
+def _option_score(value_tokens: list[str], option: str) -> float:
+    """Every user word must match a distinct option word; the score is the weakest match,
+    with a small bonus for covering more of the option (Tottenham Hotspur vs Tottenham)."""
+
+    ot = _tokens(option)
+    if not value_tokens or not ot:
+        return 0.0
+    free = list(ot)
+    scores: list[float] = []
+    for vt in value_tokens:
+        best_i, best = -1, 0.0
+        for i, w in enumerate(free):
+            m = _token_match(vt, w)
+            if m > best:
+                best_i, best = i, m
+        if best <= 0:
+            return 0.0
+        scores.append(best)
+        free.pop(best_i)
+    coverage = (len(ot) - len(free)) / len(ot)
+    return min(scores) + 0.01 * coverage
+
+
 def fuzzy_known(value: str, known: Iterable[str]) -> tuple[str | None, list[str]]:
     """Best spelling match for ``value`` among an input's own enum/example values.
 
     Returns (match, []) for one clear best match at or above the threshold, (None, tied) when
-    two or more candidates tie for best, and (None, []) when nothing is close enough."""
+    two or more candidates tie for best, and (None, []) when nothing is close enough. A value
+    that is already one of the options (ignoring case and punctuation) is returned as is."""
 
-    vt = [t for t in _tokens(value) if t not in _GENERIC_TOKENS] or _tokens(value)
-    compact = "".join(_tokens(value))
-    if not vt:
+    vt = _tokens(value)
+    if not vt or all(t in _GENERIC_TOKENS for t in vt):
         return None, []
+    options = list(dict.fromkeys(str(k) for k in known if str(k or "").strip()))
+    for opt in options:
+        if _tokens(opt) == vt:
+            return opt, []
+    compact = "".join(vt)
     scored: list[tuple[float, str]] = []
-    for cand in dict.fromkeys(str(k) for k in known if str(k or "").strip()):
-        ct = [t for t in _tokens(cand) if t not in _GENERIC_TOKENS] or _tokens(cand)
-        if not ct:
-            continue
-        # Every word the user gave must be close to some word of the candidate.
-        per = [max(_similar(a, b) for b in ct) for a in vt]
-        score = min(per) if per else 0.0
-        score = max(score, _similar(compact, "".join(_tokens(cand))))
+    for cand in options:
+        score = _option_score(vt, cand)
+        whole = _similar(compact, "".join(_tokens(cand)))
+        if whole >= 0.9:
+            score = max(score, whole)  # one-word typo of a run-together name
         if score >= FUZZY_THRESHOLD:
             scored.append((score, cand))
     if not scored:
         return None, []
     scored.sort(key=lambda x: -x[0])
     top = scored[0][0]
-    tied = [c for sc, c in scored if top - sc < 0.02]
+    tied = [c for sc, c in scored if top - sc < 0.005]
     if len(tied) > 1:
         return None, tied[:4]
     return scored[0][1], []
@@ -442,7 +509,7 @@ async def normalize_prepared_calls(
                             fixed.append(best)
                         else:
                             if tied:
-                                call.setdefault("ambiguous", []).append({"param": name, "value": str(v), "options": tied})
+                                call.setdefault("fuzzy_ties", []).append({"param": name, "value": str(v), "options": tied})
                             fixed.append(match_canonical_example(str(v), known) or v)
                     args[name] = fixed
                 continue
@@ -464,8 +531,9 @@ async def normalize_prepared_calls(
                     local = best
                     call.setdefault("resolved", []).append({"param": name, "value": best, "resolved_from": text})
                 elif tied:
-                    call.setdefault("ambiguous", []).append({"param": name, "value": text, "options": tied})
-                    continue
+                    # A tie never overrides the planner: its value stands (the normaliser may still
+                    # canonicalise it); the tie is recorded for the run.
+                    call.setdefault("fuzzy_ties", []).append({"param": name, "value": text, "options": tied})
             if local and local != text:
                 args[name] = _choose_form(local, path_slug(local), hints.get("examples") or [])
                 if check:
@@ -522,6 +590,8 @@ async def normalize_prepared_calls(
                     {"param": name, "value": text, "value_kind": row.get("kind") or "", "expects": hints.get("description") or hints.get("label") or name}
                 )
                 continue
+            if row.get("implied_by"):
+                call.setdefault("inferred", []).append({"param": name, "value": text, "implied_by": row["implied_by"]})
             # If the first pass already changed this field locally, do not overwrite.
             if raw.get(name) is not None and str(raw.get(name)).strip() != text:
                 continue

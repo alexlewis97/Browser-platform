@@ -16,7 +16,7 @@ from browser_platform import dates
 
 _EMPTY_STATE = re.compile(
     r"\b(no (?:fixtures|results|matches|events|games|data|items|records|entries|records found|upcoming)"
-    r"|nothing (?:to show|found|scheduled)|not found|no .{0,30} (?:found|available|scheduled)"
+    r"|nothing (?:to show|found|scheduled)|no \w+ to (?:show|display)|not found|no .{0,30} (?:found|available|scheduled)"
     r"|there are no|there is no|currently no|0 results)\b",
     re.I,
 )
@@ -35,7 +35,8 @@ _MONTHS = {
 
 
 def data_status(facts: str | None, *, status: str | None = None) -> str:
-    """``ok`` | ``no_data`` (empty or an empty-state page) | ``failed``."""
+    """``ok`` | ``empty`` (the page itself says there is nothing, e.g. "no events to show": a
+    verified empty result) | ``no_data`` (nothing was extracted) | ``failed``."""
 
     if status and status not in {"succeeded", "succeeded_with_fallback"}:
         return "failed"
@@ -44,7 +45,7 @@ def data_status(facts: str | None, *, status: str | None = None) -> str:
         return "no_data"
     # An empty-state message dominating a short extract means the page showed nothing.
     if _EMPTY_STATE.search(text) and len(text) < 400:
-        return "no_data"
+        return "empty"
     return "ok"
 
 

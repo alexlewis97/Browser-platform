@@ -85,15 +85,20 @@ def test_train_known_slug_is_mapped_in_code_unknown_is_invalid():
     assert match_known_value(item, "La Liga") == "spanish-la-liga"
     assert resolve_input_values(d, {"competition": "la-liga"})["competition"] == "spanish-la-liga"
     assert invalid_typed_inputs(d, resolve_input_values(d, {"competition": "la-liga"})) == []
-    assert invalid_typed_inputs(d, {"competition": "serie-x"})
-    assert "known values" in invalid_typed_inputs(d, {"competition": "serie-x"})[0]
+    # Examples are hints, not a closed set: an unknown plausible slug passes through.
+    assert invalid_typed_inputs(d, {"competition": "scottish-premiership"}) == []
+    closed = WorkflowDefinition.model_validate({**d.model_dump(), "input_schema": [{**d.input_schema[0].model_dump(), "enum": ["premier-league", "championship"]}]})
+    assert "known values" in invalid_typed_inputs(closed, {"competition": "serie-x"})[0]
 
 
 @pytest.mark.asyncio
 async def test_train_unknown_slug_is_needs_input_and_does_not_repair(data_dir: Path):
     repair = FakeRepair([SelectorStrategy(type="css", value="h1", priority=1)])
     runner, store = _runner(data_dir, repair=repair)
-    stored = store.create_workflow(_slug_defn(["spanish-la-liga", "premier-league"]))
+    open_defn = _slug_defn(["spanish-la-liga", "premier-league"])
+    # Only a closed enum rejects an unknown value (examples are hints).
+    closed = open_defn.model_copy(update={"input_schema": [open_defn.input_schema[0].model_copy(update={"enum": ["spanish-la-liga", "premier-league"]})]})
+    stored = store.create_workflow(closed)
     run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"competition": "serie-x"}, llm=LLM)
     assert run.status == "needs_input"
     assert run.failure_kind == "needs_input"
@@ -253,7 +258,7 @@ def test_held_out_identifier_examples_map_and_reject_unknown():
     item = d.input_schema[0]
     assert match_known_value(item, "East Coast Open") == "east-coast-open"
     assert match_known_value(item, "grand prix 1") == "grand-prix-one"
-    assert invalid_typed_inputs(d, {"kind": "west-bay-trophy"})
+    assert invalid_typed_inputs(d, {"kind": "west-bay-trophy"}) == []  # open examples
 
 
 def test_held_out_value_map_labels_and_free_text_untouched():

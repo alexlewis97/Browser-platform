@@ -826,7 +826,9 @@ class ChatOrchestrator:
             # the wrong kind of value; the intent is reported as not covered instead.
             for call in prepared:
                 for r in call.get("resolved") or []:
-                    job["notes"].append(f"Spelling resolved: '{r['resolved_from']}' -> {r['value']} ({call['tool']}.{r['param']}).")
+                    job["notes"].append(f"Value resolved: '{r['resolved_from']}' -> {r['value']} ({call['tool']}.{r['param']}).")
+                for r in call.get("inferred") or []:
+                    job["notes"].append(f"Not named, inferred from '{r['implied_by']}': {call['tool']}.{r['param']}={r['value']}.")
             dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated") or c.get("ambiguous")]
             if dropped:
                 step_intent = {sid: i.get("ask") for i in intents for sid in i.get("steps") or []}
@@ -979,6 +981,7 @@ class ChatOrchestrator:
             "inputs": dict(call.get("arguments") or {}),
             "raw_inputs": dict(call.get("raw_arguments") or call.get("arguments") or {}),
             **({"resolved": list(call["resolved"])} if call.get("resolved") else {}),
+            **({"inferred": list(call["inferred"])} if call.get("inferred") else {}),
             **({"page_view": pv} if (pv := page_view_meta(stored.definition if stored is not None else None, call.get("arguments"))) else {}),
             "action_ending": bool(call.get("action_ending")),
             "status": "running",
@@ -1151,7 +1154,7 @@ class ChatOrchestrator:
                 )
         fallback = _fallback_answer(job, compact)
         api_key = (job.get("llm_api_key") or "").strip() or env_api_key()
-        has_data = any(item.get("status") == "succeeded" and item.get("data_status") == "ok" for item in compact)
+        has_data = any(item.get("status") == "succeeded" and item.get("data_status") in {"ok", "empty"} for item in compact)
         if not has_data:
             # Nothing to summarise from: never let a model fill the gap.
             api_key = ""
@@ -1181,6 +1184,7 @@ class ChatOrchestrator:
                             "Cite which workflow and input each fact came from (for example football_fixtures / team=Arsenal). "
                             "Clearly mention any item the output validator flagged as suspect or wrong, that failed, or that was not run (verdict not_run). "
                             "State only facts present in results[].facts: inputs are what was requested, not what the page showed. "
+                            "data_status empty means the page itself said it has nothing for that request (for example no events on that date): answer plainly that there are none. "
                             "data_status no_data means the page showed nothing; say the data was not available or could not be verified, "
                             "never conclude that something does not exist. "
                             "Dates: use today and dates_in_question as given; never assume another current date. "
@@ -1360,6 +1364,7 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
         "fallbacks": item.get("fallbacks") or [],
         **({"page_view": item["page_view"]} if item.get("page_view") else {}),
         **({"resolved": item["resolved"]} if item.get("resolved") else {}),
+        **({"inferred": item["inferred"]} if item.get("inferred") else {}),
     }
 
 
