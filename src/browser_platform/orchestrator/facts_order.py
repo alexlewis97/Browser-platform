@@ -293,3 +293,206 @@ def for_prompt(computed: dict[str, Any]) -> dict[str, Any]:
         order["rows"] = [{k: v for k, v in r.items() if not k.startswith("_")} for r in order.get("rows") or []]
         out["computed_order"] = order
     return out
+
+
+# --- numeric facts in tabular results ------------------------------------------------------
+
+_NUM_CELL = re.compile(r"^[+\-−]?[£$€¥₪]?\s?[+\-−]?\d[\d,]*(?:\.\d+)?\s?%?$")
+
+
+def _num(cell: str) -> float | None:
+    c = cell.strip().replace("−", "-")
+    if not _NUM_CELL.match(c):
+        return None
+    try:
+        return float(re.sub(r"[£$€¥₪,%\s]", "", c))
+    except ValueError:
+        return None
+
+
+def _cells(block: str) -> list[str]:
+    return [" ".join(c.split()) for c in block.split("\t") if c.strip()]
+
+
+def parse_table(raw: str) -> dict[str, Any] | None:
+    """Rows of a table from layout-aware page text (cells split by tabs, rows by blank lines).
+
+    Generic: the header is the tab-separated block just before the first row with the same
+    number of cells; numeric columns are the ones whose cells parse as numbers in most rows;
+    a row whose first cell starts with an integer that follows the row order gets a rank."""
+
+    text = str(raw or "")
+    if "\t" not in text:
+        return None
+    blocks = [b for b in re.split(r"\n[ \r]*\n", text) if "\t" in b]
+    parsed = [_cells(b) for b in blocks]
+    sizes = [len(c) for c in parsed if len(c) >= 3 and sum(_num(x) is not None for x in c) >= 2]
+    if len(sizes) < 3:
+        return None
+    width = max(set(sizes), key=sizes.count)
+    rows_cells = [c for c in parsed if len(c) == width and sum(_num(x) is not None for x in c) >= 2]
+    header = next((c for c in parsed if len(c) == width and sum(_num(x) is not None for x in c) == 0), None)
+    if len(rows_cells) < 3:
+        return None
+    labels = [h for h in (header or [f"column {i + 1}" for i in range(width)])]
+    numeric_cols = [
+        i for i in range(1, width)
+        if sum(_num(r[i]) is not None for r in rows_cells) >= 0.8 * len(rows_cells)
+    ]
+    rows = []
+    for order, r in enumerate(rows_cells, 1):
+        first = r[0]
+        m = re.match(r"^(\d{1,4})\s+(.+)$", first)
+        rank = int(m.group(1)) if m else None
+        name = m.group(2) if m else first
+        values = {labels[i]: _num(r[i]) for i in numeric_cols if _num(r[i]) is not None}
+        rows.append({"name": name, "rank": rank, "order": order, "values": values})
+    ranked = sum(1 for r in rows if r["rank"] is not None and abs(r["rank"] - r["order"]) <= 3)
+    if ranked < 0.8 * len(rows):
+        for r in rows:
+            r["rank"] = None
+    return {"columns": [labels[i] for i in numeric_cols], "labels": labels, "rows": rows}
+
+
+_MORE = {"more", "most", "higher", "highest", "greater", "greatest", "bigger", "biggest", "larger", "largest", "max", "maximum", "top", "above", "better", "best", "ahead", "over"}
+_LESS = {"less", "least", "fewer", "fewest", "lower", "lowest", "smaller", "smallest", "min", "minimum", "bottom", "below", "worse", "worst", "behind", "under", "cheaper", "cheapest"}
+_SUPERLATIVE = {"most", "least", "highest", "lowest", "greatest", "fewest", "biggest", "smallest", "largest", "top", "bottom", "best", "worst", "cheapest", "max", "maximum", "min", "minimum"}
+_POSITION_WORDS = {"above", "below", "top", "bottom", "position", "place", "rank", "ranked", "ahead", "behind", "higher", "lower", "standing", "standings"}
+
+
+def _metric_for(question_tokens: list[str], columns: list[str]) -> str | None:
+    """The numeric column the question names (whole word, prefix or abbreviation: 'pts' -> Points)."""
+
+    from browser_platform.orchestrator.normalize_inputs import _is_abbreviation
+
+    best: tuple[float, str] | None = None
+    for col in columns:
+        ct = re.findall(r"[a-z]+", col.lower())
+        score = 0.0
+        for q in question_tokens:
+            for w in ct:
+                if q == w or (len(q) >= 4 and (w.startswith(q) or q.startswith(w)) and min(len(q), len(w)) >= 4):
+                    score += 1.0
+                elif _is_abbreviation(q, w):
+                    score += 0.8
+        if score and (best is None or score > best[0] + 1e-9):
+            best = (score, col)
+        elif score and best and abs(score - best[0]) < 1e-9:
+            best = (score, "")  # tie: no clear column
+    return best[1] if best and best[1] else None
+
+
+def _row_mentions(question: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows the user names, in the order named (whole name, a significant word, or a near spelling)."""
+
+    from browser_platform.orchestrator.normalize_inputs import _GENERIC_TOKENS, _similar, _tokens
+
+    qtok = _tokens(question)
+    found: list[tuple[int, dict[str, Any]]] = []
+    for row in rows:
+        words = [w for w in _tokens(row["name"]) if len(w) >= 3 and w not in _GENERIC_TOKENS and w not in {"and", "the"}]
+        pos = None
+        for i, q in enumerate(qtok):
+            if len(q) < 3:
+                continue
+            if any(q == w or (len(q) >= 4 and _similar(q, w) >= 0.8) for w in words):
+                pos = i
+                break
+        if pos is not None:
+            found.append((pos, row))
+    # One user word naming several rows is ambiguous: keep a row only if its word is unique to it.
+    by_pos: dict[int, list[dict[str, Any]]] = {}
+    for pos, row in found:
+        by_pos.setdefault(pos, []).append(row)
+    return [rows_[0] for pos, rows_ in sorted(by_pos.items()) if len(rows_) == 1]
+
+
+def table_comparison(items: list[dict[str, Any]], question: str) -> dict[str, Any] | None:
+    """For a comparison question over a table (more/less, above/below, top/bottom), the answer
+    computed from the parsed rows."""
+
+    from browser_platform.orchestrator.normalize_inputs import _tokens
+
+    qtok = _tokens(question)
+    words = set(qtok)
+    direction = "more" if words & _MORE else "less" if words & _LESS else None
+    if not direction:
+        return None
+    for item in items:
+        if item.get("status") not in {"succeeded", "succeeded_with_fallback"}:
+            continue
+        raw = "\n".join(str(v) for v in (item.get("outputs") or {}).values() if isinstance(v, str))
+        table = parse_table(raw)
+        if not table:
+            continue
+        metric = _metric_for([t for t in qtok if t not in _MORE | _LESS], table["columns"])
+        use_rank = metric is None and bool(words & _POSITION_WORDS) and any(r["rank"] is not None for r in table["rows"])
+        if not metric and not use_rank:
+            continue
+        label_words = {w for lab in table.get("labels") or [] for w in re.findall(r"[a-z]+", lab.lower())}
+        named = _row_mentions(" ".join(t for t in qtok if t not in label_words), table["rows"])
+        superlative = bool(words & _SUPERLATIVE)
+        pool = named if len(named) >= 2 else (table["rows"] if (not named or superlative) else [])
+        if superlative and len(named) < 2:
+            named = []
+        if len(pool) < 2:
+            continue
+
+        def key(r: dict[str, Any]) -> float:
+            if use_rank:
+                return -(r["rank"] if r["rank"] is not None else 1e9)  # rank 1 is highest
+            return r["values"].get(metric, float("-inf"))
+
+        ordered = sorted(pool, key=key, reverse=(direction == "more"))
+        top = ordered[0]
+        tied = [r for r in ordered if key(r) == key(top)]
+        out = {
+            "by": "rank (row position)" if use_rank else metric,
+            "direction": "highest first" if direction == "more" else "lowest first",
+            "named": [r["name"] for r in named],
+            "rows": [
+                {"name": r["name"], **({"rank": r["rank"]} if r["rank"] is not None else {}),
+                 **({"value": r["values"].get(metric)} if metric else {})}
+                for r in ordered[:10]
+            ],
+            "answer": top["name"] if len(tied) == 1 else None,
+            **({"tied": [r["name"] for r in tied]} if len(tied) > 1 else {}),
+        }
+        if len(named) == 2 and re.match(r"^\s*(is|are|was|were|does|do|did|has|have)\b", question, re.I):
+            # "Is A above B?": yes when the first-named row wins.
+            out["yes_no"] = "yes" if out["answer"] == named[0]["name"] else ("no" if out["answer"] else None)
+        return out
+    return None
+
+
+def table_conflicts(answer: str, comparison: dict[str, Any] | None) -> list[str]:
+    if not comparison or not answer:
+        return []
+    lead = re.split(r"\n|(?<=[.!?])\s", answer.strip(), maxsplit=1)[0]
+    problems = []
+    yn = comparison.get("yes_no")
+    m = re.match(r"^\W*(yes|no)\b", lead, re.I)
+    if yn and m and m.group(1).lower() != yn:
+        problems.append(f"table_comparison answers {yn} ({comparison['answer']} wins by {comparison['by']}), but the answer says {m.group(1)}")
+    winner = comparison.get("answer")
+    named = comparison.get("named") or []
+    if winner and len(named) >= 2 and not m:
+        positions = [(_mentions(lead, n.lower()), n) for n in named]
+        positions = [(p, n) for p, n in positions if p >= 0]
+        if positions and min(positions)[1] != winner:
+            problems.append(f"table_comparison says {winner} wins by {comparison['by']}, but the answer leads with {min(positions)[1]}")
+    return problems
+
+
+def answer_from_table(comparison: dict[str, Any]) -> str:
+    rows = comparison.get("rows") or []
+    head = ""
+    if comparison.get("yes_no"):
+        head = f"{comparison['yes_no'].capitalize()}: "
+    winner = comparison.get("answer") or " and ".join(comparison.get("tied") or [])
+    lines = [f"{head}**{winner}** {'is' if comparison.get('answer') else 'are level'} by {comparison['by']}.", "", "| Name | Rank | Value |", "| --- | --- | --- |"]
+    for r in rows:
+        if comparison.get("named") and r["name"] not in comparison["named"]:
+            continue
+        lines.append(f"| {r['name']} | {r.get('rank', '')} | {r.get('value', '')} |")
+    return "\n".join(lines)

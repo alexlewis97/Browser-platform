@@ -158,3 +158,49 @@ def test_normaliser_never_swaps_two_named_entities_and_retries_implied():
     asyncio.run(normalize_prepared_calls([call], definitions={"w": d}, user_words=words, complete=fake))
     assert call["arguments"]["team"] == "Alphaa"  # not swapped for the other named club
     assert not call.get("unstated") and call.get("inferred") and calls_seen[-1] == "implied"
+
+
+def _table_text(title, header, rows):
+    out = title + "\n" + "\n\t\n".join(header) + "\n\n\n"
+    for i, (name, *nums) in enumerate(rows, 1):
+        out += f"{i}\n{name}\n\t" + "\t".join(str(n) for n in nums) + "\t\nnote\n\n\n"
+    return out
+
+
+def test_table_comparison_generic_columns():
+    from browser_platform.orchestrator.facts_order import parse_table, table_comparison, table_conflicts
+
+    raw = _table_text("Widget Rankings", ["Shop", "Stock", "Price", "Sold", "Remarks"],
+                      [("Alpha Mart", 5, "£12.50", 40), ("Beta Store", 9, "£8.00", 70), ("Gamma Shop", 2, "£20", 10)])
+    t = parse_table(raw)
+    assert t["columns"] == ["Stock", "Price", "Sold"] and t["rows"][1]["values"]["Price"] == 8.0
+    item = {"status": "succeeded", "outputs": {"extract": raw}}
+    c = table_comparison([item], "is gamma shop above alpha mart?")
+    assert c["by"].startswith("rank") and c["yes_no"] == "no"
+    assert table_conflicts("Yes, Gamma Shop is above Alpha Mart.", c)
+    assert not table_conflicts("No, Alpha Mart is higher.", c)
+    c = table_comparison([item], "which is cheaper, alpha mart or beta store?")
+    assert c is None or c.get("answer") in (None, "Beta Store")
+    c = table_comparison([item], "who sold more, alfa mart or gamma shop?")
+    assert c["by"] == "Sold" and c["answer"] == "Alpha Mart"
+    assert table_conflicts("Gamma Shop sold more.", c) and not table_conflicts("Alpha Mart sold more than Gamma Shop.", c)
+    assert table_comparison([item], "which shop has the most stock?")["answer"] == "Beta Store"
+    assert table_comparison([item], "what does alpha mart sell?") is None
+
+
+def test_prior_runs_single_out_a_value(tmp_path):
+    import json
+    from browser_platform.orchestrator.prior_values import value_from_prior_runs
+
+    def run(i, slug, text):
+        (tmp_path / f"r{i}.json").write_text(json.dumps({
+            "workflow_id": "w", "status": "succeeded",
+            "steps": [{"output": {"url": f"https://ex.org/sport/{slug}/table"}}], "outputs": {"extract": text}}))
+
+    run(1, "north-league", "North League Table 1 Redwood 30 2 Bluefield 28")
+    run(2, "south-league", "South League Table 1 Stonebridge 40 2 Elmwick 33")
+    run(3, "south-league", "South League Table 1 Stonebridge 41 2 Elmwick 33 3 Larkspur 20")
+    tpl = "https://ex.org/sport/{competition|slug}/table"
+    assert value_from_prior_runs(tmp_path, "w", tpl, "competition", "who is higher, stonebrige or elmwick?")[0] == "south-league"
+    assert value_from_prior_runs(tmp_path, "w", tpl, "competition", "who is higher, redwood or elmwick?") is None  # split
+    assert value_from_prior_runs(tmp_path, "w", tpl, "competition", "show me the table") is None

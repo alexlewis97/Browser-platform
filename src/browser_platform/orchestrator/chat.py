@@ -811,7 +811,17 @@ class ChatOrchestrator:
                     + [str(t.get("content") or "")[:300] for t in (history or [])[-4:] if t.get("role") in {"user", "assistant"}]
                     + [str((job.get("workspace") or {}).get("instructions") or "")[:300]]
                 )
-                norm_usage = await normalize_prepared_calls(ready, definitions=definitions, user_words=user_words)
+                def _prior(item: dict[str, Any], words: str) -> tuple[str, str] | None:
+                    from browser_platform.orchestrator.prior_values import value_from_prior_runs
+
+                    definition = definitions.get(item.get("workflow_id") or "")
+                    nav = next((st for st in getattr(definition, "steps", None) or [] if st.type == "navigation" and st.url), None)
+                    runs_dir = getattr(self.store, "runs_dir", None)
+                    if nav is None or runs_dir is None:
+                        return None
+                    return value_from_prior_runs(runs_dir, item.get("workflow_id") or "", nav.url, str(item.get("name") or ""), words)
+
+                norm_usage = await normalize_prepared_calls(ready, definitions=definitions, user_words=user_words, prior_value=_prior)
                 breakdown["normalize"] = norm_usage
                 job["usage"] = merge_usage(job.get("usage"), norm_usage)
             except Exception:
@@ -1168,9 +1178,18 @@ class ChatOrchestrator:
             await _emit(emit, {"type": "answer", "text": job["answer"], "job_id": job["id"]})
             return job
         try:
-            from browser_platform.orchestrator.facts_order import answer_conflicts, answer_from_computed, computed_facts, for_prompt
+            from browser_platform.orchestrator.facts_order import (
+                answer_conflicts, answer_from_computed, answer_from_table, computed_facts, for_prompt,
+                table_comparison, table_conflicts,
+            )
 
             computed = computed_facts(compact, str(job.get("message") or ""))
+            try:
+                comparison = table_comparison(items_all, str(job.get("message") or ""))
+            except Exception:
+                comparison = None
+            if comparison:
+                computed["table_comparison"] = comparison
             if computed:
                 job["computed"] = for_prompt(computed)
             synth_messages = [
@@ -1193,6 +1212,7 @@ class ChatOrchestrator:
                             "results[].page_view, when present, says which of the page's own views the facts come from (page_label is the page's name for it). "
                             "computed, when present, is parsed from results[].facts by code: events_on_question_dates are the items on the question's dates, "
                             "and computed_order is the ordering the question asks for (rank 1 first; equal ranks are a tie; undated items could not be ranked, so say so). "
+                            "table_comparison is computed from the parsed table rows: answer (and yes_no) is the result of the comparison asked; rank 1 is the top row. "
                             "Use them for which items fall on a day and for any ordering. days_in_question, when present, lists every day a period such as a weekend covers. "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
@@ -1245,7 +1265,10 @@ class ChatOrchestrator:
                         text, problems = retry_text, []
                 except Exception:
                     pass
-            conflicts = answer_conflicts(text, computed) if (computed and text and not problems) else []
+            def _conflicts(draft: str) -> list[str]:
+                return answer_conflicts(draft, computed) + table_conflicts(draft, computed.get("table_comparison"))
+
+            conflicts = _conflicts(text) if (computed and text and not problems) else []
             if conflicts:
                 # The lead contradicts the code-computed data: one rewrite, then answer from the data.
                 try:
@@ -1266,10 +1289,10 @@ class ChatOrchestrator:
                     fixed = message_text(fix_msg)
                 except Exception:
                     fixed = ""
-                still = (not fixed) or answer_conflicts(fixed, computed) or ungrounded_claims(fixed, compact, str(job.get("message") or ""), full_facts)
+                still = (not fixed) or _conflicts(fixed) or ungrounded_claims(fixed, compact, str(job.get("message") or ""), full_facts)
                 job["consistency"] = {"conflicts": conflicts, "rewritten": bool(fixed and not still), "from_computed": bool(still)}
                 if still:
-                    text = answer_from_computed(computed) or text
+                    text = answer_from_computed(computed) or (answer_from_table(computed["table_comparison"]) if computed.get("table_comparison") else "") or text
                     job.setdefault("notes", []).append("The answer was built from the computed dates and times: the summary contradicted them.")
                 else:
                     text = fixed

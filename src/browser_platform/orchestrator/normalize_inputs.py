@@ -517,6 +517,7 @@ async def normalize_prepared_calls(
     definitions: dict[str, WorkflowDefinition] | None = None,
     complete: CompleteFn | None = None,
     user_words: str | None = None,
+    prior_value: Callable[[dict[str, Any], str], tuple[str, str] | None] | None = None,
 ) -> dict[str, Any]:
     """Rewrite entity arguments in place. Returns LLM usage.
 
@@ -608,7 +609,18 @@ async def normalize_prepared_calls(
         if item.get("check") and (mapped.get((str(item.get("call") or ""), str(item.get("name") or ""))) or {}).get("stated") is False
     ]
     for item in declined[:3]:
-        value, implied, extra = await llm_implied_value(item, str(item.get("_user_words") or user_words or ""), complete=complete)
+        words = str(item.get("_user_words") or user_words or "")
+        key = (str(item.get("call") or ""), str(item.get("name") or ""))
+        if prior_value is not None:
+            try:
+                found = prior_value(item, words)
+            except Exception:
+                found = None
+            if found:
+                # Deterministic first: earlier runs show which value's page lists what was named.
+                mapped[key] = {"canonical": found[0], "slug": found[0], "implied_by": found[1], "implied_source": "prior runs"}
+                continue
+        value, implied, extra = await llm_implied_value(item, words, complete=complete)
         usage = merge_usage(usage, extra)
         if value and implied:
             key = (str(item.get("call") or ""), str(item.get("name") or ""))
