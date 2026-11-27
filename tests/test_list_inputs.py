@@ -71,15 +71,16 @@ def test_weekend_expressions():
     assert resolve("next weekend", "month", now=fri) == "2026-12"
 
 
-def test_today_question_adds_default_view_twin():
-    from browser_platform.orchestrator.chat import default_view_companions
+def test_today_question_uses_default_view():
+    from browser_platform.orchestrator.chat import prefer_default_view_for_today
 
     d = WorkflowDefinition.model_validate({
         "name": "Listing", "steps": [{"type": "navigation", "url": "https://ex.org/{month|ym}?view={view}"}, {"type": "extract", "extractionGoal": "x"}],
         "input_schema": [{"name": "view", "type": "string", "required": False, "enum": ["past", "upcoming"], "default_view": "Now"}],
     })
-    call = {"id": "c1", "workflow_id": "w", "arguments": {"view": "upcoming", "month": "2026-11"}}
-    twins = default_view_companions([call], {"w": d}, "What's on today?")
-    assert [t["arguments"] for t in twins] == [{"month": "2026-11"}]
-    assert default_view_companions([call], {"w": d}, "What was on yesterday?") == []
-    assert default_view_companions([{**call, "arguments": {"month": "2026-11"}}], {"w": d}, "today?") == []
+    call = {"id": "c1", "workflow_id": "w", "workflow_name": "Listing", "arguments": {"view": "upcoming", "month": "2026-11"}}
+    other = {**call, "arguments": dict(call["arguments"])}
+    assert prefer_default_view_for_today([call], {"w": d}, "What's on today?")
+    assert call["arguments"] == {"month": "2026-11"} and "Now" in call["workflow_name"]
+    assert not prefer_default_view_for_today([other], {"w": d}, "What was on yesterday?")
+    assert other["arguments"]["view"] == "upcoming"

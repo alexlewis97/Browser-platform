@@ -133,37 +133,38 @@ def fan_out_calls(prepared: list[dict[str, Any]], store: Any, notes: list[str] |
     return out
 
 
-def default_view_companions(
+def prefer_default_view_for_today(
     calls: list[dict[str, Any]], definitions: dict[str, Any] | None, message: str
-) -> list[dict[str, Any]]:
-    """For a question about *today*, a call that sets a page control whose omitted value is the
-    page's own default view (results|fixtures, upcoming|past...) also gets a twin without it.
+) -> bool:
+    """For a question about *today*, drop a page view control whose omitted value is the page's
+    own default view (results|fixtures, past|upcoming...), so the call uses that default view.
 
     Date-partitioned views split at "now": today's in-progress or remaining items can be in
-    neither the past nor the future view, only in the default one. Other days are not doubled."""
+    neither the past nor the upcoming view, only in the default one. Other days keep the
+    control. The call is labelled so synthesis knows which view it shows. Returns True if changed."""
 
     from browser_platform import dates
 
     today = dates.now_value("date")
     if not any(dates.resolve(expr, "date") == today for expr in dates.find_expressions(message or "")):
-        return []
-    out: list[dict[str, Any]] = []
+        return False
+    changed = False
     for call in calls:
         definition = (definitions or {}).get(call.get("workflow_id") or "")
         args = call.get("arguments") or {}
         controls = [
-            i.name for i in (getattr(definition, "input_schema", None) or [])
+            i for i in (getattr(definition, "input_schema", None) or [])
             if getattr(i, "default_view", None) and args.get(i.name) not in (None, "")
         ]
         if not controls:
             continue
-        views = ", ".join(str(getattr(i, "default_view", "")) for i in definition.input_schema if i.name in controls)
-        twin = {**call, "id": f"{call['id']}_default", "arguments": {k: v for k, v in args.items() if k not in controls},
-                # Tells synthesis what this page shows (e.g. a "Today" view lists today's items).
-                "workflow_name": f"{call.get('workflow_name') or call.get('tool')} (page default view: {views})"}
-        twin["raw_arguments"] = {k: v for k, v in (call.get("raw_arguments") or {}).items() if k not in controls}
-        out.append(twin)
-    return out
+        names = {i.name for i in controls}
+        call["arguments"] = {k: v for k, v in args.items() if k not in names}
+        call["raw_arguments"] = {k: v for k, v in (call.get("raw_arguments") or {}).items() if k not in names}
+        views = ", ".join(str(i.default_view) for i in controls)
+        call["workflow_name"] = f"{call.get('workflow_name') or call.get('tool')} (page default view: {views})"
+        changed = True
+    return changed
 
 
 def resolve_prepared_defaults(prepared: list[dict[str, Any]], definitions: dict[str, Any] | None) -> None:
@@ -746,11 +747,8 @@ class ChatOrchestrator:
                 pass
             anchor_relative_dates(ready, definitions, message, job["notes"])
             resolve_prepared_defaults(ready, definitions)
-            extra_views = default_view_companions(ready, definitions, message)
-            if extra_views:
-                prepared.extend(extra_views)
-                ready.extend(extra_views)
-                job["notes"].append("Also fetched the page's default view for today: a filtered view can leave out today's items.")
+            if prefer_default_view_for_today(ready, definitions, message):
+                job["notes"].append("Used the page's default view for today: a filtered view can leave out today's items.")
             # Entity-kind mismatch (a competition sent to a club input): never call the tool with
             # the wrong kind of value; the intent is reported as not covered instead.
             dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated")]
