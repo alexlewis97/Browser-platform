@@ -41,7 +41,7 @@ PLANNER_SYSTEM = (
     "Bind a value only to an argument of the same kind: a league or competition is not a club or team, and a team is not a competition. "
     "If no listed skill takes the kind of entity an intent is about, give that intent no steps rather than forcing a mismatched argument. "
     "Omit optional arguments unless the user named a specific value; never send placeholders such as current, now or default. "
-    "Several values (teams, terms, dates) get one step each; steps run in parallel. "
+    "Several values (teams, terms, dates) get one step each; steps run in parallel. A :list argument instead takes them all as one array. "
     "Use \"after\" only when a step needs an earlier step's result, and pass that value as {{\"from\":\"s1\",\"pick\":\"what to take\"}}. "
     "Never answer from your own knowledge when a listed skill can fetch it. "
     "Only if no listed skill fits, return no steps and put a short reply in \"answer\" saying what is not covered."
@@ -193,10 +193,18 @@ def check_step(step: dict[str, Any], tools: list[dict[str, Any]]) -> tuple[dict[
                     value = float(value) if "." in value else int(value)
                 except ValueError:
                     problems.append(f"{name} should be a number")
+            elif spec.get("type") == "array":
+                from browser_platform.interpolate import as_list
+
+                value = as_list(value)
+            elif spec.get("type") == "string" and isinstance(value, (list, tuple)):
+                value = [str(v) for v in value if v is not None and str(v).strip()]  # fanned out per value
+                if len(value) == 1:
+                    value = value[0]
             elif spec.get("type") == "string" and not isinstance(value, str):
                 value = str(value)
             enum = spec.get("enum")
-            if enum and value not in enum:
+            if enum and not isinstance(value, list) and value not in enum:
                 match = next((e for e in enum if str(e).lower() == str(value).lower()), None)
                 if match is None:
                     problems.append(f"{name} must be one of {enum}")

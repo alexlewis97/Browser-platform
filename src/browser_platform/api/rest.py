@@ -531,6 +531,13 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
             status_code=400,
             detail="Missing required inputs: " + ", ".join(missing),
         )
+    list_inputs = {i.name for i in stored.definition.input_schema or [] if i.type == "list"}
+    several = [k for k, v in (payload.variables or {}).items() if isinstance(v, list) and k not in list_inputs]
+    if several:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Input {several[0]} takes one value; start one run per value (the chat does this automatically).",
+        )
     cdp_url = payload.cdp_url or state.settings.default_cdp_url
     run_id = uuid.uuid4().hex
     # Persist a running record immediately: every run has a run_id even if it hangs or the

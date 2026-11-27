@@ -352,6 +352,8 @@ async def normalize_prepared_calls(
             definition = call.get("_definition")
         call["arguments"] = args
         for name, value in list(args.items()):
+            if isinstance(value, (list, tuple)):
+                continue
             text = "" if value is None else str(value).strip()
             if not text or not is_entity_parameter(name, definition):
                 continue
@@ -390,6 +392,8 @@ async def normalize_prepared_calls(
         args = dict(call.get("arguments") or {})
         raw = call.get("raw_arguments") or {}
         for name, value in list(args.items()):
+            if isinstance(value, (list, tuple)):
+                continue
             text = "" if value is None else str(value).strip()
             row = mapped.get((str(call.get("id") or ""), name))
             if not row:

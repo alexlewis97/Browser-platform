@@ -1,4 +1,14 @@
-const BRACE = /\{\{?\s*([a-zA-Z_][\w]*)(?:\|([a-zA-Z0-9_]+))?\s*\}?\}/g;
+const BRACE = /\{\{?\s*([a-zA-Z_][\w]*)(?:\|([a-zA-Z0-9_]+(?::[^{}|]*)?))?\s*\}?\}/g;
+
+/** A list value joined for one place: {name|join:+} picks the separator, otherwise sep. */
+function joinList(values: unknown[], fmt: string | undefined, sep: string): string {
+  let itemFmt = fmt;
+  if (fmt && (fmt === "join" || fmt.startsWith("join:"))) {
+    sep = fmt.includes(":") ? fmt.slice(fmt.indexOf(":") + 1) : sep;
+    itemFmt = undefined;
+  }
+  return values.filter((v) => v != null && String(v).trim()).map((v) => formatValue(String(v), itemFmt)).join(sep);
+}
 
 export function pathSlug(value: string): string {
   return String(value || "")
@@ -19,11 +29,14 @@ export function formatValue(value: string, fmt?: string | null): string {
   return text;
 }
 
-export function interpolate(value: unknown, variables?: Record<string, unknown> | null): unknown {
+export function interpolate(value: unknown, variables?: Record<string, unknown> | null, listSep = ", "): unknown {
   if (!variables || typeof value !== "string") return value;
   return value.replace(BRACE, (match, key: string, fmt?: string) => {
     if (Object.prototype.hasOwnProperty.call(variables, key) && variables[key] != null) {
-      return formatValue(String(variables[key]), fmt);
+      const found = variables[key];
+      if (Array.isArray(found)) return joinList(found, fmt, listSep);
+      if (fmt && (fmt === "join" || fmt.startsWith("join:"))) fmt = undefined;
+      return formatValue(String(found), fmt);
     }
     return match;
   });
@@ -31,14 +44,20 @@ export function interpolate(value: unknown, variables?: Record<string, unknown> 
 
 export function interpolateUrl(url: unknown, variables?: Record<string, unknown> | null): unknown {
   if (typeof url !== "string") return interpolate(url, variables);
-  const updated = interpolate(url, variables);
+  let updated = interpolate(url, variables, ",");
+  if (typeof updated === "string" && updated.includes("?")) {
+    // An optional query parameter whose input was not given is dropped, not sent empty.
+    const [base, query] = [updated.slice(0, updated.indexOf("?")), updated.slice(updated.indexOf("?") + 1)];
+    const kept = query.split("&").filter((pair) => pair && !/^[^=]+=(\{[^}]*\})?$/.test(pair));
+    updated = base + (kept.length ? "?" + kept.join("&") : "");
+  }
   if (typeof updated !== "string" || !variables) return updated;
   try {
     const parsed = new URL(updated);
     const host = parsed.hostname.toLowerCase();
     if (host.includes("wikipedia.org") || host.includes("wikimedia.org")) return updated;
     const rawValues = Object.values(variables)
-      .filter((v) => v != null && String(v).trim())
+      .filter((v) => v != null && !Array.isArray(v) && String(v).trim())
       .map((v) => String(v).trim());
     const parts = parsed.pathname.split("/");
     let changed = false;

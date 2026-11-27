@@ -5,7 +5,31 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_BRACE = re.compile(r"\{\{?\s*([a-zA-Z_][\w]*)(?:\|([a-zA-Z0-9_]+))?\s*\}?\}")
+_BRACE = re.compile(r"\{\{?\s*([a-zA-Z_][\w]*)(?:\|([a-zA-Z0-9_]+(?::[^{}|]*)?))?\s*\}?\}")
+
+
+def as_list(value: Any) -> list[str]:
+    """A list input's values: a list as given, or a string split on commas, semicolons,
+    new lines and a final "and" ("Arsenal, Chelsea and Spurs")."""
+
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if v is not None and str(v).strip()]
+    text = str(value).strip()
+    if not text:
+        return []
+    parts = re.split(r"\s*(?:[,;\n]|\band\b|&)\s*", text)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _join_list(values: list[Any], fmt: str | None, default_sep: str) -> str:
+    sep = default_sep
+    item_fmt = fmt
+    if fmt and (fmt == "join" or fmt.startswith("join:")):
+        sep = fmt.split(":", 1)[1] if ":" in fmt else default_sep
+        item_fmt = None
+    return sep.join(format_value(str(v), item_fmt) for v in values if v is not None and str(v).strip())
 
 _YM_FORMATS = {"ym", "yyyymm", "year_month", "current", "current_month"}
 _MONTH_NAMES = {
@@ -110,7 +134,7 @@ def lookup_variable(variables: dict[str, Any] | None, key: str) -> Any:
     value = lowered.get(key.lower())
     return value
 
-def interpolate(value: Any, variables: dict[str, Any] | None) -> Any:
+def interpolate(value: Any, variables: dict[str, Any] | None, *, list_sep: str = ", ") -> Any:
     if not isinstance(value, str):
         return value
     variables = variables or {}
@@ -119,6 +143,10 @@ def interpolate(value: Any, variables: dict[str, Any] | None) -> Any:
         key = match.group(1)
         fmt = match.group(2) if match.lastindex and match.lastindex >= 2 else None
         found = lookup_variable(variables, key)
+        if isinstance(found, (list, tuple)):
+            return _join_list(list(found), fmt, list_sep)
+        if fmt and (fmt == "join" or fmt.startswith("join:")):
+            fmt = None
         if fmt in _YM_FORMATS:
             return year_month(None if found is None or str(found).strip() == "" else str(found))
         if fmt in _DATE_FILTERS and (found is None or str(found).strip() == ""):
@@ -143,7 +171,7 @@ def interpolate_url(url: Any, variables: dict[str, Any] | None) -> Any:
     """
     if not isinstance(url, str):
         return interpolate(url, variables)
-    updated = interpolate(url, variables or {})
+    updated = interpolate(url, variables or {}, list_sep=",")
     if isinstance(updated, str) and "?" in updated:
         # An optional query parameter whose input was not given is dropped, not sent empty.
         base, _, query = updated.partition("?")
@@ -159,7 +187,7 @@ def interpolate_url(url: Any, variables: dict[str, Any] | None) -> Any:
         return updated
     parts = parsed.path.split("/")
     changed = False
-    raw_values = [str(v).strip() for v in variables.values() if v is not None and str(v).strip()]
+    raw_values = [str(v).strip() for v in variables.values() if v is not None and not isinstance(v, (list, tuple)) and str(v).strip()]
     for i, part in enumerate(parts):
         if not part:
             continue

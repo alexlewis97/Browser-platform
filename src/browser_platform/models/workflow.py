@@ -71,10 +71,12 @@ class WorkflowInput(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str
-    type: Literal["string", "number", "bool"] = "string"
+    # "list": several values in one input; steps join them ({name|join:,}) or the chat
+    # fans a single-value input out into one call per value.
+    type: Literal["string", "number", "bool", "list"] = "string"
     format: str | None = None
     required: bool | None = None
-    default: str | int | float | bool | None = None
+    default: str | int | float | bool | list[str] | None = None
     label: str | None = None
     description: str | None = None
     sensitive: bool | None = None

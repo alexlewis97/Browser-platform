@@ -100,6 +100,37 @@ def is_action_call(stored: StoredWorkflow | None) -> bool:
 
 
 
+MAX_FAN_OUT = 5
+
+
+def fan_out_calls(prepared: list[dict[str, Any]], store: Any, notes: list[str] | None = None) -> list[dict[str, Any]]:
+    """Several values for a one-value input become one call per value (a list input keeps them).
+
+    Only the first multi-valued argument fans out, capped at MAX_FAN_OUT; extra values are noted."""
+
+    out: list[dict[str, Any]] = []
+    for call in prepared:
+        args = call.get("arguments") or {}
+        try:
+            definition = store.get_workflow(call["workflow_id"]).definition
+        except Exception:
+            definition = None
+        types = {i.name: i.type for i in (getattr(definition, "input_schema", None) or [])}
+        multi = next((k for k, v in args.items() if isinstance(v, list) and types.get(k) != "list"), None)
+        if multi is None:
+            out.append(call)
+            continue
+        values = [v for v in args[multi] if str(v).strip()]
+        if len(values) > MAX_FAN_OUT and notes is not None:
+            notes.append(f"{call.get('tool')}: only the first {MAX_FAN_OUT} of {len(values)} {multi} values were run")
+        for k, value in enumerate(values[:MAX_FAN_OUT] or [""]):
+            copy = {**call, "arguments": {**args, multi: value}}
+            if k:
+                copy["id"] = f"{call['id']}_{k + 1}"
+            out.append(copy)
+    return out
+
+
 def resolve_prepared_defaults(prepared: list[dict[str, Any]], definitions: dict[str, Any] | None) -> None:
     """Resolve optional runtime defaults and drop placeholders before a tool is called."""
 
@@ -654,6 +685,7 @@ class ChatOrchestrator:
                     "_plan_step": step["id"],
                 }
             )
+        prepared = fan_out_calls(prepared, self.store, job["notes"])
         # The extension runs one dependency layer per round trip; the server keeps the rest.
         job["calls"] = [c for c in prepared if not c.get("after")] if job["target"] == "extension" else prepared
         if prepared:

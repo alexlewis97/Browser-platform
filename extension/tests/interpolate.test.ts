@@ -62,3 +62,8 @@ test("interpolateUrl slugs raw path values and leaves wikipedia titles", () => {
   assert.equal(interpolateUrl("https://www.bbc.com/sport/football/teams/{team}/scores-fixtures", { team: "Chelsea" }), "https://www.bbc.com/sport/football/teams/chelsea/scores-fixtures");
   assert.equal(interpolateUrl("https://en.wikipedia.org/wiki/{term}", { term: "Ada Lovelace" }), "https://en.wikipedia.org/wiki/Ada Lovelace");
 });
+
+test("list values join and unset optional query params drop", () => {
+  assert.equal(interpolateUrl("https://ex.org/s?q={terms|join:+}&show={show}", { terms: ["red", "blue"] }), "https://ex.org/s?q=red+blue");
+  assert.equal(interpolate("{terms}", { terms: ["a", "b"] }), "a, b");
+});

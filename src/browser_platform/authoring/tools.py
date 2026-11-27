@@ -87,11 +87,15 @@ def _json_type(item: WorkflowInput) -> str:
         return "number"
     if typ in {"bool", "boolean"}:
         return "boolean"
+    if typ in {"list", "array"}:
+        return "array"
     return "string"
 
 
 def parameter_schema(item: WorkflowInput) -> dict[str, Any]:
     schema: dict[str, Any] = {"type": _json_type(item)}
+    if schema["type"] == "array":
+        schema["items"] = {"type": "string"}
     label = pretty_label(item.name, label=item.label, description=item.description)
     desc = item.description or label
     example = item.default if item.default is not None else getattr(item, "example", None)

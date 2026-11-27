@@ -282,6 +282,18 @@ def resolve_input_values(definition: WorkflowDefinition | None, variables: dict[
     items = {item.name: item for item in (getattr(definition, "input_schema", None) or []) if item.name}
     for name, item in items.items():
         raw = out.get(name)
+        if item.type == "list":
+            from browser_platform.interpolate import as_list
+
+            fallback = item.default if isinstance(item.default, list) else concrete_default(item, definition)
+            values = as_list(raw) if raw not in (None, "") else as_list(fallback)
+            if values:
+                out[name] = values
+            else:
+                out.pop(name, None)
+            continue
+        if isinstance(raw, (list, tuple)):
+            continue  # several values for a one-value input: the caller fans out
         if raw in (None, "") or is_placeholder_value(raw):
             filled = concrete_default(item, definition)
             if filled is not None:
@@ -292,7 +304,7 @@ def resolve_input_values(definition: WorkflowDefinition | None, variables: dict[
             out[name] = resolve_typed_value(item, raw, definition)
     # Drop placeholders even when the schema has no matching entry (e.g. planner-invented month=current).
     for name, raw in list(out.items()):
-        if is_placeholder_value(raw):
+        if not isinstance(raw, (list, tuple)) and is_placeholder_value(raw):
             key = str(name or "").strip().lower()
             if key in {"month", "date"}:
                 out[name] = current_year_month()
@@ -448,6 +460,10 @@ def missing_required_inputs(definition: WorkflowDefinition, variables: dict[str,
         if not input_is_required(item, definition):
             continue
         value = values.get(item.name)
+        if isinstance(value, (list, tuple)):
+            if any(str(v).strip() for v in value):
+                continue
+            value = None
         if value is None or not str(value).strip() or is_placeholder_value(value):
             # Consult resolved defaults first: only ask when nothing trustworthy can fill it.
             if concrete_default(item, definition) is None:
