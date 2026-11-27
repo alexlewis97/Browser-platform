@@ -28,13 +28,20 @@ TOP_K = 6
 PLANNER_SYSTEM = (
     "You plan calls to saved browser skills (like MCP tools) to answer the user. Today is {month}.\n"
     "Skills (name(args): summary [site]; * required, ? optional):\n{cards}\n\n"
-    "Reply JSON only: {{\"steps\":[{{\"id\":\"s1\",\"skill\":\"<name>\",\"args\":{{}},\"after\":[]}}],\"answer\":null}}\n"
-    "Rules: use only skills listed above, with their exact argument names. "
+    "Reply JSON only: {{\"intents\":[{{\"ask\":\"<one thing the user wants>\",\"steps\":[\"s1\"]}}],"
+    "\"steps\":[{{\"id\":\"s1\",\"skill\":\"<name>\",\"args\":{{}},\"after\":[]}}],\"answer\":null}}\n"
+    "Rules: first split the request into intents, one per entity and kind of information "
+    "(for example 'X results' and 'X fixtures' are two intents; 'A and B' are two intents). "
+    "Every intent needs at least one step, using the skill whose summary matches that kind of information; "
+    "when two skills look alike, pick by what they return (past vs upcoming, table vs list). "
+    "Use only skills listed above, with their exact argument names. "
     "Fill arguments only from values the user stated; never invent them. If a required value is missing, still add the step without it. "
+    "Apply a stated value (date, month, filter) only to the intents it was said for. "
     "Omit optional arguments unless the user named a specific value; never send placeholders such as current, now or default. "
-    "For several values (teams, terms, dates) add one step per value; they run in parallel. "
+    "Several values (teams, terms, dates) get one step each; steps run in parallel. "
     "Use \"after\" only when a step needs an earlier step's result, and pass that value as {{\"from\":\"s1\",\"pick\":\"what to take\"}}. "
-    "If no skill fits, return no steps and put a short reply or question in \"answer\"."
+    "Never answer from your own knowledge when a listed skill can fetch it. "
+    "Only if no listed skill fits, return no steps and put a short reply or question in \"answer\"."
 )
 
 REPAIR_SYSTEM = (
@@ -62,10 +69,15 @@ def retrieval_query(message: str, history: list[dict[str, Any]]) -> str:
     return f"{message} {extra}".strip()
 
 
-def planner_messages(message: str, history: list[dict[str, Any]], manifests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def planner_messages(
+    message: str, history: list[dict[str, Any]], manifests: list[dict[str, Any]], *, focus: list[str] | None = None
+) -> list[dict[str, Any]]:
     cards = "\n".join(f"- {card(m)}" for m in manifests)
     system = PLANNER_SYSTEM.format(cards=cards, month=current_year_month())
-    return [{"role": "system", "content": system}, *history_lines(history, message), {"role": "user", "content": message[:2000]}]
+    user = message[:2000]
+    if focus:
+        user = f"Original request: {user}\nPlan steps only for these parts, which are not covered yet:\n" + "\n".join(f"- {f}" for f in focus)
+    return [{"role": "system", "content": system}, *history_lines(history, message), {"role": "user", "content": user}]
 
 
 def parse_plan(text: str) -> dict[str, Any] | None:
@@ -84,8 +96,42 @@ def parse_plan(text: str) -> dict[str, Any] | None:
         if isinstance(after, str):
             after = [after]
         steps.append({"id": str(raw.get("id") or f"s{index}"), "skill": skill, "args": dict(args), "after": [str(a) for a in after if a]})
+    intents = []
+    for raw in data.get("intents") or []:
+        if isinstance(raw, dict) and str(raw.get("ask") or "").strip():
+            ids = raw.get("steps") or []
+            if isinstance(ids, str):
+                ids = [ids]
+            intents.append({"ask": str(raw["ask"]).strip()[:200], "steps": [str(i) for i in ids if i]})
+        elif isinstance(raw, str) and raw.strip():
+            intents.append({"ask": raw.strip()[:200], "steps": []})
     answer = data.get("answer")
-    return {"steps": steps, "answer": answer if isinstance(answer, str) and answer.strip() else None}
+    return {"steps": steps, "intents": intents, "answer": answer if isinstance(answer, str) and answer.strip() else None}
+
+
+def uncovered_intents(intents: list[dict[str, Any]], steps: list[dict[str, Any]]) -> list[str]:
+    """Intents that no surviving step serves. A step may serve an intent by id or, when the
+    model left the mapping out, by being the only step for a skill nobody else claimed."""
+
+    live = {s["id"] for s in steps}
+    missing = []
+    for intent in intents or []:
+        if not any(i in live for i in intent.get("steps") or []):
+            missing.append(intent["ask"])
+    claimed = {i for intent in intents or [] for i in intent.get("steps") or []}
+    spare = [s for s in steps if s["id"] not in claimed]
+    # Unmapped steps can cover unmapped intents one for one (models sometimes skip the ids).
+    return missing[len(spare):] if spare and len(spare) <= len(missing) else ([] if spare else missing)
+
+
+_SPLIT = re.compile(r"\s*(?:,|;|\band\b|\balso\b|\bplus\b|\bthen\b|\bvs\.?\b|\bversus\b|&|\+|\n)\s*", re.I)
+
+
+def sub_queries(message: str, *, limit: int = 5) -> list[str]:
+    """Cheap clause split for per-intent retrieval (no LLM). Short fragments are dropped."""
+
+    parts = [p.strip() for p in _SPLIT.split(message or "") if p and len(p.strip()) >= 3]
+    return parts[:limit] if len(parts) > 1 else []
 
 
 def _norm(name: str) -> str:

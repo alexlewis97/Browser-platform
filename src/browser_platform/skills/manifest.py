@@ -25,7 +25,7 @@ from browser_platform.workflow_inputs import (
     pretty_label,
 )
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 _WORD = re.compile(r"\w+", re.UNICODE)
 _STOP = {
     "the", "a", "an", "of", "for", "to", "and", "or", "in", "on", "with", "from", "task", "workflow",
@@ -68,6 +68,30 @@ def entry_url(definition: WorkflowDefinition) -> str:
             url = re.sub(r"\{[^}]*\}", "{}", url).split("?")[0].split("#")[0].rstrip("/")
             return re.sub(r"^https?://(www\.)?", "", url).lower()
     return ""
+
+
+def structure_key(definition: WorkflowDefinition) -> str:
+    """Hash of what the workflow actually does: every step's type, full URL template
+    (query string included), target, selector, value template and extraction goal.
+
+    Two workflows are duplicates only when this matches. The entry URL alone is not enough:
+    '/scores-fixtures' and '/scores-fixtures?filter=results' are different skills.
+    """
+
+    rows = []
+    for step in definition.steps or []:
+        url = re.sub(r"\{[^}]*\}", "{}", step.url or "")
+        rows.append(
+            [
+                (step.type or "").lower(),
+                re.sub(r"^https?://(www\.)?", "", url).lower(),
+                (step.target_text or "").strip().lower(),
+                (step.cssSelector or "").strip(),
+                re.sub(r"\{[^}]*\}", "{}", str(step.value or "")),
+                (getattr(step, "extractionGoal", None) or step.goal or "").strip().lower(),
+            ]
+        )
+    return hashlib.sha1(json.dumps(rows).encode()).hexdigest()[:16]
 
 
 def words(text: str) -> list[str]:
@@ -144,6 +168,7 @@ def base_manifest(stored: StoredWorkflow, *, slug: str, action_ending: bool, inp
         "site": site,
         "domain": site,
         "entry": entry_url(definition),
+        "structure": structure_key(definition),
         "tags": tag_words[:8],
         "example_request": example.strip()[:160],
         "action_ending": bool(action_ending),
@@ -161,11 +186,14 @@ ENRICH_SYSTEM = (
     "\"tags\": 3-8 lowercase keywords incl. synonyms a user might type, "
     "\"example_request\": one natural user request it answers, "
     "\"output\": short description of the returned data, "
-    "\"inputs\": {input_name: short description}}. Do not invent inputs."
+    "\"inputs\": {input_name: short description}}. Do not invent inputs. "
+    "The summary must say exactly what data comes back so it cannot be confused with the sibling skills listed "
+    "(for example past results vs upcoming fixtures, a table vs a list, which sport). "
+    "Do not mention the siblings or the word distinct; just be specific."
 )
 
 
-def enrich_prompt(manifest: dict[str, Any], definition: WorkflowDefinition) -> str:
+def enrich_prompt(manifest: dict[str, Any], definition: WorkflowDefinition, siblings: list[dict[str, Any]] | None = None) -> str:
     steps = []
     for step in (definition.steps or [])[:12]:
         bits = [step.type]
@@ -181,6 +209,10 @@ def enrich_prompt(manifest: dict[str, Any], definition: WorkflowDefinition) -> s
             "inputs": [{k: v for k, v in i.items() if k in {"name", "type", "required", "default", "example"}} for i in manifest["inputs"]],
             "ends_in_action": manifest["action_ending"],
             "steps": steps,
+            "sibling_skills": [
+                {"name": sib.get("name"), "summary": sib.get("summary"), "entry": sib.get("entry")}
+                for sib in (siblings or [])[:8]
+            ],
         },
         ensure_ascii=False,
     )

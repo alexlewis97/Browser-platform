@@ -448,7 +448,13 @@ document.addEventListener("submit", (event) => {
           return;
         }
       }
-      if (job.status === "awaiting_results" || Array.isArray(job.calls)) {
+      // The server hands out one dependency layer per round trip; keep going until it answers.
+      let firstRound = true;
+      while (
+        (firstRound && (job.status === "awaiting_results" || Array.isArray(job.calls))) ||
+        (job.status === "awaiting_results" && Array.isArray(job.calls) && job.calls.length > 0)
+      ) {
+        firstRound = false;
         const calls = (job.calls || []) as Array<{ id: string; definition?: unknown; arguments?: Record<string, string>; workflow_id?: string; workflow_name?: string; tool?: string; action_ending?: boolean }>;
         chatStatus = he.chat.runningTools(calls.length);
         render();

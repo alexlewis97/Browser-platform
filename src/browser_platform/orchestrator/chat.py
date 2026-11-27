@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+import logging
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -29,10 +30,13 @@ from browser_platform.orchestrator.planner import (
     repair_calls,
     resolve_refs,
     retrieval_query,
+    sub_queries,
+    uncovered_intents,
     waves,
 )
 from browser_platform.skills.registry import SkillRegistry
 from browser_platform.skills.retrieve import rank_skills
+from browser_platform.redaction import redact
 from browser_platform.store.file_store import FileStore
 from browser_platform.workflow_inputs import (
     inputs_for_output_validation,
@@ -40,6 +44,7 @@ from browser_platform.workflow_inputs import (
     resolve_input_values,
 )
 
+logger = logging.getLogger("browser_platform.chat")
 BATCH_CONFIRM_AFTER = 5
 CONCURRENCY = 2
 MAX_JOBS = 50
@@ -117,6 +122,65 @@ class ChatJobs:
             self._jobs.pop(oldest, None)
         return job
 
+    dir: Any = None
+    keep: int = 200
+
+    def save(self, job: dict[str, Any]) -> None:
+        """Persist a redacted record of the job so bad runs can be inspected later."""
+
+        if not self.dir:
+            return
+        from pathlib import Path
+
+        folder = Path(self.dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        record = public_job(job)
+        record.update(
+            {
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "plan_raw": job.get("plan_raw"),
+                "intents": job.get("intents"),
+                "uncovered": job.get("uncovered"),
+                "retrieval_scores": (job.get("retrieval") or {}).get("scores"),
+                "all_calls": public_calls(job.get("all_calls") or []),
+                "items": [{k: v for k, v in public_item(i).items() if k != "outputs"} for i in job.get("items") or []],
+            }
+        )
+        for call in record.get("calls") or []:
+            call.pop("definition", None)
+        for call in record.get("all_calls") or []:
+            call.pop("definition", None)
+        path = folder / f"{job['id']}.json"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(redact(record), ensure_ascii=False, default=str, indent=1), encoding="utf-8")
+        tmp.replace(path)
+        logger.info(
+            "chat job %s status=%s skills=%s calls=%s uncovered=%s tokens_in=%s",
+            job.get("id"), job.get("status"), record.get("skills_considered"),
+            [(c.get("tool"), c.get("arguments")) for c in record.get("all_calls") or record.get("calls") or []],
+            job.get("uncovered"), (job.get("usage") or {}).get("tokens_in"),
+        )
+        files = sorted(folder.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        for old in files[: max(0, len(files) - self.keep)]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    def recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.dir:
+            return []
+        from pathlib import Path
+
+        files = sorted(Path(self.dir).glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]
+        out = []
+        for path in files:
+            try:
+                out.append(json.loads(path.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+        return out
+
     def get(self, job_id: str) -> dict[str, Any] | None:
         return self._jobs.get(job_id)
 
@@ -152,6 +216,8 @@ class ChatOrchestrator:
         self.jobs = jobs or ChatJobs()
         self.concurrency = concurrency
         self.skills = SkillRegistry(store)
+        if getattr(self.jobs, "dir", None) is None and getattr(store, "data_dir", None) is not None:
+            self.jobs.dir = store.data_dir / "chat_jobs"
         hooks = getattr(store, "on_change", None)
         if isinstance(hooks, list):
             hooks.append(self.skills.on_store_change)
@@ -167,7 +233,82 @@ class ChatOrchestrator:
         except Exception:
             return None
 
-    async def handle(
+    async def _retrieve(self, query: str, pool: list[dict[str, Any]], parts: list[str] | None = None) -> dict[str, Any]:
+        """Top-k for the whole request, plus the best two for each clause, capped at 8 cards.
+
+        A multi-part request ("X results and Y fixtures") can rank one part's skill out of a
+        whole-query top-k in a large library; per-clause retrieval keeps every part represented.
+        """
+
+        prior = self.skills.reliability()
+        ranked = await rank_skills(query, pool, k=TOP_K, embedder=self.skills.embedder, prior=prior)
+        skills = list(ranked["skills"])
+        scores = list(ranked["scores"])
+        tokens = ranked["embed_tokens"]
+        for part in parts or []:
+            sub = await rank_skills(part, pool, k=2, embedder=self.skills.embedder, prior=prior)
+            tokens += sub["embed_tokens"]
+            for manifest, score in zip(sub["skills"], sub["scores"]):
+                if manifest not in skills and len(skills) < 8 and ((score.get("bm25") or 0) > 0 or (score.get("dense") or 0) >= 0.3):
+                    skills.append(manifest)
+                    scores.append({**score, "via": part[:60]})
+        return {"skills": skills, "scores": scores, "method": ranked["method"], "embed_tokens": tokens}
+
+    async def _next_extension_wave(self, job: dict[str, Any], *, emit: Emit | None = None) -> bool:
+        """Queue the next dependency layer for the extension. True when more calls were queued."""
+
+        done = {item["id"]: item for item in job.get("items") or []}
+        pending = [c for c in job.get("all_calls") or [] if c["id"] not in done]
+        if not pending:
+            return False
+        ready = [c for c in pending if all(a in done for a in c.get("after") or [])]
+        if not ready:
+            ready = pending[:1]
+        api_key = (job.get("llm_api_key") or "").strip() or env_api_key()
+        wave = []
+        for call in ready:
+            failed = [a for a in call.get("after") or [] if (done.get(a) or {}).get("status") != "succeeded"]
+            if failed:
+                job["items"].append(
+                    {
+                        "id": call["id"], "tool": call["tool"], "workflow_id": call["workflow_id"], "workflow_name": call["workflow_name"],
+                        "inputs": {k: v for k, v in (call.get("arguments") or {}).items() if not is_ref(v)},
+                        "status": "failed", "error": f"Skipped because {', '.join(failed)} did not succeed.",
+                        "action_ending": bool(call.get("action_ending")),
+                    }
+                )
+                continue
+            if any(is_ref(v) for v in (call.get("arguments") or {}).values()):
+                try:
+                    args, usage = await resolve_refs(call, done, api_key=api_key, model=job.get("llm_model") or None)
+                    job["usage"] = merge_usage(job.get("usage"), usage)
+                except Exception:
+                    args = {k: v for k, v in (call.get("arguments") or {}).items() if not is_ref(v)}
+                call["arguments"] = args
+                call["raw_arguments"] = dict(args)
+                try:
+                    stored = self.store.get_workflow(call["workflow_id"])
+                    await normalize_prepared_calls([call], definitions={stored.id: stored.definition})
+                    resolve_prepared_defaults([call], {stored.id: stored.definition})
+                except Exception:
+                    pass
+            wave.append(call)
+        if not wave:
+            return await self._next_extension_wave(job, emit=emit)
+        job["calls"] = wave
+        job["status"] = "awaiting_results"
+        await _emit(emit, {"type": "planned", "job": public_job(job)})
+        return True
+
+    async def handle(self, **kwargs: Any) -> dict[str, Any]:
+        job = await self._handle(**kwargs)
+        try:
+            self.jobs.save(job)
+        except Exception:
+            pass
+        return job
+
+    async def _handle(
         self,
         *,
         message: str,
@@ -190,7 +331,14 @@ class ChatOrchestrator:
             if llm_model:
                 job["llm_model"] = llm_model
             if results is not None:
-                job["items"] = _normalize_client_results(job, results)
+                fresh = _normalize_client_results(job, results)
+                done = {item["id"]: item for item in job.get("items") or []}
+                done.update({item["id"]: item for item in fresh})
+                order = [c["id"] for c in job.get("all_calls") or job.get("calls") or []]
+                job["items"] = [done[i] for i in order if i in done] + [v for k, v in done.items() if k not in order]
+                if await self._next_extension_wave(job, emit=emit):
+                    job["elapsed_ms"] = round((_now() - started) * 1000, 1)
+                    return job
                 await self.synthesize(job, emit=emit)
                 job["elapsed_ms"] = round((_now() - started) * 1000, 1)
                 return job
@@ -293,7 +441,7 @@ class ChatOrchestrator:
 
         # 1) Retrieve a short slate of skills; never the whole library.
         pool = self.skills.selection_pool(manifests) or manifests
-        ranked = await rank_skills(retrieval_query(message, history), pool, k=TOP_K, embedder=self.skills.embedder, prior=self.skills.reliability())
+        ranked = await self._retrieve(retrieval_query(message, history), pool, sub_queries(message))
         candidates = ranked["skills"]
         job["skills_considered"] = [m.get("slug") for m in candidates]
         for manifest in candidates:
@@ -314,8 +462,10 @@ class ChatOrchestrator:
         job["plan_usage"] = usage
         job["usage"] = merge_usage(job.get("usage"), usage)
         content = message_text(assistant)
+        job["plan_raw"] = content[:3000]
         plan = parse_plan(content)
         steps: list[dict[str, Any]] = list((plan or {}).get("steps") or [])
+        intents: list[dict[str, Any]] = list((plan or {}).get("intents") or [])
         reply = (plan or {}).get("answer")
         if plan is None:
             native = _parse_tool_calls(assistant, tools)
@@ -323,15 +473,19 @@ class ChatOrchestrator:
             reply = None if steps else content
 
         # 3) Check arguments against the full schemas of only the chosen skills; repair if needed.
-        problems: list[str] = []
+        good: list[dict[str, Any]] = []
+        bad: list[dict[str, Any]] = []
         chosen: list[dict[str, Any]] = []
         for step in steps:
             tool, issues = check_step(step, tools)
-            problems.extend(issues)
+            (bad if issues else good).append(step)
             if tool is not None and tool not in chosen:
                 chosen.append(tool)
-        if problems or (plan is None and not steps):
-            slate = chosen or [lookup_tool(tools, m.get("slug")) for m in candidates[:3]]
+        relevant = any((row.get("bm25") or 0) > 0 or (row.get("dense") or 0) >= 0.3 for row in ranked.get("scores") or [])
+        # Repair broken steps, and never let the model answer from memory when a skill matches.
+        if bad or (not steps and (plan is None or relevant)):
+            slate = [lookup_tool(tools, b["skill"]) for b in bad] if bad else []
+            slate = [t for t in slate if t] or [lookup_tool(tools, m.get("slug")) for m in candidates[:3]]
             slate = [t for t in slate if t][:4]
             if slate:
                 try:
@@ -340,18 +494,77 @@ class ChatOrchestrator:
                     )
                     breakdown["repair"] = rusage
                     job["usage"] = merge_usage(job.get("usage"), rusage)
-                    if repaired:
-                        steps = repaired
-                        for step in steps:
-                            check_step(step, tools)
-                        problems = []
-                    elif rtext and not steps:
+                    fixed = []
+                    for index, step in enumerate(repaired, 1):
+                        step["id"] = f"p{index}"
+                        tool, issues = check_step(step, tools)
+                        if tool is not None and not issues:
+                            fixed.append(step)
+                    if bad:
+                        # Keep the planner's good steps; only replace the broken ones.
+                        keep_skills = {g["skill"] for g in good}
+                        fixed = [f for f in fixed if f["skill"] not in keep_skills or f["skill"] in {b["skill"] for b in bad}]
+                    steps = good + fixed
+                    if not steps and rtext:
                         reply = rtext
                 except Exception as exc:
                     job["notes"].append(f"repair pass failed: {type(exc).__name__}")
+                    steps = good
+            else:
+                steps = good
         steps = [s for s in steps if lookup_tool(tools, s["skill"]) is not None]
+
+        # 3b) Intent coverage: every distinct ask must map to a call; re-plan only the gaps.
+        missing_intents = uncovered_intents(intents, steps)
+        if missing_intents:
+            focus_ranked = await self._retrieve(" ".join(missing_intents), pool, missing_intents)
+            slate = list(candidates)
+            for manifest in focus_ranked["skills"]:
+                if manifest not in slate:
+                    slate.append(manifest)
+            try:
+                extra_msg, extra_usage = await chat_complete(
+                    planner_messages(message, history, slate[:8], focus=missing_intents),
+                    max_tokens=500,
+                    response_format={"type": "json_object"},
+                    api_key=api_key,
+                    model=model,
+                )
+                breakdown["coverage"] = extra_usage
+                job["usage"] = merge_usage(job.get("usage"), extra_usage)
+                extra = parse_plan(message_text(extra_msg)) or {}
+                seen = {(s["skill"], json.dumps(s.get("args") or {}, sort_keys=True, default=str)) for s in steps}
+                added = []
+                for index, step in enumerate(extra.get("steps") or [], 1):
+                    old_id = step["id"]
+                    step["id"] = f"r{index}"
+                    step["after"] = [f"r{a[1:]}" if a.startswith("s") else a for a in step.get("after") or []]
+                    tool, issues = check_step(step, tools)
+                    key = (step["skill"], json.dumps(step.get("args") or {}, sort_keys=True, default=str))
+                    if tool is None or issues or key in seen:
+                        continue
+                    seen.add(key)
+                    step["_plan_id"] = old_id
+                    added.append(step)
+                steps.extend(added)
+                added_ids = {s.pop("_plan_id") for s in added}
+                extra_intents = extra.get("intents") or []
+                if extra_intents:
+                    covered = sum(1 for i in extra_intents if any(x in added_ids for x in i.get("steps") or []))
+                else:
+                    covered = len({s["skill"] for s in added})
+                remaining = missing_intents[covered:]
+                job["coverage_added"] = [s["skill"] for s in added]
+            except Exception as exc:
+                job["notes"].append(f"coverage re-plan failed: {type(exc).__name__}")
+                remaining = missing_intents
+            job["uncovered"] = remaining
+        job["intents"] = intents
         if not steps:
             text = (reply or "").strip()
+            if text and relevant:
+                job["notes"].append("Answered without a tool call although a matching skill was retrieved.")
+                job["answered_without_tools"] = True
             job["status"] = "succeeded" if text else "needs_input"
             job["answer"] = text or "I need a bit more detail to pick a workflow."
             job["question"] = None if text else job["answer"]
@@ -392,11 +605,9 @@ class ChatOrchestrator:
                     "definition": stored.definition.model_dump(exclude_none=True) if job["target"] == "extension" else None,
                 }
             )
-        if job["target"] == "extension" and any(c.get("after") for c in prepared):
-            dropped = [c["workflow_name"] for c in prepared if c.get("after")]
-            prepared = [c for c in prepared if not c.get("after")]
-            job["notes"].append("Dependent steps need a server run and were left out of the extension batch: " + ", ".join(dropped))
-        job["calls"] = prepared
+        job["all_calls"] = prepared
+        # The extension runs one dependency layer per round trip; the server keeps the rest.
+        job["calls"] = [c for c in prepared if not c.get("after")] if job["target"] == "extension" else prepared
         if prepared:
             definitions = {}
             for call in prepared:
@@ -653,11 +864,15 @@ class ChatOrchestrator:
             }
             for item in flagged
         ]
+        for ask in job.get("uncovered") or []:
+            job["flagged"].append({"id": None, "workflow": None, "inputs": {}, "verdict": "not_run", "reason": f"No skill call was planned for: {ask}"})
         fallback = _fallback_answer(job, compact)
         api_key = (job.get("llm_api_key") or "").strip() or env_api_key()
         if not api_key:
             job["answer"] = fallback
             job["status"] = _status_from_items(compact, job["flagged"])
+            if job["status"] == "succeeded" and job.get("uncovered"):
+                job["status"] = "partial"
             if job["status"] != "succeeded" and not job.get("error"):
                 job["error"] = (job["flagged"][0].get("reason") if job["flagged"] else "One or more workflow items failed.")
             await _emit(emit, {"type": "answer", "text": job["answer"], "job_id": job["id"]})
@@ -673,7 +888,7 @@ class ChatOrchestrator:
                             "Lead with a direct answer, then a compact markdown table when comparing or listing several items. "
                             "Use the user's language and format. "
                             "Cite which workflow and input each fact came from (for example football_fixtures / team=Arsenal). "
-                            "Clearly mention any item the output validator flagged as suspect or wrong, or that failed. "
+                            "Clearly mention any item the output validator flagged as suspect or wrong, that failed, or that was not run (verdict not_run). "
                             "Do not dump raw extracts. Keep the answer tight."
                         ),
                     },
@@ -698,6 +913,8 @@ class ChatOrchestrator:
             job["answer"] = fallback
             job["synthesis_error"] = type(exc).__name__
         job["status"] = _status_from_items(compact, job["flagged"])
+        if job["status"] == "succeeded" and job.get("uncovered"):
+            job["status"] = "partial"
         if job["status"] != "succeeded" and not job.get("error"):
             job["error"] = (job["flagged"][0].get("reason") if job["flagged"] else "One or more workflow items failed.")
         await _emit(emit, {"type": "answer", "text": job["answer"], "usage": job.get("usage"), "job_id": job["id"]})
@@ -721,6 +938,8 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "skills_considered": job.get("skills_considered") or [],
         "retrieval": {k: v for k, v in (job.get("retrieval") or {}).items() if k != "scores"} or None,
         "notes": job.get("notes") or [],
+        "intents": job.get("intents") or [],
+        "uncovered": job.get("uncovered") or [],
         "elapsed_ms": job.get("elapsed_ms"),
         "error": job.get("error"),
     }

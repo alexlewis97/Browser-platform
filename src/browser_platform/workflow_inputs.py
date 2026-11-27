@@ -140,7 +140,9 @@ def merge_input_schema(*groups: list[WorkflowInput] | None) -> list[WorkflowInpu
                 continue
             by_name[item.name] = current.model_copy(
                 update={
-                    "required": True if current.required or item.required or current.required is None else item.required,
+                    # An explicit declaration wins: a placeholder found in the steps must not turn an
+                    # input the author marked optional (with a default) back into a required one.
+                    "required": current.required if current.required is not None else (True if item.required is None else item.required),
                     "default": current.default if current.default is not None else item.default,
                     "label": getattr(current, "label", None) or getattr(item, "label", None),
                     "description": getattr(current, "description", None) or getattr(item, "description", None),

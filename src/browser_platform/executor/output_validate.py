@@ -261,7 +261,10 @@ async def _llm_verdict(
                 "content": (
                     f"{hint} Reply JSON only: {{\"verdict\":\"ok|suspect|wrong\",\"reason\":\"one line\"}}. "
                     "Use wrong when the result is clearly about something else, empty/error, or only navigation/footer text. "
-                    "Use suspect when you cannot be sure."
+                    "Use suspect when you cannot be sure the page is the requested one. "
+                    "This is live page data and may be newer than anything you know: never judge whether facts, "
+                    "players, scores, transfers or dates are true from your own knowledge; only check that the page "
+                    "is the one the inputs asked for."
                 ),
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)[:2200]},

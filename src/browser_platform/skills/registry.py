@@ -77,8 +77,8 @@ class SkillRegistry:
         if saved and saved.get("fingerprint") == fresh["fingerprint"] and saved.get("manifest_version") == fresh["manifest_version"]:
             # Slug can shift when duplicates appear or vanish; schema comes from the live definition.
             saved.update({"slug": fresh["slug"], "input_schema": fresh["input_schema"], "action_ending": fresh["action_ending"], "read_only": fresh["read_only"]})
-            if not saved.get("enriched"):
-                saved["inputs"] = fresh["inputs"]
+            saved["inputs"] = _merge_input_text(fresh["inputs"], saved.get("inputs") or [])
+            saved["structure"] = fresh.get("structure")
             return saved
         if saved and (saved.get("enriched") or saved.get("stale")):
             # Definition changed (e.g. explore added month): keep prose, refresh structure, re-enrich later.
@@ -154,9 +154,8 @@ class SkillRegistry:
             if not m.get("primary", True):
                 continue
             names = tuple(sorted((i.get("name") or "").lower() for i in m.get("inputs") or []))
-            sig = (m.get("entry") or "", names, bool(m.get("action_ending")))
-            if not m.get("entry") or not names:
-                sig = (m.get("slug"),)
+            # Same steps (full URLs incl. query, targets, goals) and same inputs => same capability.
+            sig = (m.get("structure") or m.get("slug"), names, bool(m.get("action_ending")))
             if sig not in groups:
                 order.append(sig)
             groups.setdefault(sig, []).append(m)
@@ -189,8 +188,10 @@ class SkillRegistry:
         if not key:
             return {"manifest": manifest, "usage": None}
         stored = self.store.get_workflow(manifest["id"])
+        site = manifest.get("site")
+        siblings = [m for m in self.manifests() if m.get("id") != manifest["id"] and site and m.get("site") == site and m.get("primary", True)]
         message, usage = await chat_complete(
-            [{"role": "system", "content": ENRICH_SYSTEM}, {"role": "user", "content": enrich_prompt(manifest, stored.definition)}],
+            [{"role": "system", "content": ENRICH_SYSTEM}, {"role": "user", "content": enrich_prompt(manifest, stored.definition, siblings)}],
             max_tokens=350,
             response_format={"type": "json_object"},
             api_key=key,
@@ -266,6 +267,14 @@ class SkillRegistry:
                 self._pending.discard(wf_id)
 
         loop.create_task(run())
+
+
+def _merge_input_text(fresh: list[dict[str, Any]], saved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Structure (type, required, default, enum) always comes from the live definition;
+    only the enriched wording is carried over."""
+
+    text = {i.get("name"): i.get("description") for i in saved if i.get("description")}
+    return [{**item, "description": text.get(item.get("name")) or item.get("description")} for item in fresh]
 
 
 def compact_cards(manifests: list[dict[str, Any]]) -> str:

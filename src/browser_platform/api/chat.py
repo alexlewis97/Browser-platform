@@ -140,6 +140,13 @@ async def validate_output_endpoint(payload: ValidateOutputRequest) -> dict[str, 
     )
 
 
+@router.get("/api/chat-jobs")
+async def recent_chat_jobs(request: Request, limit: int = 20) -> dict[str, Any]:
+    """Recent chat jobs (persisted, redacted): plan JSON, candidates, calls, items, tokens."""
+
+    return {"jobs": _orch(request).jobs.recent(max(1, min(limit, 100)))}
+
+
 @router.get("/api/chat/{job_id}")
 async def get_chat_job(job_id: str, request: Request) -> dict[str, Any]:
     job = _orch(request).jobs.get(job_id)

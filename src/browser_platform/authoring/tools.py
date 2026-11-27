@@ -48,9 +48,37 @@ def is_action_ending(definition: WorkflowDefinition | None) -> bool:
     if last is None:
         return False
     typ = (last.type or "").lower()
+    if typ in {"click", "select_change"} and _is_view_switch(definition, last):
+        return False
     if typ in {"click", "submit", "input", "select_change", "key_press", "fill"}:
         return True
     return is_submit_like(last)
+
+
+_PLACEHOLDER_ONLY = re.compile(r"^\s*\{[^{}]+\}\s*$")
+
+
+def _is_view_switch(definition: WorkflowDefinition, step) -> bool:
+    """A click/select whose target is purely an input placeholder ({tab}, {sort}) on a page
+    with no typing or submit steps only switches the view (explore-mode tabs, sorts, filters).
+    It reads, it does not change anything, so it needs no confirmation."""
+
+    target = str(getattr(step, "target_text", None) or getattr(step, "selectedText", None) or getattr(step, "value", None) or "")
+    if not _PLACEHOLDER_ONLY.match(target):
+        return False
+    # Only an optional choice with a default (a tab or sort order); a required pick such as
+    # {name} on an attendance list may well be the action itself.
+    name = target.strip()[1:-1].split("|")[0].strip()
+    item = next((i for i in definition.input_schema or [] if i.name == name), None)
+    if item is None or item.required is not False or item.default in (None, ""):
+        return False
+    for other in definition.steps or []:
+        kind = (other.type or "").lower()
+        if kind in {"input", "fill", "submit", "key_press"}:
+            return False
+        if kind == "click" and other is not step and not _PLACEHOLDER_ONLY.match(str(other.target_text or "")) and is_submit_like(other):
+            return False
+    return True
 
 
 def _json_type(item: WorkflowInput) -> str:
