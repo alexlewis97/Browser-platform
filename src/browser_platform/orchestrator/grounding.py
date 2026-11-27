@@ -60,8 +60,8 @@ def _numbers(text: str) -> set[str]:
     return {str(int(n)) if n.isdigit() and len(n) < 6 else n for n in re.findall(r"\d+", text)}
 
 
-def evidence_text(compact: list[dict[str, Any]], question: str) -> str:
-    parts = [question or ""]
+def evidence_text(compact: list[dict[str, Any]], question: str, extra: str = "") -> str:
+    parts = [question or "", extra or ""]
     for item in compact:
         parts.append(str(item.get("facts") or ""))
         for value in (item.get("inputs") or {}).values():
@@ -71,19 +71,47 @@ def evidence_text(compact: list[dict[str, Any]], question: str) -> str:
         parts.append(str(item.get("workflow") or ""))
     today = dates.today()
     parts.append(today.isoformat())
+    # Dates the user referred to relatively ("last Saturday") resolved by code, so an answer may name them.
+    for expr in dates.find_expressions(question or ""):
+        for grain in ("date", "month"):
+            value = dates.resolve(expr, grain)
+            if value:
+                parts.append(value)
+                try:
+                    from datetime import date as _date
+
+                    d = _date.fromisoformat(value if len(value) == 10 else value + "-01")
+                    parts.append(d.strftime("%A %d %B %Y"))
+                except Exception:
+                    pass
     return "\n".join(parts)
 
 
-def ungrounded_claims(answer: str, compact: list[dict[str, Any]], question: str) -> list[str]:
+_STOP = {"the", "and", "for", "with", "that", "this", "from", "was", "were", "are", "has", "have", "had", "you", "your"}
+
+
+def _significant(text: str) -> list[str]:
+    return [t for t in _norm(text).split() if len(t) >= 3 and t not in _STOP]
+
+
+def ungrounded_claims(answer: str, compact: list[dict[str, Any]], question: str, extra: str = "") -> list[str]:
+    """Numbers and quoted text in the answer that the evidence does not contain.
+
+    Deliberately narrow (low false positives): headings, bold labels and paraphrase are
+    formatting; a number or a quoted on-page message that is nowhere in the extracts is not."""
+
     if not answer:
         return []
-    evidence = evidence_text(compact, question)
-    ev_norm = _norm(evidence)
+    evidence = evidence_text(compact, question, extra)
+    ev_tokens = set(_norm(evidence).split())
     ev_numbers = _numbers(evidence)
     for word in re.findall(r"[A-Za-z]+", evidence.lower()):
         if word in _MONTHS:
             ev_numbers.add(str(_MONTHS[word]))
     text = _CITATION.sub(" ", answer)
+    # Identifiers (workflow/run ids, hashes) and URLs are references, not page facts.
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{8,}\b", " ", text, flags=re.I)
     problems: list[str] = []
     scores = {m.group(0) for m in _SCORE.finditer(text)}
     for number in sorted(_numbers(text)):
@@ -94,11 +122,12 @@ def ungrounded_claims(answer: str, compact: list[dict[str, Any]], question: str)
         if small and not in_score:
             continue  # counts ("3 fixtures") are synthesis, not page claims
         problems.append(number)
-    phrases = re.findall(r"[\"“”']([^\"“”'\n]{4,120})[\"“”']|\*\*([^*\n]{2,120})\*\*", text)
-    for quoted, bold in phrases:
-        phrase = (quoted or bold).strip()
-        if not phrase or not re.search(r"[A-Za-z\u0590-\u05FF]", phrase):
+    # Quoted text (double quotes only; apostrophes are not quotes) presented as what the page says.
+    for quoted in re.findall(r"[\"“”]([^\"“”\n]{4,200})[\"“”]", text):
+        words = _significant(quoted)
+        if len(words) < 2:
             continue
-        if _norm(phrase) and _norm(phrase) not in ev_norm:
-            problems.append(phrase)
+        present = sum(1 for w in words if w in ev_tokens)
+        if present / len(words) < 0.6:
+            problems.append(quoted.strip())
     return problems

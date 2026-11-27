@@ -265,5 +265,75 @@ def test_grounding_flags_invented_numbers_and_quotes():
     compact = [{"facts": "Team A 2-0 Team B. Kick-off 15:00.", "inputs": {"team": "Team A"}}]
     assert ungrounded_claims("Team A won 2-0 (15:00).", compact, "how did Team A do?") == []
     assert "3" in ungrounded_claims("Team A won 3-1.", compact, "how did Team A do?")
-    assert ungrounded_claims('The page says "You have done it".', compact, "q")
+    assert ungrounded_claims('The page says "You have done a double click".', compact, "q")
+    assert ungrounded_claims("**Comparison of Top Scorers** Team A won 2-0.", compact, "q") == []
     assert ungrounded_claims("Team A played 2 games.", compact, "q") == []
+
+
+def test_stated_in_user_words():
+    from browser_platform.orchestrator.normalize_inputs import stated_in
+
+    assert stated_in("Liverpool", "Liverpool's next match")
+    assert stated_in("Premier League", "PL top scorer?")
+    assert not stated_in("England", "Yesterday's cricket results?")
+    assert not stated_in("Real Madrid", "La Liga results last Saturday")
+
+
+def test_grain_inferred_from_structured_evidence_only():
+    from browser_platform.workflow_inputs import input_grain
+
+    d = _def([WorkflowInput(name="when", examples=["2026-11-26", "2026-11-27"])])
+    assert input_grain(d.input_schema[0], d) == "date"
+    d2 = _def([WorkflowInput(name="date")])
+    assert input_grain(d2.input_schema[0], d2) == "date"
+    d3 = _def([WorkflowInput(name="team", examples=["Somewhere FC"])])
+    assert input_grain(d3.input_schema[0], d3) is None
+
+
+def test_grounding_ignores_labels_and_apostrophes():
+    compact = [{"facts": "England win by 8 wickets", "inputs": {}}]
+    answer = "England's cricket result was a Men's match. **Winner:** England. **Data Availability** ok."
+    assert ungrounded_claims(answer, compact, "q") == []
+
+
+@pytest.mark.asyncio
+async def test_unstated_only_honoured_for_checked_values():
+    import json as _json
+
+    from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
+
+    d = _def([WorkflowInput(name="competition", required=True, description="competition slug", examples=["premier-league"])])
+
+    async def fake_complete(messages, **kw):
+        # A model that (wrongly) says everything is unstated.
+        payload = _json.loads(messages[1]["content"])
+        rows = [{"call": i["call"], "param": i["param"], "canonical": i["value"], "from": ""} for i in payload["inputs"]]
+        return {"content": _json.dumps({"values": rows})}, {"tokens_in": 1, "tokens_out": 1}
+
+    named = [{"id": "c1", "workflow_id": "w", "arguments": {"competition": "scottish-premiership"}}]
+    await normalize_prepared_calls(named, definitions={"w": d}, complete=fake_complete, user_words="Scottish Premiership table")
+    assert not named[0].get("unstated")
+    guessed = [{"id": "c1", "workflow_id": "w", "arguments": {"competition": "spanish-la-liga"}}]
+    await normalize_prepared_calls(guessed, definitions={"w": d}, complete=fake_complete, user_words="who won yesterday?")
+    assert guessed[0].get("unstated")
+
+
+def test_grounding_allows_code_resolved_relative_dates():
+    compact = [{"facts": "Team A 1-0 Team B", "inputs": {}}]
+    day = dates.resolve("last Saturday", "date")
+    answer = f"On {day} Team A won 1-0."
+    assert ungrounded_claims(answer, compact, "results last Saturday") == []
+
+
+def test_unstated_span_is_verified_against_user_words():
+    from browser_platform.orchestrator.normalize_inputs import _not_from_user
+
+    assert _not_from_user({"from": "Spurs"}, "Which of Arsenal, Chelsea and Spurs plays first?") is False
+    assert _not_from_user({"from": "England"}, "Yesterday's cricket results?") is True
+    assert _not_from_user({"from": ""}, "anything") is True
+
+
+def test_grounding_ignores_ids_and_urls():
+    compact = [{"facts": "Name:Alex", "inputs": {}}]
+    answer = "Done (workflow_id: 481ad4c93437446887f6f776d086827c, https://example.test/page/2024)."
+    assert ungrounded_claims(answer, compact, "q") == []

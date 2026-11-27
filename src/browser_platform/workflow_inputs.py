@@ -178,6 +178,18 @@ def input_grain(item: WorkflowInput | None, definition: WorkflowDefinition | Non
                 found = _FILTER_GRAIN.get(match.group(1).lower())
                 if found:
                     return found
+    # Structured evidence only: the input's name, or examples/default that are all ISO dates.
+    name = (item.name or "").strip().lower()
+    if name in {"date", "day", "match_date", "game_date", "event_date"}:
+        return "date"
+    samples = [str(v).strip() for v in (getattr(item, "examples", None) or []) if str(v).strip()]
+    if item.default not in (None, ""):
+        samples.append(str(item.default).strip())
+    if samples:
+        if all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", v) for v in samples):
+            return "date"
+        if all(re.fullmatch(r"\d{4}-\d{2}", v) for v in samples):
+            return "month"
     return None
 
 

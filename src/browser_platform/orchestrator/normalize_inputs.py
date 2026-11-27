@@ -197,6 +197,9 @@ async def llm_normalize_values(
     pending = [item for item in items if str(item.get("value") or "").strip()]
     if not pending:
         return {}, usage
+    user_words = ""
+    if any(item.get("check") for item in pending):
+        user_words = str(pending[0].get("_user_words") or "")[:1200]
     if complete is None and not env_api_key():
         return {}, usage
     payload = []
@@ -209,6 +212,7 @@ async def llm_normalize_values(
                 "description": item.get("description") or item.get("label") or "",
                 "examples": item.get("examples") or [],
                 "urls": item.get("urls") or [],
+                **({"check": True} if item.get("check") else {}),
             }
         )
     system = (
@@ -221,7 +225,12 @@ async def llm_normalize_values(
         "Do not invent a different entity. "
         "If the value is clearly a different kind of thing than the parameter describes "
         "(for example a league or competition given for a club parameter, or a person for a place), "
-        'add "fits":false and "kind":"<what the value is>". Reply JSON only: '
+        'add "fits":false and "kind":"<what the value is>". '
+        'For items with "check":true, also add "from": the exact words copied from user_words that name or '
+        "refer to that value (a nickname, abbreviation or translation counts, e.g. \"Spurs\"), or \"\" when "
+        "nothing in user_words refers to it (a value picked as an example, or to stand in for a whole league "
+        "or group). "
+        'Reply JSON only: '
         '{"values":[{"call":"c1","param":"team","canonical":"Official Name","slug":"official-name","fits":true}]}.'
     )
     fn = complete or chat_complete
@@ -229,7 +238,12 @@ async def llm_normalize_values(
         message, usage = await fn(
             [
                 {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps({"inputs": payload}, ensure_ascii=False)[:3000]},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"inputs": payload, **({"user_words": user_words} if user_words else {})}, ensure_ascii=False
+                    )[:4200],
+                },
             ],
             max_tokens=300,
             response_format={"type": "json_object"},
@@ -247,6 +261,7 @@ async def llm_normalize_values(
     rows = data.get("values") if isinstance(data, dict) else None
     if not isinstance(rows, list):
         rows = [data] if isinstance(data, dict) and data.get("canonical") else []
+    checked = {(str(item.get("call") or ""), str(item.get("name") or "")) for item in pending if item.get("check")}
     mapped: dict[tuple[str, str], dict[str, str]] = {}
     for row in rows:
         if not isinstance(row, dict):
@@ -260,6 +275,9 @@ async def llm_normalize_values(
         if row.get("fits") is False:
             mapped[(call_id, param)] = {"canonical": "", "slug": "", "fits": False, "kind": str(row.get("kind") or "").strip()[:60]}
             continue
+        if (call_id, param) in checked and _not_from_user(row, user_words):
+            mapped[(call_id, param)] = {"canonical": "", "slug": "", "stated": False}
+            continue
         if not canonical:
             continue
         mapped[(call_id, param)] = {"canonical": canonical, "slug": slug or path_slug(canonical)}
@@ -270,13 +288,59 @@ def apply_local_canonical(value: str, hints: dict[str, Any]) -> str | None:
     return match_canonical_example(value, hints.get("examples") or [])
 
 
+def _not_from_user(row: dict[str, Any], user_words: str) -> bool:
+    """True only when the model gave no span, or a span that is not in the user's words.
+
+    The span is verified by code, so a model cannot vouch for a value the user never wrote."""
+
+    if "from" not in row:
+        return row.get("stated") is False
+    span = " ".join(str(row.get("from") or "").lower().split())
+    if not span:
+        return True
+    return span not in " ".join((user_words or "").lower().split())
+
+
+_GENERIC_TOKENS = {"the", "and", "of", "fc", "cf", "afc", "club", "team", "city", "united", "town", "sport", "league", "cup"}
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", (text or "").lower())
+
+
+def stated_in(value: str, context: str) -> bool:
+    """Cheap check that an entity value comes from the user's words (or an obvious short form)."""
+
+    if not context:
+        return True
+    ctx = " ".join(_tokens(context))
+    val_tokens = _tokens(value)
+    if not val_tokens:
+        return True
+    if " ".join(val_tokens) in ctx:
+        return True
+    ctx_tokens = set(ctx.split())
+    if any(len(t) >= 3 and t not in _GENERIC_TOKENS and t in ctx_tokens for t in val_tokens):
+        return True
+    initials = "".join(t[0] for t in val_tokens if t not in {"the", "of", "and"})
+    if len(initials) >= 2 and initials in ctx_tokens:
+        return True
+    return False
+
+
 async def normalize_prepared_calls(
     calls: list[dict[str, Any]],
     *,
     definitions: dict[str, WorkflowDefinition] | None = None,
     complete: CompleteFn | None = None,
+    user_words: str | None = None,
 ) -> dict[str, Any]:
-    """Rewrite entity arguments in place. Returns LLM usage."""
+    """Rewrite entity arguments in place. Returns LLM usage.
+
+    With ``user_words`` (the request plus recent turns), an entity value that the user never
+    named is double-checked in the same normaliser call; if the model confirms it was not
+    stated (the planner picked an example club for a league question, say), the call gets
+    ``unstated`` and is not run with an invented value."""
 
     pending: list[dict[str, Any]] = []
     for call in calls:
@@ -292,14 +356,21 @@ async def normalize_prepared_calls(
             if not text or not is_entity_parameter(name, definition):
                 continue
             hints = parameter_hints(definition, name)
+            check = bool(user_words) and not stated_in(text, user_words or "")
             local = apply_local_canonical(text, hints)
             if local and local != text:
                 args[name] = _choose_form(local, path_slug(local), hints.get("examples") or [])
+                if check:
+                    pending.append({"call": call.get("id"), "name": name, "value": text, **hints, "check": True,
+                                    "check_only": True, "_user_words": user_words, "workflow_id": call.get("workflow_id")})
                 continue
             if local == text or (local and path_slug(local) == path_slug(text) and local.lower() == text.lower()):
                 # Already matches an example spelling, aside from case — keep official example.
                 if local and local != text:
                     args[name] = local
+                if check:
+                    pending.append({"call": call.get("id"), "name": name, "value": text, **hints, "check": True,
+                                    "check_only": True, "_user_words": user_words, "workflow_id": call.get("workflow_id")})
                 continue
             pending.append(
                 {
@@ -307,6 +378,7 @@ async def normalize_prepared_calls(
                     "name": name,
                     "value": text,
                     **hints,
+                    **({"check": True, "_user_words": user_words} if check else {}),
                     "workflow_id": call.get("workflow_id"),
                 }
             )
@@ -321,6 +393,12 @@ async def normalize_prepared_calls(
             text = "" if value is None else str(value).strip()
             row = mapped.get((str(call.get("id") or ""), name))
             if not row:
+                continue
+            if row.get("stated") is False:
+                hints = parameter_hints(definition, name)
+                call.setdefault("unstated", []).append(
+                    {"param": name, "value": text, "expects": hints.get("description") or hints.get("label") or name}
+                )
                 continue
             if row.get("fits") is False:
                 hints = parameter_hints(definition, name)

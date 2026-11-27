@@ -423,7 +423,7 @@ class ChatOrchestrator:
             await self.synthesize(job, emit=emit)
             job["elapsed_ms"] = round((_now() - started) * 1000, 1)
             return job
-        if needs in {"needs_input", "needs_confirmation"}:
+        if needs in {"needs_input", "needs_confirmation"} or job.get("declined"):
             job["elapsed_ms"] = round((_now() - started) * 1000, 1)
             return job
         if job.get("target") == "extension":
@@ -667,7 +667,12 @@ class ChatOrchestrator:
                     definitions[stored.id] = stored.definition
             ready = [c for c in prepared if not any(is_ref(v) for v in (c.get("arguments") or {}).values())]
             try:
-                norm_usage = await normalize_prepared_calls(ready, definitions=definitions)
+                user_words = " ".join(
+                    [message]
+                    + [str(t.get("content") or "")[:300] for t in (history or [])[-4:] if t.get("role") in {"user", "assistant"}]
+                    + [str((job.get("workspace") or {}).get("instructions") or "")[:300]]
+                )
+                norm_usage = await normalize_prepared_calls(ready, definitions=definitions, user_words=user_words)
                 breakdown["normalize"] = norm_usage
                 job["usage"] = merge_usage(job.get("usage"), norm_usage)
             except Exception:
@@ -676,19 +681,26 @@ class ChatOrchestrator:
             resolve_prepared_defaults(ready, definitions)
             # Entity-kind mismatch (a competition sent to a club input): never call the tool with
             # the wrong kind of value; the intent is reported as not covered instead.
-            dropped = [c for c in prepared if c.get("kind_mismatch")]
+            dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated")]
             if dropped:
                 step_intent = {sid: i.get("ask") for i in intents for sid in i.get("steps") or []}
                 uncovered = list(job.get("uncovered") or [])
                 for call in dropped:
-                    mm = call["kind_mismatch"][0]
                     ask = step_intent.get(call.get("_plan_step")) or message
-                    reason = (
-                        f"{ask} (not covered: '{mm['value']}' is {mm['value_kind'] or 'a different kind of thing'}, "
-                        f"but {call['tool']}.{mm['param']} expects {mm['expects']})"
-                    )
+                    if call.get("kind_mismatch"):
+                        mm = call["kind_mismatch"][0]
+                        reason = (
+                            f"{ask} (not covered: '{mm['value']}' is {mm['value_kind'] or 'a different kind of thing'}, "
+                            f"but {call['tool']}.{mm['param']} expects {mm['expects']})"
+                        )
+                    else:
+                        mm = call["unstated"][0]
+                        reason = (
+                            f"{ask} (not covered: {call['tool']} needs a specific {mm['param']} ({mm['expects']}) "
+                            f"and the request did not name one; '{mm['value']}' would have been a guess)"
+                        )
                     uncovered.append(reason)
-                    job["notes"].append("kind mismatch: " + reason)
+                    job["notes"].append(("kind mismatch: " if call.get("kind_mismatch") else "unstated value: ") + reason)
                 job["uncovered"] = uncovered
                 gone = {c["id"] for c in dropped}
                 prepared = [c for c in prepared if c["id"] not in gone and not (set(c.get("after") or []) & gone)]
@@ -995,8 +1007,7 @@ class ChatOrchestrator:
             await _emit(emit, {"type": "answer", "text": job["answer"], "job_id": job["id"]})
             return job
         try:
-            message, usage = await chat_complete(
-                [
+            synth_messages = [
                     {
                         "role": "system",
                         "content": (
@@ -1020,7 +1031,9 @@ class ChatOrchestrator:
                             ensure_ascii=False,
                         )[:6000],
                     },
-                ],
+                ]
+            message, usage = await chat_complete(
+                synth_messages,
                 max_tokens=500,
                 api_key=api_key,
                 model=(job.get("llm_model") or None),
@@ -1029,8 +1042,35 @@ class ChatOrchestrator:
             job["synthesis_usage"] = usage
             job.setdefault("token_breakdown", {})["synthesis"] = usage
             text = message_text(message)
-            problems = ungrounded_claims(text, compact, str(job.get("message") or ""))
+            full_facts = "\n".join(str(i.get("facts") or "") for i in job.get("items") or [])
+            problems = ungrounded_claims(text, compact, str(job.get("message") or ""), full_facts)
+            if problems and text:
+                # One rewrite, told exactly what was unsupported; then re-check.
+                try:
+                    retry_msg, retry_usage = await chat_complete(
+                        [
+                            synth_messages[0],
+                            synth_messages[1],
+                            {"role": "assistant", "content": text[:1500]},
+                            {
+                                "role": "user",
+                                "content": "These are not in results[].facts: " + "; ".join(problems[:8])
+                                + ". Rewrite the answer using only facts that appear in results[].facts.",
+                            },
+                        ],
+                        max_tokens=500,
+                        api_key=api_key,
+                        model=(job.get("llm_model") or None),
+                    )
+                    job["usage"] = merge_usage(job.get("usage"), retry_usage)
+                    job["token_breakdown"]["synthesis_retry"] = retry_usage
+                    retry_text = message_text(retry_msg)
+                    if retry_text and not ungrounded_claims(retry_text, compact, str(job.get("message") or ""), full_facts):
+                        text, problems = retry_text, []
+                except Exception:
+                    pass
             if problems:
+                logger.warning("grounding rejected draft for job %s: %s | draft=%r", job.get("id"), problems[:10], (text or "")[:800])
                 job["grounding"] = {"ok": False, "ungrounded": problems[:10]}
                 job.setdefault("notes", []).append(
                     "The summary was replaced with the raw results: it stated things not found in the extracts ("
@@ -1073,6 +1113,7 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "workspace": {k: v for k, v in (job.get("workspace") or {}).items() if k in {"id", "slug", "name"}} or None,
         "uncovered": job.get("uncovered") or [],
         "grounding": job.get("grounding"),
+        "declined": bool(job.get("declined")),
         "needs_repair": any(bool(item.get("needs_repair")) for item in job.get("items") or []),
         "elapsed_ms": job.get("elapsed_ms"),
         "error": job.get("error"),
