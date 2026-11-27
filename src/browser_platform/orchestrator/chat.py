@@ -20,6 +20,19 @@ from browser_platform.executor.output_validate import collect_sample, is_nav_foo
 from browser_platform.llm.openrouter import chat_complete, env_api_key, merge_usage, message_text
 from browser_platform.models.workflow import StoredWorkflow
 from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
+from browser_platform.orchestrator.planner import (
+    TOP_K,
+    check_step,
+    is_ref,
+    parse_plan,
+    planner_messages,
+    repair_calls,
+    resolve_refs,
+    retrieval_query,
+    waves,
+)
+from browser_platform.skills.registry import SkillRegistry
+from browser_platform.skills.retrieve import rank_skills
 from browser_platform.store.file_store import FileStore
 from browser_platform.workflow_inputs import (
     inputs_for_output_validation,
@@ -138,6 +151,10 @@ class ChatOrchestrator:
         self.runner = runner
         self.jobs = jobs or ChatJobs()
         self.concurrency = concurrency
+        self.skills = SkillRegistry(store)
+        hooks = getattr(store, "on_change", None)
+        if isinstance(hooks, list):
+            hooks.append(self.skills.on_store_change)
 
     def catalog(self) -> list[dict[str, Any]]:
         return tools_from_workflows(self.store.list_workflows())
@@ -239,7 +256,7 @@ class ChatOrchestrator:
         llm_api_key: str = "",
         llm_model: str = "",
     ) -> dict[str, Any]:
-        tools = self.catalog()
+        tools, manifests = self.skills.catalog()
         job: dict[str, Any] = {
             "id": uuid.uuid4().hex,
             "status": "planning",
@@ -249,9 +266,12 @@ class ChatOrchestrator:
             "items": [],
             "answer": None,
             "usage": {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False},
+            "token_breakdown": {},
+            "skills_considered": [],
             "question": None,
             "confirm_reason": None,
             "flagged": [],
+            "notes": [],
             "llm_api_key": (llm_api_key or "").strip(),
             "llm_model": (llm_model or "").strip(),
         }
@@ -268,74 +288,114 @@ class ChatOrchestrator:
             job["error"] = "Chat planning needs an OpenRouter key (send llm.api_key or set OPENROUTER_API_KEY)."
             await _emit(emit, {"type": "error", "error": job["error"]})
             return job
-        tool_lines = []
-        for item in tools:
-            fn = item["function"]
-            req = ", ".join((fn.get("parameters") or {}).get("required") or []) or "none"
-            tool_lines.append(f"- {fn['name']} (workflow {item.get('workflow_name')}; required: {req})")
-        system = (
-            "You are a workflow tool router. Call one or more saved browser workflows to answer the user. "
-            "Fill required arguments from values the user already stated (teams, names, terms, dates). Only ask a short question when a required input is not present in the user's message. Never invent values the user did not state. "
-            "Optional inputs such as month must be omitted unless the user named a specific value. Never send placeholders such as current, now, default, or auto. "
-            "When the same workflow should run for several values (a list of teams, terms, dates), emit one function call per value, in parallel. "
-            "Do not pack several values into one argument. Prefer the workflow that matches the request. "
-            "Do not answer from memory when a tool can fetch the live result."
-        )
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        # Do not re-append the current user turn if the client already put it in history.
-        for turn in history[-8:]:
-            role = turn.get("role")
-            content = turn.get("content")
-            if role in {"user", "assistant"} and content and str(content).strip() != message.strip():
-                messages.append({"role": role, "content": str(content)[:1500]})
-        messages.append({"role": "user", "content": message[:4000]})
+        model = job["llm_model"] or None
+        breakdown = job["token_breakdown"]
+
+        # 1) Retrieve a short slate of skills; never the whole library.
+        pool = self.skills.selection_pool(manifests) or manifests
+        ranked = await rank_skills(retrieval_query(message, history), pool, k=TOP_K, embedder=self.skills.embedder)
+        candidates = ranked["skills"]
+        job["skills_considered"] = [m.get("slug") for m in candidates]
+        for manifest in candidates:
+            if not manifest.get("enriched") or manifest.get("stale"):
+                self.skills.schedule_enrich(manifest["id"])
+        job["retrieval"] = {"method": ranked["method"], "embed_tokens": ranked["embed_tokens"], "library": len(manifests), "scores": ranked["scores"]}
+        await _emit(emit, {"type": "skills", "skills": job["skills_considered"], "method": ranked["method"], "job_id": job["id"]})
+
+        # 2) Plan over compact cards.
         assistant, usage = await chat_complete(
-            messages,
-            tools=openai_tools(tools),
-            max_tokens=800,
+            planner_messages(message, history, candidates),
+            max_tokens=600,
+            response_format={"type": "json_object"},
             api_key=api_key,
-            model=job["llm_model"] or None,
+            model=model,
         )
-        job["usage"] = merge_usage(job.get("usage"), usage)
+        breakdown["plan"] = usage
         job["plan_usage"] = usage
+        job["usage"] = merge_usage(job.get("usage"), usage)
         content = message_text(assistant)
-        calls = _parse_tool_calls(assistant, tools)
-        if not calls:
-            job["status"] = "succeeded" if content else "failed"
-            job["answer"] = content or "I need a bit more detail to pick a workflow."
-            job["question"] = None if content else job["answer"]
-            if not content:
-                job["status"] = "needs_input"
+        plan = parse_plan(content)
+        steps: list[dict[str, Any]] = list((plan or {}).get("steps") or [])
+        reply = (plan or {}).get("answer")
+        if plan is None:
+            native = _parse_tool_calls(assistant, tools)
+            steps = [{"id": f"s{i}", "skill": c["name"], "args": c.get("arguments") or {}, "after": []} for i, c in enumerate(native, 1)]
+            reply = None if steps else content
+
+        # 3) Check arguments against the full schemas of only the chosen skills; repair if needed.
+        problems: list[str] = []
+        chosen: list[dict[str, Any]] = []
+        for step in steps:
+            tool, issues = check_step(step, tools)
+            problems.extend(issues)
+            if tool is not None and tool not in chosen:
+                chosen.append(tool)
+        if problems or (plan is None and not steps):
+            slate = chosen or [lookup_tool(tools, m.get("slug")) for m in candidates[:3]]
+            slate = [t for t in slate if t][:4]
+            if slate:
+                try:
+                    repaired, rusage, rtext = await repair_calls(
+                        message, history, slate, api_key=api_key, model=model, parse_tool_calls=_parse_tool_calls
+                    )
+                    breakdown["repair"] = rusage
+                    job["usage"] = merge_usage(job.get("usage"), rusage)
+                    if repaired:
+                        steps = repaired
+                        for step in steps:
+                            check_step(step, tools)
+                        problems = []
+                    elif rtext and not steps:
+                        reply = rtext
+                except Exception as exc:
+                    job["notes"].append(f"repair pass failed: {type(exc).__name__}")
+        steps = [s for s in steps if lookup_tool(tools, s["skill"]) is not None]
+        if not steps:
+            text = (reply or "").strip()
+            job["status"] = "succeeded" if text else "needs_input"
+            job["answer"] = text or "I need a bit more detail to pick a workflow."
+            job["question"] = None if text else job["answer"]
             await _emit(emit, {"type": "message", "text": job["answer"], "job_id": job["id"]})
             return job
+
+        # 4) Bind to calls (c1..cn), keep dependencies.
+        id_map = {s["id"]: f"c{i}" for i, s in enumerate(steps, 1)}
         missing: list[str] = []
         prepared: list[dict[str, Any]] = []
         action = False
-        for index, call in enumerate(calls, 1):
-            tool = lookup_tool(tools, call["name"])
+        for index, step in enumerate(steps, 1):
+            tool = lookup_tool(tools, step["skill"])
             stored = self.stored_for(tool)
             if stored is None:
-                missing.append(f"Unknown workflow tool '{call['name']}'.")
+                missing.append(f"Unknown workflow tool '{step['skill']}'.")
                 continue
-            args = call.get("arguments") or {}
+            args = dict(step.get("args") or {})
+            for key, value in list(args.items()):
+                if is_ref(value):
+                    args[key] = {"from": id_map.get(str(value.get("from")), str(value.get("from"))), "pick": value.get("pick") or key}
+            after = [id_map[a] for a in step.get("after") or [] if a in id_map]
+            after += [v["from"] for v in args.values() if is_ref(v) and v["from"] not in after]
             absent = _missing(stored, args)
             if absent:
-                missing.append(
-                    f"{stored.definition.name} is missing required input(s): {', '.join(absent)}."
-                )
+                missing.append(f"{stored.definition.name} is missing required input(s): {', '.join(absent)}.")
             ends = is_action_ending(stored.definition)
             action = action or ends
             prepared.append(
                 {
                     "id": f"c{index}",
-                    "tool": call["name"],
+                    "tool": tool["function"]["name"],
                     "workflow_id": stored.id,
                     "workflow_name": stored.definition.name,
                     "arguments": args,
+                    "after": after,
                     "action_ending": ends,
                     "definition": stored.definition.model_dump(exclude_none=True) if job["target"] == "extension" else None,
                 }
             )
+        if job["target"] == "extension" and any(c.get("after") for c in prepared):
+            dropped = [c["workflow_name"] for c in prepared if c.get("after")]
+            prepared = [c for c in prepared if not c.get("after")]
+            job["notes"].append("Dependent steps need a server run and were left out of the extension batch: " + ", ".join(dropped))
         job["calls"] = prepared
         if prepared:
             definitions = {}
@@ -346,12 +406,14 @@ class ChatOrchestrator:
                     stored = None
                 if stored is not None:
                     definitions[stored.id] = stored.definition
+            ready = [c for c in prepared if not any(is_ref(v) for v in (c.get("arguments") or {}).values())]
             try:
-                norm_usage = await normalize_prepared_calls(prepared, definitions=definitions)
+                norm_usage = await normalize_prepared_calls(ready, definitions=definitions)
+                breakdown["normalize"] = norm_usage
                 job["usage"] = merge_usage(job.get("usage"), norm_usage)
             except Exception:
                 pass
-            resolve_prepared_defaults(prepared, definitions)
+            resolve_prepared_defaults(ready, definitions)
         if missing:
             job["status"] = "needs_input"
             job["question"] = " ".join(missing) + " Please provide the missing value(s)."
@@ -380,18 +442,47 @@ class ChatOrchestrator:
         return job
 
     async def execute(self, job: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
+        """Run the plan in dependency layers; calls inside a layer fan out in parallel."""
+
         job["status"] = "running"
         await _emit(emit, {"type": "running", "job_id": job["id"], "total": len(job.get("calls") or [])})
         sem = asyncio.Semaphore(self.concurrency)
-        items: list[dict[str, Any] | None] = [None] * len(job["calls"])
+        results: dict[str, dict[str, Any]] = {}
+        api_key = (job.get("llm_api_key") or "").strip() or env_api_key()
 
-        async def _one(index: int, call: dict[str, Any]) -> None:
+        async def _one(call: dict[str, Any]) -> None:
             async with sem:
-                item = await self._run_call(job, call, emit=emit)
-                items[index] = item
+                failed = [a for a in call.get("after") or [] if a in results and results[a].get("status") != "succeeded"]
+                if failed:
+                    item = {
+                        "id": call["id"],
+                        "tool": call["tool"],
+                        "workflow_id": call["workflow_id"],
+                        "workflow_name": call["workflow_name"],
+                        "inputs": {k: v for k, v in (call.get("arguments") or {}).items() if not is_ref(v)},
+                        "status": "failed",
+                        "error": f"Skipped because {', '.join(failed)} did not succeed.",
+                        "action_ending": bool(call.get("action_ending")),
+                    }
+                    job.setdefault("flagged", []).append({"id": item["id"], "workflow": item["workflow_name"], "inputs": item["inputs"], "verdict": "failed", "reason": item["error"]})
+                    await _emit(emit, {"type": "item_done", "item": public_item(item), "job_id": job["id"]})
+                    results[call["id"]] = item
+                    return
+                if any(is_ref(v) for v in (call.get("arguments") or {}).values()):
+                    try:
+                        args, usage = await resolve_refs(call, results, api_key=api_key, model=job.get("llm_model") or None)
+                        job["usage"] = merge_usage(job.get("usage"), usage)
+                        job["token_breakdown"]["refs"] = merge_usage((job.get("token_breakdown") or {}).get("refs"), usage)
+                    except Exception:
+                        args = {k: v for k, v in (call.get("arguments") or {}).items() if not is_ref(v)}
+                    call["arguments"] = args
+                    call["raw_arguments"] = dict(args)
+                    call["normalized"] = False
+                results[call["id"]] = await self._run_call(job, call, emit=emit)
 
-        await asyncio.gather(*[_one(i, call) for i, call in enumerate(job["calls"])], return_exceptions=False)
-        job["items"] = [item for item in items if item is not None]
+        for layer in waves(job.get("calls") or []):
+            await asyncio.gather(*[_one(call) for call in layer], return_exceptions=False)
+        job["items"] = [results[c["id"]] for c in job.get("calls") or [] if c["id"] in results]
         return job
 
     async def _run_call(self, job: dict[str, Any], call: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
@@ -462,6 +553,8 @@ class ChatOrchestrator:
                     item["validation"] = run.get("validation")
                 usage = _run_validation_usage(item.get("validation"))
                 job["usage"] = merge_usage(job.get("usage"), usage)
+                tb = job.setdefault("token_breakdown", {})
+                tb["validation"] = merge_usage(tb.get("validation"), usage)
                 sample = collect_sample(item.get("outputs"))
                 chrome_only = is_nav_footer_only(sample, action_ending=bool(item.get("action_ending")))
                 if chrome_only:
@@ -598,6 +691,7 @@ class ChatOrchestrator:
             )
             job["usage"] = merge_usage(job.get("usage"), usage)
             job["synthesis_usage"] = usage
+            job.setdefault("token_breakdown", {})["synthesis"] = usage
             text = message_text(message)
             job["answer"] = text or fallback
         except Exception as exc:
@@ -623,6 +717,10 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "confirm_reason": job.get("confirm_reason"),
         "flagged": job.get("flagged") or [],
         "usage": job.get("usage"),
+        "token_breakdown": job.get("token_breakdown") or {},
+        "skills_considered": job.get("skills_considered") or [],
+        "retrieval": {k: v for k, v in (job.get("retrieval") or {}).items() if k != "scores"} or None,
+        "notes": job.get("notes") or [],
         "elapsed_ms": job.get("elapsed_ms"),
         "error": job.get("error"),
     }
@@ -639,6 +737,7 @@ def public_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "arguments": call.get("arguments") or {},
             "raw_arguments": call.get("raw_arguments") or {},
             "action_ending": bool(call.get("action_ending")),
+            "after": call.get("after") or [],
         }
         if call.get("definition") is not None:
             item["definition"] = call["definition"]

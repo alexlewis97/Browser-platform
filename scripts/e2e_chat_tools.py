@@ -246,6 +246,9 @@ def main() -> None:
                 ],
                 "flagged": job.get("flagged") or [],
                 "usage": usage_of(job),
+                "token_breakdown": {k: (v or {}).get("tokens_in") for k, v in (job.get("token_breakdown") or {}).items()},
+                "skills_considered": job.get("skills_considered") or [],
+                "retrieval": job.get("retrieval"),
                 "elapsed_ms": job.get("elapsed_ms") or elapsed,
                 "error": job.get("error"),
             }

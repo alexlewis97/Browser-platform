@@ -14,6 +14,8 @@ from browser_platform.authoring.tools import mcp_tools, tools_from_workflows
 from browser_platform.executor.output_validate import validate_output
 from browser_platform.models.workflow import WorkflowDefinition
 from browser_platform.orchestrator.chat import ChatJobs, ChatOrchestrator, public_job
+from browser_platform.skills.manifest import card
+from browser_platform.skills.registry import mcp_tool
 
 router = APIRouter()
 
@@ -68,6 +70,48 @@ def _orch(request: Request) -> ChatOrchestrator:
 async def list_tools(request: Request) -> dict[str, Any]:
     tools = tools_from_workflows(request.app.state.store.list_workflows())
     return {"tools": tools, "openai": [{"type": "function", "function": t["function"]} for t in tools], "mcp": mcp_tools(tools)}
+
+
+@router.get("/api/skills")
+async def list_skills(request: Request, full: bool = False, include_duplicates: bool = False) -> dict[str, Any]:
+    """Skill manifests (one per workflow). Compact by default; full=true adds schemas."""
+
+    manifests = _orch(request).skills.manifests()
+    if not include_duplicates:
+        manifests = [m for m in manifests if m.get("primary", True)]
+    if full:
+        items = manifests
+    else:
+        keys = ("id", "slug", "name", "summary", "site", "tags", "action_ending", "enriched", "primary")
+        items = [{**{k: m.get(k) for k in keys}, "card": card(m)} for m in manifests]
+    return {"count": len(items), "skills": items}
+
+
+@router.get("/api/skills/search")
+async def search_skills(request: Request, q: str = "", k: int = 6) -> dict[str, Any]:
+    result = await _orch(request).skills.search(q, k=max(1, min(k, 20)))
+    return {
+        "query": q,
+        "method": result["method"],
+        "embed_tokens": result["embed_tokens"],
+        "scores": result["scores"],
+        "skills": [{"id": m.get("id"), "slug": m.get("slug"), "card": card(m)} for m in result["skills"]],
+    }
+
+
+@router.post("/api/skills/backfill")
+async def backfill_skills(request: Request, force: bool = False) -> dict[str, Any]:
+    """Write (or refresh) LLM-enriched manifests for every workflow."""
+
+    return await _orch(request).skills.backfill(force=force)
+
+
+@router.get("/api/skills/{key}")
+async def get_skill(key: str, request: Request) -> dict[str, Any]:
+    manifest = _orch(request).skills.get(key)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Unknown skill.")
+    return manifest
 
 
 @router.post("/api/workflows/validate-inputs")
@@ -201,7 +245,19 @@ async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, A
     if method == "ping":
         return ok({})
     if method == "tools/list":
-        return ok({"tools": mcp_tools(tools)})
+        # MCP-style catalog from skill manifests. Optional extensions: params.query
+        # returns the top-k matches, params.cursor / limit page through the library.
+        if params.get("query"):
+            found = await orch.skills.search(str(params["query"]), k=int(params.get("limit") or 6))
+            return ok({"tools": [mcp_tool(m) for m in found["skills"]]})
+        manifests = orch.skills.manifests()
+        start = int(params.get("cursor") or 0)
+        limit = int(params.get("limit") or 100)
+        page = manifests[start : start + limit]
+        result: dict[str, Any] = {"tools": [mcp_tool(m) for m in page]}
+        if start + limit < len(manifests):
+            result["nextCursor"] = str(start + limit)
+        return ok(result)
     if method == "tools/call":
         name = str(params.get("name") or "")
         raw_arguments = params.get("arguments") or {}

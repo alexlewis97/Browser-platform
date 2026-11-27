@@ -32,8 +32,17 @@ class FileStore:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
         self._index_path = self.workflows_dir / "index.json"
+        # Callbacks (event, workflow_id) for created / updated / deleted, e.g. skill manifests.
+        self.on_change: list = []
         if not self._index_path.exists():
             self._write_json(self._index_path, {})
+
+    def _notify(self, event: str, wf_id: str) -> None:
+        for callback in list(getattr(self, "on_change", None) or []):
+            try:
+                callback(event, wf_id)
+            except Exception:
+                continue
 
     def _read_json(self, path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -72,7 +81,9 @@ class FileStore:
             index = self._index()
             index[wf_id] = {"path": str(path), "name": definition.name, "version": definition.version}
             self._save_index(index)
-            return StoredWorkflow(id=wf_id, path=str(path), definition=definition)
+            stored = StoredWorkflow(id=wf_id, path=str(path), definition=definition)
+        self._notify("created", wf_id)
+        return stored
 
     def update_workflow(self, workflow_id: str, definition: WorkflowDefinition) -> StoredWorkflow:
         with self._lock:
@@ -85,7 +96,9 @@ class FileStore:
             self._write_json(path, definition.model_dump(exclude_none=True))
             index[wf_id] = {"path": str(path), "name": definition.name, "version": definition.version}
             self._save_index(index)
-            return StoredWorkflow(id=wf_id, path=str(path), definition=definition)
+            stored = StoredWorkflow(id=wf_id, path=str(path), definition=definition)
+        self._notify("updated", wf_id)
+        return stored
 
     def _related_version_files(self, wf_id: str) -> list[Path]:
         """Version snapshots and backups for a workflow id, never another id's files."""
@@ -144,7 +157,9 @@ class FileStore:
                     continue
             index.pop(wf_id, None)
             self._save_index(index)
-            return self._flag_runs_deleted(wf_id)
+            flagged = self._flag_runs_deleted(wf_id)
+        self._notify("deleted", wf_id)
+        return flagged
 
     def _workflow_path(self, workflow_id: str, recorded: str | None = None) -> Path:
         """Prefer a recorded path under workflows_dir; never follow escapes."""

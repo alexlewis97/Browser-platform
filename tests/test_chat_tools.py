@@ -25,6 +25,7 @@ from browser_platform.orchestrator.normalize_inputs import (
 )
 from types import SimpleNamespace
 import json
+import re
 from browser_platform.store.file_store import FileStore
 
 
@@ -242,25 +243,23 @@ async def test_plan_asks_for_missing_inputs_and_confirms_action(data_dir: Path, 
     orch = ChatOrchestrator(store, runner=None)
 
     async def fake_complete(messages, **kwargs):
-        tools = kwargs.get("tools") or []
-        names = [t["function"]["name"] for t in tools]
+        # The planner sees compact skill cards ("- slug(args): summary") and returns a JSON plan.
+        assert not kwargs.get("tools"), "selection must not send full tool schemas"
+        names = re.findall(r"^- ([a-z0-9_]+)\(", messages[0]["content"], re.M)
         user = messages[-1]["content"]
+
+        def plan(*steps):
+            body = {"steps": [{"id": f"s{i}", "skill": n, "args": a} for i, (n, a) in enumerate(steps, 1)]}
+            return {"role": "assistant", "content": json.dumps(body)}, {"tokens_in": 10, "tokens_out": 5, "cost_usd": 0, "used": True}
+
         if "missing" in user.lower() or "fixtures for a team" in user.lower():
-            # call football without team
-            fname = next(n for n in names if "football" in n)
-            return {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": fname, "arguments": "{}"}}]}, {"tokens_in": 10, "tokens_out": 5, "cost_usd": 0, "used": True}
+            return plan((next(n for n in names if "football" in n), {}))
         if "submit" in user.lower():
-            fname = next(n for n in names if "submit" in n)
-            return {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": fname, "arguments": "{\"name\":\"Alex\"}"}}]}, {"tokens_in": 8, "tokens_out": 4, "cost_usd": 0, "used": True}
+            return plan((next(n for n in names if "submit" in n), {"name": "Alex"}))
         if "first" in user.lower():
             fname = next(n for n in names if "football" in n)
-            calls = [
-                {"function": {"name": fname, "arguments": '{"team":"Arsenal"}'}},
-                {"function": {"name": fname, "arguments": '{"team":"Chelsea"}'}},
-                {"function": {"name": fname, "arguments": '{"team":"Spurs"}'}},
-            ]
-            return {"role": "assistant", "content": "", "tool_calls": calls}, {"tokens_in": 20, "tokens_out": 12, "cost_usd": 0, "used": True}
-        return {"role": "assistant", "content": "ok"}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0, "used": True}
+            return plan((fname, {"team": "Arsenal"}), (fname, {"team": "Chelsea"}), (fname, {"team": "Spurs"}))
+        return {"role": "assistant", "content": '{"steps": [], "answer": "ok"}'}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0, "used": True}
 
     async def fake_normalize(messages, **kwargs):
         user = messages[-1]["content"]

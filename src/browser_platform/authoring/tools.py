@@ -179,7 +179,10 @@ def tools_from_workflows(items: list[StoredWorkflow]) -> list[dict[str, Any]]:
         if name in used:
             name = f"{base}_{suffix}" if suffix else f"{base}_{len(used)+1}"
         used.add(name)
-        tools.append(tool_from_workflow(stored, name=name))
+        tool = tool_from_workflow(stored, name=name)
+        tool["base_name"] = base
+        tool["primary"] = name == base
+        tools.append(tool)
     return tools
 
 
