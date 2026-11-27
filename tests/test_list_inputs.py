@@ -72,7 +72,7 @@ def test_weekend_expressions():
 
 
 def test_today_question_uses_default_view():
-    from browser_platform.orchestrator.chat import prefer_default_view_for_today
+    from browser_platform.orchestrator.chat import prefer_default_view_for_today, page_view_meta
 
     d = WorkflowDefinition.model_validate({
         "name": "Listing", "steps": [{"type": "navigation", "url": "https://ex.org/{month|ym}?view={view}"}, {"type": "extract", "extractionGoal": "x"}],
@@ -81,6 +81,47 @@ def test_today_question_uses_default_view():
     call = {"id": "c1", "workflow_id": "w", "workflow_name": "Listing", "arguments": {"view": "upcoming", "month": "2026-11"}}
     other = {**call, "arguments": dict(call["arguments"])}
     assert prefer_default_view_for_today([call], {"w": d}, "What's on today?")
-    assert call["arguments"] == {"month": "2026-11"} and "Now" in call["workflow_name"]
+    assert call["arguments"] == {"month": "2026-11"}
+    meta = page_view_meta(d, call["arguments"])
+    assert meta and meta[0]["shown"] == "page default view" and meta[0]["page_label"] == "Now"
+    assert page_view_meta(d, {"view": "past"})[0]["value"] == "past"
     assert not prefer_default_view_for_today([other], {"w": d}, "What was on yesterday?")
     assert other["arguments"]["view"] == "upcoming"
+
+
+def test_view_inferred_from_tense_and_known_values_mapped():
+    from datetime import date
+    from browser_platform.orchestrator.chat import infer_view_from_tense, question_tense
+    from browser_platform.workflow_inputs import match_known_value, resolve_input_values
+    from browser_platform.models.workflow import WorkflowInput
+
+    now = date(2026, 11, 27)
+    assert question_tense("what happened yesterday?", now=now) == "past"
+    assert question_tense("anything on tomorrow?", now=now) == "future"
+    assert question_tense("what's on this month?", now=now) is None
+    assert question_tense("today?", now=now) is None
+    assert question_tense("last month", now=now) == "past"
+
+    d = WorkflowDefinition.model_validate({
+        "name": "Listing", "steps": [{"type": "navigation", "url": "https://ex.org/{month|ym}?view={view}&k={kind}"}, {"type": "extract", "extractionGoal": "x"}],
+        "input_schema": [
+            {"name": "view", "type": "string", "required": False, "enum": ["archive", "upcoming"], "default_view": "Now"},
+            {"name": "kind", "type": "string", "format": "slug", "required": True, "examples": ["north-river-cup", "east-coast-open", "grand-prix-one"]},
+        ],
+    })
+    call = {"workflow_id": "w", "arguments": {"kind": "north-river-cup"}}
+    assert infer_view_from_tense([call], {"w": d}, "What happened yesterday?") and call["arguments"]["view"] == "archive"
+    kept = {"workflow_id": "w", "arguments": {"kind": "x"}}
+    assert not infer_view_from_tense([kept], {"w": d}, "What's on this month?") and "view" not in kept["arguments"]
+
+    kind = d.input_schema[1]
+    assert match_known_value(kind, "East Coast Open") == "east-coast-open"
+    assert match_known_value(kind, "grand prix 1") == "grand-prix-one"
+    assert match_known_value(kind, "river cup") == "north-river-cup"
+    assert match_known_value(kind, "cup") == "cup"  # too little of a known value
+    assert match_known_value(kind, "west-bay-trophy") == "west-bay-trophy"
+    view = WorkflowInput(name="v", enum=["past-events", "future-events"])
+    assert match_known_value(view, "past") == "past-events"
+    assert resolve_input_values(d, {"kind": "Grand Prix 1"})["kind"] == "grand-prix-one"
+    free = WorkflowInput(name="q", examples=["wireless mouse pad"])
+    assert match_known_value(free, "wireless mouse") == "wireless mouse"

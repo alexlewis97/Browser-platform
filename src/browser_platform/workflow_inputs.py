@@ -275,6 +275,44 @@ def resolve_typed_value(item: WorkflowInput, value: Any, definition: WorkflowDef
     return resolve(str(value), grain) or value
 
 
+_NUMBER_WORDS = {"1": "one", "2": "two", "3": "three", "4": "four", "5": "five", "6": "six",
+                 "7": "seven", "8": "eight", "9": "nine", "10": "ten"}
+
+
+def _value_tokens(value: str) -> list[str]:
+    return [_NUMBER_WORDS.get(t, t) for t in re.findall(r"[a-z0-9]+", str(value).lower())]
+
+
+def match_known_value(item: WorkflowInput, value: Any) -> Any:
+    """Map a free-text value to the input's own enum or example value when the match is unique:
+    same words in another form ("Premier League" -> premier-league, "1" -> "one"), or the
+    value's words are part of one known value ("ligue 1" -> french-ligue-one). An enum is a
+    closed set, so any unique containing value matches; open examples need most of their words."""
+
+    if not isinstance(value, str) or not value.strip():
+        return value
+    enum = [str(v) for v in (getattr(item, "enum", None) or []) if v not in (None, "")]
+    # Open examples only constrain identifier-like inputs (slugs, codes), never free text.
+    if not enum and str(getattr(item, "format", "") or "").lower() not in {"slug", "id", "code", "key"}:
+        return value
+    known = enum or [str(v) for v in (getattr(item, "examples", None) or []) if isinstance(v, str) and v.strip()]
+    if not known or value in known:
+        return value
+    tokens = _value_tokens(value)
+    if not tokens:
+        return value
+    same = [k for k in known if _value_tokens(k) == tokens]
+    if len(same) == 1:
+        return same[0]
+    wanted = set(tokens)
+    contains = [k for k in known if wanted <= set(_value_tokens(k))]
+    if len(contains) != 1:
+        return value
+    if not enum and len(wanted) * 2 <= len(set(_value_tokens(contains[0]))):
+        return value
+    return contains[0]
+
+
 def resolve_input_values(definition: WorkflowDefinition | None, variables: dict[str, Any] | None) -> dict[str, Any]:
     """Replace placeholders, fill runtime defaults, and resolve typed (date/month/year) values."""
 
@@ -301,7 +339,10 @@ def resolve_input_values(definition: WorkflowDefinition | None, variables: dict[
             elif is_placeholder_value(raw):
                 out.pop(name, None)
         else:
-            out[name] = resolve_typed_value(item, raw, definition)
+            resolved = resolve_typed_value(item, raw, definition)
+            if resolved == raw and not input_grain(item, definition):
+                resolved = match_known_value(item, raw)
+            out[name] = resolved
     # Drop placeholders even when the schema has no matching entry (e.g. planner-invented month=current).
     for name, raw in list(out.items()):
         if not isinstance(raw, (list, tuple)) and is_placeholder_value(raw):

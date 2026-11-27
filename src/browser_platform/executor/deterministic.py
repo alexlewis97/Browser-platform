@@ -247,6 +247,49 @@ async def _extract_first_item(page: Page) -> str:
     return ""
 
 
+# Main text without page chrome: semantic nav/header/footer, in-page jump links, short control
+# buttons and link strips (many short links, little other text: menus, date or tab scrollers).
+# Elements are hidden only while innerText is read, so layout-aware text is kept.
+_MAIN_TEXT_JS = r"""
+(root) => {
+  const words = (s) => (s || "").trim().split(/\s+/).filter(Boolean).length;
+  const len = (s) => (s || "").replace(/\s+/g, " ").trim().length;
+  const drop = new Set();
+  root.querySelectorAll('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], [role="tablist"]').forEach(el => drop.add(el));
+  root.querySelectorAll('a[href^="#"]').forEach(a => { if (words(a.innerText) <= 4) drop.add(a); });
+  root.querySelectorAll('button').forEach(b => { if (words(b.innerText) <= 3) drop.add(b); });
+  // Link strips: many short links and almost no other text (menus, date or tab scrollers).
+  for (const el of root.querySelectorAll('ul, ol, div, section')) {
+    const links = Array.from(el.querySelectorAll('a'));
+    if (links.length < 5) continue;
+    const short = links.filter(a => words(a.innerText) <= 3).length;
+    const total = len(el.innerText);
+    const linkText = links.reduce((n, a) => n + len(a.innerText), 0);
+    if (total && short / links.length >= 0.8 && linkText / total >= 0.8) drop.add(el);
+  }
+  const hidden = [];
+  for (const el of drop) { hidden.push([el, el.style.getPropertyValue("display"), el.style.getPropertyPriority("display")]); el.style.setProperty("display", "none", "important"); }
+  let text = "";
+  try { text = (root.innerText || "").trim(); } finally { for (const [el, v, p] of hidden) { if (v) el.style.setProperty("display", v, p); else el.style.removeProperty("display"); } }
+  return text;
+}
+"""
+
+
+async def _content_text(loc) -> str:
+    """Inner text of ``loc`` with navigation chrome left out; falls back to plain inner text."""
+
+    raw = (await loc.inner_text()).strip()
+    try:
+        clean = str(await loc.evaluate(_MAIN_TEXT_JS) or "").strip()
+    except Exception:
+        return raw
+    # Keep the raw text if cleaning removed nearly everything (the page may be mostly links).
+    if not clean or (len(clean) < 40 and len(raw) >= 40):
+        return raw
+    return clean
+
+
 class ExtractMissing(StepFailed):
     """A mandatory extract found nothing: never rescued by fallbacks, never an empty success."""
 
@@ -314,10 +357,10 @@ async def extract_content(page: Page, step: WorkflowStep, *, variables: dict[str
                 return text[:4000]
     main = page.locator("main, article")
     if await main.count():
-        text = (await main.first.inner_text()).strip()
+        text = await _content_text(main.first)
         if text:
             return text[:4000]
-    text = (await page.locator("body").inner_text())[:4000].strip()
+    text = (await _content_text(page.locator("body")))[:4000].strip()
     if not text and not _is_optional(step):
         raise ExtractMissing("extract found no text on the page", last_error=f"expected page text on {page.url}; found none")
     return text

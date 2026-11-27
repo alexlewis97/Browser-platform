@@ -92,6 +92,7 @@ def compact_item(item: dict[str, Any], *, fact_limit: int = 800) -> dict[str, An
         "data_status": data_status(facts, status=item.get("status")),
         "needs_repair": bool(item.get("needs_repair")),
         "url": item.get("url") or "",
+        **({"page_view": item["page_view"]} if item.get("page_view") else {}),
     }
 
 
@@ -141,7 +142,7 @@ def prefer_default_view_for_today(
 
     Date-partitioned views split at "now": today's in-progress or remaining items can be in
     neither the past nor the upcoming view, only in the default one. Other days keep the
-    control. The call is labelled so synthesis knows which view it shows. Returns True if changed."""
+    control. The shown view is reported as data by ``page_view_meta``. Returns True if changed."""
 
     from browser_platform import dates
 
@@ -161,10 +162,76 @@ def prefer_default_view_for_today(
         names = {i.name for i in controls}
         call["arguments"] = {k: v for k, v in args.items() if k not in names}
         call["raw_arguments"] = {k: v for k, v in (call.get("raw_arguments") or {}).items() if k not in names}
-        views = ", ".join(str(i.default_view) for i in controls)
-        call["workflow_name"] = f"{call.get('workflow_name') or call.get('tool')} (page default view: {views})"
         changed = True
     return changed
+
+
+_PAST_VIEW_WORDS = {"result", "results", "past", "previous", "completed", "finished", "played", "history", "archive", "ended"}
+_FUTURE_VIEW_WORDS = {"fixture", "fixtures", "upcoming", "future", "next", "scheduled", "schedule", "coming"}
+
+
+def question_tense(message: str, *, now: Any = None) -> str | None:
+    """'past' or 'future' when every date in the question lies wholly before or after today
+    (a day, or a whole month/year); None for today, the current month or no date."""
+
+    from browser_platform import dates
+
+    today = dates.today(now)
+    tenses: set[str] = set()
+    for expr in dates.find_expressions(message or ""):
+        parsed = dates.parse_expression(expr, now=now)
+        if not parsed:
+            continue
+        d, grain = parsed
+        if grain == "month":
+            key, cur = (d.year, d.month), (today.year, today.month)
+        elif grain == "year":
+            key, cur = d.year, today.year
+        else:
+            key, cur = d, today
+        tenses.add("past" if key < cur else "future" if key > cur else "now")
+    return next(iter(tenses)) if len(tenses) == 1 and "now" not in tenses else None
+
+
+def infer_view_from_tense(calls: list[dict[str, Any]], definitions: dict[str, Any] | None, message: str) -> bool:
+    """When the question is wholly about the past or the future and a call left out a view
+    control (an enum whose omitted value is the page's default view), pick the one enum value
+    whose words say that tense (results/past vs fixtures/upcoming). Returns True if changed."""
+
+    tense = question_tense(message)
+    if not tense:
+        return False
+    words = _PAST_VIEW_WORDS if tense == "past" else _FUTURE_VIEW_WORDS
+    changed = False
+    for call in calls:
+        definition = (definitions or {}).get(call.get("workflow_id") or "")
+        args = call.get("arguments") or {}
+        for inp in getattr(definition, "input_schema", None) or []:
+            if not getattr(inp, "default_view", None) or args.get(inp.name) not in (None, ""):
+                continue
+            hits = [v for v in (inp.enum or []) if set(re.findall(r"[a-z]+", str(v).lower())) & words]
+            if len(hits) == 1:
+                call.setdefault("arguments", {})[inp.name] = hits[0]
+                changed = True
+    return changed
+
+
+def page_view_meta(definition: Any, arguments: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Which of the page's views a call showed, as data: for each view control explore found,
+    the value sent, or the page's own label for its default view when the value was left out."""
+
+    meta: list[dict[str, Any]] = []
+    args = arguments or {}
+    for inp in getattr(definition, "input_schema", None) or []:
+        label = getattr(inp, "default_view", None)
+        if not label:
+            continue
+        value = args.get(inp.name)
+        if value in (None, ""):
+            meta.append({"input": inp.name, "value": None, "shown": "page default view", "page_label": str(label)})
+        else:
+            meta.append({"input": inp.name, "value": value, "shown": "selected view"})
+    return meta
 
 
 def resolve_prepared_defaults(prepared: list[dict[str, Any]], definitions: dict[str, Any] | None) -> None:
@@ -749,6 +816,8 @@ class ChatOrchestrator:
             resolve_prepared_defaults(ready, definitions)
             if prefer_default_view_for_today(ready, definitions, message):
                 job["notes"].append("Used the page's default view for today: a filtered view can leave out today's items.")
+            if infer_view_from_tense(ready, definitions, message):
+                job["notes"].append("Chose the page view matching the question's tense (past or upcoming).")
             # Entity-kind mismatch (a competition sent to a club input): never call the tool with
             # the wrong kind of value; the intent is reported as not covered instead.
             dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated")]
@@ -896,6 +965,7 @@ class ChatOrchestrator:
             "workflow_name": call["workflow_name"],
             "inputs": dict(call.get("arguments") or {}),
             "raw_inputs": dict(call.get("raw_arguments") or call.get("arguments") or {}),
+            **({"page_view": pv} if (pv := page_view_meta(stored.definition if stored is not None else None, call.get("arguments"))) else {}),
             "action_ending": bool(call.get("action_ending")),
             "status": "running",
             "attempts": 0,
@@ -1097,7 +1167,7 @@ class ChatOrchestrator:
                             "Dates: use today and dates_in_question as given; never assume another current date. "
                             "Report the page's data as it is; never second-guess it from your own knowledge (for example who plays in a league). "
                             "When the question asks about one day and the results cover a longer period, answer for that day only. "
-                            "A result marked 'page default view: X' shows what the page labels X; a view labelled Today lists today's items even when no date is printed. "
+                            "results[].page_view, when present, says which of the page's own views the facts come from (page_label is the page's name for it). "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
                         ),
