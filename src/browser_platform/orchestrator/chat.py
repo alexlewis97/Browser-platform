@@ -133,6 +133,36 @@ def fan_out_calls(prepared: list[dict[str, Any]], store: Any, notes: list[str] |
     return out
 
 
+def default_view_companions(
+    calls: list[dict[str, Any]], definitions: dict[str, Any] | None, message: str
+) -> list[dict[str, Any]]:
+    """For a question about *today*, a call that sets a page control whose omitted value is the
+    page's own default view (results|fixtures, upcoming|past...) also gets a twin without it.
+
+    Date-partitioned views split at "now": today's in-progress or remaining items can be in
+    neither the past nor the future view, only in the default one. Other days are not doubled."""
+
+    from browser_platform import dates
+
+    today = dates.now_value("date")
+    if not any(dates.resolve(expr, "date") == today for expr in dates.find_expressions(message or "")):
+        return []
+    out: list[dict[str, Any]] = []
+    for call in calls:
+        definition = (definitions or {}).get(call.get("workflow_id") or "")
+        args = call.get("arguments") or {}
+        controls = [
+            i.name for i in (getattr(definition, "input_schema", None) or [])
+            if getattr(i, "default_view", None) and args.get(i.name) not in (None, "")
+        ]
+        if not controls:
+            continue
+        twin = {**call, "id": f"{call['id']}_default", "arguments": {k: v for k, v in args.items() if k not in controls}}
+        twin["raw_arguments"] = {k: v for k, v in (call.get("raw_arguments") or {}).items() if k not in controls}
+        out.append(twin)
+    return out
+
+
 def resolve_prepared_defaults(prepared: list[dict[str, Any]], definitions: dict[str, Any] | None) -> None:
     """Resolve optional runtime defaults and drop placeholders before a tool is called."""
 
@@ -713,6 +743,11 @@ class ChatOrchestrator:
                 pass
             anchor_relative_dates(ready, definitions, message, job["notes"])
             resolve_prepared_defaults(ready, definitions)
+            extra_views = default_view_companions(ready, definitions, message)
+            if extra_views:
+                prepared.extend(extra_views)
+                ready.extend(extra_views)
+                job["notes"].append("Also fetched the page's default view for today: a filtered view can leave out today's items.")
             # Entity-kind mismatch (a competition sent to a club input): never call the tool with
             # the wrong kind of value; the intent is reported as not covered instead.
             dropped = [c for c in prepared if c.get("kind_mismatch") or c.get("unstated")]
