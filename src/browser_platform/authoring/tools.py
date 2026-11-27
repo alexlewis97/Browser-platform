@@ -50,7 +50,7 @@ def is_action_ending(definition: WorkflowDefinition | None) -> bool:
     typ = (last.type or "").lower()
     if typ in {"click", "select_change"} and _is_view_switch(definition, last):
         return False
-    if typ in {"click", "submit", "input", "select_change", "key_press", "fill"}:
+    if typ in {"click", "double_click", "right_click", "submit", "input", "select_change", "key_press", "fill"}:
         return True
     return is_submit_like(last)
 

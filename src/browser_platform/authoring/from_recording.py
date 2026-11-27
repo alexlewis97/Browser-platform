@@ -89,8 +89,8 @@ def events_from_payload(raw: list[Any] | None) -> list[RecordedEvent]:
 def recording_events_to_steps(events: list[RecordedEvent], *, extract_goal: str = "result") -> list[WorkflowStep]:
     steps = events_to_steps(events, extract_goal=extract_goal)
     # Align extras (changed/element) onto matching click/input steps in order.
-    action_events = [ev for ev in events if ev.type in {"click", "input", "select_change", "key_press"}]
-    action_steps = [s for s in steps if s.type in {"click", "input", "select_change", "key_press"}]
+    action_events = [ev for ev in events if ev.type in {"click", "double_click", "right_click", "input", "select_change", "key_press"}]
+    action_steps = [s for s in steps if s.type in {"click", "double_click", "right_click", "input", "select_change", "key_press"}]
     for ev, step in zip(action_events, action_steps):
         data = step.model_dump()
         el = ev.element or {}
@@ -170,7 +170,7 @@ def infer_variables(events: list[RecordedEvent], goal: str = "") -> dict[str, st
                 if looks_like_team(text) or text.lower() not in _GENERIC_VALUES:
                     name = "team" if looks_like_team(text) else name
             take(name, text)
-        elif ev.type == "click":
+        elif ev.type in {"click", "double_click", "right_click"}:
             text = (ev.text or (ev.element or {}).get("text") or "").strip()
             if not text or len(text) > 60:
                 continue

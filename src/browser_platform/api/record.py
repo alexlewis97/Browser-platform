@@ -152,7 +152,7 @@ async def record_socket(ws: WebSocket, session_id: str) -> None:
             if typ == "ping":
                 await ws.send_json({"type": "pong", "session": session.snapshot()})
                 session.touch()
-            elif typ in {"click", "down", "up", "move", "scroll", "type", "key", "navigate"}:
+            elif typ in {"click", "dblclick", "contextmenu", "down", "up", "move", "scroll", "type", "key", "navigate"}:
                 try:
                     await session.handle_input(message)
                     await ws.send_json({"type": "ack", "session": session.snapshot()})

@@ -72,7 +72,7 @@ def make_alias(step_index: int, query: str, candidate) -> AliasMapping:
     )
 
 
-_FUZZY_STEP_TYPES = frozenset({"click", "input", "select_change", "key_press"})
+_FUZZY_STEP_TYPES = frozenset({"click", "double_click", "right_click", "input", "select_change", "key_press"})
 
 
 def fuzzy_applies(step: WorkflowStep, config: FuzzyMatchConfig) -> bool:

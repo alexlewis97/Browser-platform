@@ -265,6 +265,8 @@ function stepSummary(step: Record<string, unknown>): string {
   if (typ === "select_change" || typ === "select") return he.record.stepChoose(String(step.value || step.target_text || ""));
   if (typ === "key_press" || typ === "key") return he.record.stepKey(String(step.value || "Enter"));
   if (typ === "click") return he.record.stepClick(String(step.target_text || step.cssSelector || "element"));
+  if (typ === "double_click") return he.record.stepDoubleClick(String(step.target_text || step.cssSelector || "element"));
+  if (typ === "right_click") return he.record.stepRightClick(String(step.target_text || step.cssSelector || "element"));
   if (typ === "extract") return he.record.stepExtract(String(step.extractionGoal || "result"));
   return typ || he.record.stepGeneric;
 }

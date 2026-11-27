@@ -509,7 +509,7 @@ async def explore_definition(
         except Exception:
             html = html
     needs_render = bool(
-        any(step.type in {"input", "click", "select_change", "key_press"} for step in (definition.steps or []))
+        any(step.type in {"input", "click", "double_click", "right_click", "select_change", "key_press"} for step in (definition.steps or []))
     )
     from browser_platform.authoring.explore_verify import _looks_like_js_shell, fetch_rendered_html, snapshot_workflow
     if start_url and (needs_render or _looks_like_js_shell(html)):

@@ -112,6 +112,8 @@ export function stepSummary(step: Record<string, unknown>): string {
   if (typ === "select_change" || typ === "select") return `Choose ${String(step.value || step.target_text || "")}`;
   if (typ === "key_press" || typ === "key") return `Press ${String(step.value || "Enter")}`;
   if (typ === "click") return `Click ${String(step.target_text || step.cssSelector || "element")}`;
+  if (typ === "double_click") return `Double-click ${String(step.target_text || step.cssSelector || "element")}`;
+  if (typ === "right_click") return `Right-click ${String(step.target_text || step.cssSelector || "element")}`;
   if (typ === "extract") return `Extract ${String(step.extractionGoal || "result")}`;
   return typ || "step";
 }
@@ -438,8 +440,10 @@ export function bindRecordScreen(): void {
   };
   img.addEventListener("pointerdown", (event) => {
     img.setPointerCapture(event.pointerId);
-    sendPoint("click", event);
+    // Right button -> context click; a second quick press -> double-click.
+    sendPoint(event.button === 2 ? "contextmenu" : event.detail >= 2 ? "dblclick" : "click", event);
   });
+  img.addEventListener("contextmenu", (event) => event.preventDefault());
   img.addEventListener(
     "wheel",
     (event) => {

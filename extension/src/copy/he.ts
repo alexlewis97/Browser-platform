@@ -104,6 +104,8 @@ export const he = {
     stepChoose: (value: string) => `בחירת ${value}`,
     stepKey: (key: string) => `לחיצה על ${key}`,
     stepClick: (target: string) => `לחיצה על ${target}`,
+    stepDoubleClick: (target: string) => `לחיצה כפולה על ${target}`,
+    stepRightClick: (target: string) => `לחיצה ימנית על ${target}`,
     stepExtract: (goal: string) => `חילוץ ${goal}`,
     stepGeneric: "שלב",
   },

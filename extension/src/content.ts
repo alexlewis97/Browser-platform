@@ -72,13 +72,13 @@ function handle(action: Action): Result {
       if (!el) return { ok: false, error: `could not resolve candidate ${action.text}` };
       if (action.typ === "select_change") selectOption(el, action.text, action.value);
       else if (action.typ === "input") setInputValue(el, action.value ?? action.text);
-      else (el as HTMLElement).click();
+      else clickAs(el, action.typ);
       return { ok: true, data: { selector: action.selector, text: action.text } };
     }
     if (action.op === "act") {
       const el = resolveElement(action.strategy);
       if (!el) return { ok: false, error: `no matching elements for ${action.strategy.type}:${action.strategy.value}` };
-      if (action.typ === "click") (el as HTMLElement).click();
+      if (action.typ === "click" || action.typ === "double_click" || action.typ === "right_click") clickAs(el, action.typ);
       else if (action.typ === "input") {
         if (action.value == null) return { ok: false, error: "input step is missing value" };
         setInputValue(el, String(action.value));
@@ -104,3 +104,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   sendResponse(handle(message.action as Action));
   return false;
 });
+
+
+/** click / double_click (click, click, dblclick) / right_click (contextmenu) with real mouse events. */
+function clickAs(el: Element, typ: string): void {
+  const rect = (el as HTMLElement).getBoundingClientRect?.() || { left: 0, top: 0, width: 0, height: 0 };
+  const base = { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+  if (typ === "right_click") {
+    el.dispatchEvent(new MouseEvent("mousedown", { ...base, button: 2, buttons: 2 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...base, button: 2 }));
+    el.dispatchEvent(new MouseEvent("contextmenu", { ...base, button: 2 }));
+    return;
+  }
+  if (typ === "double_click") {
+    for (const detail of [1, 2]) {
+      el.dispatchEvent(new MouseEvent("mousedown", { ...base, detail }));
+      el.dispatchEvent(new MouseEvent("mouseup", { ...base, detail }));
+      el.dispatchEvent(new MouseEvent("click", { ...base, detail }));
+    }
+    el.dispatchEvent(new MouseEvent("dblclick", { ...base, detail: 2 }));
+    return;
+  }
+  (el as HTMLElement).click();
+}

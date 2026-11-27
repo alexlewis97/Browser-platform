@@ -8,7 +8,7 @@ from typing import Any
 from browser_platform.models.workflow import WorkflowStep
 
 EXTRACT_TYPES = frozenset({"extract", "extract_page_content"})
-ACTION_TYPES = frozenset({"click", "input", "select_change", "key_press"})
+ACTION_TYPES = frozenset({"click", "double_click", "right_click", "input", "select_change", "key_press"})
 TERMINAL_TYPES = EXTRACT_TYPES | ACTION_TYPES
 
 _SUBMIT_TEXT = re.compile(

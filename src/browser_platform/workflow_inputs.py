@@ -331,7 +331,7 @@ def finalize_authored_inputs(definition: WorkflowDefinition) -> WorkflowDefiniti
 
 
 MIGRATION_TAG = "defaults-v1"
-_ACTION_STEP_TYPES = {"click", "input", "select_change", "key_press"}
+_ACTION_STEP_TYPES = {"click", "double_click", "right_click", "input", "select_change", "key_press"}
 
 
 def _uses(definition: WorkflowDefinition, name: str) -> dict[str, bool]:

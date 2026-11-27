@@ -48,6 +48,8 @@ class AliasMapping(BaseModel):
 WORKFLOW_USE_STEP_TYPES = (
     "navigation",
     "click",
+    "double_click",
+    "right_click",
     "input",
     "select_change",
     "key_press",
@@ -60,7 +62,8 @@ WORKFLOW_USE_STEP_TYPES = (
 )
 
 EXTRACT_TYPES = frozenset({"extract", "extract_page_content"})
-ACTION_TYPES = frozenset({"click", "input", "select_change", "key_press"})
+CLICK_TYPES = frozenset({"click", "double_click", "right_click"})
+ACTION_TYPES = frozenset({"click", "double_click", "right_click", "input", "select_change", "key_press"})
 TERMINAL_TYPES = EXTRACT_TYPES | ACTION_TYPES
 
 

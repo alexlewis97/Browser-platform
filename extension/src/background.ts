@@ -330,7 +330,7 @@ async function runWorkflow(tabId: number, installed: InstalledWorkflow, variable
         continue;
       }
       if (step.type === "agent") throw new Error("agent steps are not executed in the extension (workflow-use only)");
-      if (!["click", "input", "select_change", "key_press"].includes(step.type)) {
+      if (!["click", "double_click", "right_click", "input", "select_change", "key_press"].includes(step.type)) {
         throw new Error(`unsupported step type: ${step.type}`);
       }
 
@@ -351,7 +351,7 @@ async function runWorkflow(tabId: number, installed: InstalledWorkflow, variable
         }
       }
       if (det.ok) {
-        if (["click", "key_press", "input", "select_change"].includes(step.type)) await afterAction(tabId);
+        if (["click", "double_click", "right_click", "key_press", "input", "select_change"].includes(step.type)) await afterAction(tabId);
         const asserted = await sendAction(tabId, { op: "assert", expected: step.expected_state });
         if (!asserted.ok) throw new Error(asserted.error);
         trace.status = "ok";

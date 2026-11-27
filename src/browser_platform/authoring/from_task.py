@@ -126,12 +126,19 @@ def events_to_steps(events: list[RecordedEvent], *, extract_goal: str = "result"
     for ev in events:
         if ev.type == "navigation" and ev.url:
             steps.append(WorkflowStep(type="navigation", url=ev.url, description=f"Open {ev.url}"))
-        elif ev.type == "click":
+        elif ev.type in {"click", "double_click", "right_click"}:
             target = ev.text or (ev.element or {}).get("name") or ev.value
+            verb = {"click": "Click", "double_click": "Double-click", "right_click": "Right-click"}[ev.type]
+            if ev.type != "click":
+                # The browser fires click events before dblclick (and none before contextmenu
+                # on most targets); drop the recorded single clicks on the same element.
+                css = (ev.element or {}).get("css")
+                while steps and steps[-1].type == "click" and css and steps[-1].cssSelector == css:
+                    steps.pop()
             steps.append(
                 WorkflowStep(
-                    type="click",
-                    description=f"Click {target}" if target else "Click",
+                    type=ev.type,
+                    description=f"{verb} {target}" if target else verb,
                     target_text=target,
                     cssSelector=(ev.element or {}).get("css"),
                     xpath=(ev.element or {}).get("xpath"),

@@ -442,7 +442,7 @@ async def run_step(
         raise StepFailed("agent steps are not executed in the deterministic path")
 
 
-    if typ not in {"click", "input", "select_change", "key_press"}:
+    if typ not in {"click", "double_click", "right_click", "input", "select_change", "key_press"}:
         raise StepFailed(f"unsupported step type: {typ}")
 
     last_error = "no selector strategies to try"
@@ -451,6 +451,10 @@ async def run_step(
             loc = await resolve_locator(page, attempt, timeout_ms)
             if typ == "click":
                 await loc.click(timeout=timeout_ms)
+            elif typ == "double_click":
+                await loc.dblclick(timeout=timeout_ms)
+            elif typ == "right_click":
+                await loc.click(button="right", timeout=timeout_ms)
             elif typ == "input":
                 if value is None:
                     raise StepFailed("input step is missing value")

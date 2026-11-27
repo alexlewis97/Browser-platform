@@ -490,7 +490,7 @@ def causal_path_to_extract(steps: list[WorkflowStep]) -> list[WorkflowStep]:
     steps = list(steps[: term_index + 1])
     last_nav_index = max((i for i, s in enumerate(steps) if s.type == "navigation"), default=None)
     if last_nav_index is None:
-        return [s for s in steps if s is terminal or s.type in {"input", "select_change", "click", "key_press"} or _is_extract(s)]
+        return [s for s in steps if s is terminal or s.type in {"input", "select_change", "click", "double_click", "right_click", "key_press"} or _is_extract(s)]
     prefix = steps[:last_nav_index]
     # Keep earlier parameterized work (fills / var-URLs) and drop pure nav bouncing.
     kept_prefix: list[WorkflowStep] = []

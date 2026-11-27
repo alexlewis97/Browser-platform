@@ -53,7 +53,7 @@ export function buildSelectorPlan(step: WorkflowStep, cached?: SelectorStrategy 
 
 export function fuzzyApplies(step: WorkflowStep, enabled = true): boolean {
   if (!enabled) return false;
-  return ["click", "input", "select_change", "key_press"].includes(step.type);
+  return ["click", "double_click", "right_click", "input", "select_change", "key_press"].includes(step.type);
 }
 
 export function normalizeWikipediaUrl(url: string | null | undefined): string | undefined {

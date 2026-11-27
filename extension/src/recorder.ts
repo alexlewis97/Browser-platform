@@ -184,6 +184,28 @@ declare global {
     true,
   );
 
+  // Double-click and context (right) click are their own step types; the server drops the
+  // single clicks the browser fires on the same element before a dblclick.
+  for (const [domType, stepType] of [["dblclick", "double_click"], ["contextmenu", "right_click"]] as const) {
+    document.addEventListener(
+      domType,
+      (e) => {
+        const el = e.target as Element | null;
+        if (!el) return;
+        const before = fingerprint();
+        const rec: RecEvent = { type: stepType, ts: Date.now(), url: location.href, text: describe(el)?.text, element: describe(el) };
+        pending += 1;
+        window.setTimeout(() => {
+          rec.url_after = location.href;
+          rec.changed = fingerprint() !== before;
+          emit(rec);
+          pending -= 1;
+        }, 400);
+      },
+      true,
+    );
+  }
+
   document.addEventListener(
     "input",
     (e) => {

@@ -291,6 +291,14 @@ RECORDER_JS = r"""
     snapshotFields();
     push("click", e.target);
   }, true);
+  document.addEventListener("dblclick", (e) => {
+    if (!e.target) return;
+    push("double_click", e.target);
+  }, true);
+  document.addEventListener("contextmenu", (e) => {
+    if (!e.target) return;
+    push("right_click", e.target);
+  }, true);
   document.addEventListener("input", (e) => {
     const el = associatedControl(e.target);
     if (!el || !isFillable(el)) return;

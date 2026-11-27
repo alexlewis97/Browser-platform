@@ -259,6 +259,16 @@ class RecordSession:
             x, y = float(message.get("x") or 0), float(message.get("y") or 0)
             await self.page.mouse.click(x, y)
             await asyncio.sleep(0.35)
+        elif typ in {"dblclick", "double_click"}:
+            # Sent on the second press of a real double-click: the first press already arrived
+            # as a click, so this is the second press only (detail 2 fires dblclick).
+            await self.page.mouse.move(float(message.get("x") or 0), float(message.get("y") or 0))
+            await self.page.mouse.down(click_count=2)
+            await self.page.mouse.up(click_count=2)
+            await asyncio.sleep(0.35)
+        elif typ in {"contextmenu", "right_click"}:
+            await self.page.mouse.click(float(message.get("x") or 0), float(message.get("y") or 0), button="right")
+            await asyncio.sleep(0.35)
         elif typ == "down":
             await self.page.mouse.move(float(message.get("x") or 0), float(message.get("y") or 0))
             await self.page.mouse.down()
