@@ -153,7 +153,9 @@ The e2e smoke test launches a local Chromium with `--remote-debugging-port` (sta
 | POST | `/api/workflows/from-task` | Create a workflow from a natural-language task (browser-use demo + 0-token replay). `wait: false` returns a job immediately |
 | GET | `/api/workflows/from-task/{job_id}` | Poll a from-task job (status, creation vs replay tokens/time, saved workflow) |
 | POST | `/api/workflows/from-task/{job_id}/confirmation` | Resume if the job needs variable confirmation or the agent asks a human |
-| POST | `/api/workflows/{id}/run` | Run against the user’s Chrome |
+| POST | `/api/workflows/{id}/run` | User-mode run (always strict; no fuzzy/HITL/repair write-back), used by the run site and extension |
+| POST | `/api/workflows/{id}/admin-run` | Admin test-run (requires the access token); may fuzzy-match, pause for confirmation, and write back repairs |
+| POST | `/api/workflows/{id}/repair` | Admin repair of the last failed user run (requires the access token) |
 | GET | `/api/runs`, `/api/runs/{id}` | Telemetry (per-step latency, tokens, which tier resolved it). When paused, `status` is `needs_confirmation` and `confirmation` holds the prompt payload. |
 | GET | `/api/runs/{id}/confirmation` | Pending confirmation prompt (top-N candidates, scores, optional screenshots) |
 | POST | `/api/runs/{id}/confirmation` | Resume with a chosen candidate, or cancel |
@@ -203,9 +205,9 @@ A local form fixture used in tests lives at `tests/fixtures/from_task_form.html`
 
 When a saved workflow runs, every step is resolved deterministically (recorded selectors, aliases, and — unless `strict` is on — confident fuzzy match). A step that cannot be resolved fails by name, or the run returns `needs_input` when a required or closed value is missing or unknown.
 
-**User-side runs** (run site, extension, workspace chat, user-token API, MCP) are strict: a failed recorded selector is not rescued by fuzzy match, HITL, in-run LLM repair, or `browser-use`. The run fails naming the step, and the workflow is flagged `needs_repair` (with the last inputs in `repair_from`) so it appears on the admin site. Recorded aliases still resolve deterministically.
+**User-side runs** — including `POST /api/workflows/{id}/run` for every caller (run site, extension, user-token API, and even a request that presents the admin access token) — are strict: a failed recorded selector is not rescued by fuzzy match, HITL, in-run LLM repair, or `browser-use`. The run fails naming the step, and the workflow is flagged `needs_repair` (with the last inputs in `repair_from`) so it appears on the admin site. Recorded aliases still resolve deterministically.
 
-**Admin-side runs** (admin site, admin-token API, or the admin **Repair** button) may use in-run LLM / `browser-use` repair when `BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR` is on (the default). On success the previous version is snapshotted under `workflow_versions/`, the winning selector is written back as a new version, and the run is marked `repaired`. The env flag is a global kill-switch for admin repair only — there is no per-run, per-workflow, API, chat, or extension override. Caller identity comes from the token (`BROWSER_PLATFORM_ACCESS_TOKEN` vs `BROWSER_PLATFORM_USER_TOKEN`), not a request flag. LLM use remains allowed in the chat orchestration layer (planning, choosing tools, answering) and at authoring time (`from-task`, explore naming, recording cleanup).
+**Admin-side runs** happen only on the explicit endpoints `POST /api/workflows/{id}/admin-run` (the admin site's test-run) and `POST /api/workflows/{id}/repair` (the **Repair** button). Both require the access token (or a direct loopback request when no tokens are configured; proxied/Caddy traffic cannot spoof that). These runs may use fuzzy match, HITL, and in-run LLM / `browser-use` repair when `BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR` is on (the default). On success the previous version is snapshotted under `workflow_versions/`, the winning selector is written back as a new version, and the run is marked `repaired`. The env flag is a global kill-switch for admin repair only — there is no per-run, per-workflow, or `/run` override. LLM use remains allowed in the chat orchestration layer (planning, choosing tools, answering) and at authoring time (`from-task`, explore naming, recording cleanup).
 
 ## Human-in-the-loop confirmation (mobile / web app)
 
@@ -239,7 +241,7 @@ An example roster workflow (10 people + status dropdown) is in `examples/attenda
 
 ### Recommended client flow
 
-1. `POST /api/workflows/{id}/run` with `"wait": false`, `"interactive": true` (so an uncertain click can pause for confirmation instead of failing), and the declared variables (for example `term`). Required inputs are listed on the phone **Run** screen with clear labels (Wikipedia: **Search term**). Last-used values are remembered in the phone's localStorage; a run is rejected until required fields are filled — defaults are not applied silently.
+1. For an admin test-run that may pause for confirmation, `POST /api/workflows/{id}/admin-run` with `"wait": false` and the declared variables (for example `term`). The user-facing `POST /api/workflows/{id}/run` is always strict and will not pause for HITL to rescue a missed selector. Required inputs are listed on the phone **Run** screen with clear labels (Wikipedia: **Search term**). Last-used values are remembered in the phone's localStorage; a run is rejected until required fields are filled — defaults are not applied silently.
 2. Open `WS /ws/runs?run_id={run_id}` (or poll `GET /api/runs/{run_id}`).
 3. When `status` is `needs_confirmation` (event type `needs_confirmation`), render the prompt.
 4. `POST /api/runs/{run_id}/confirmation` with the user’s choice, then wait for `run_resumed` / a terminal status.

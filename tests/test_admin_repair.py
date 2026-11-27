@@ -10,9 +10,9 @@ from fastapi.testclient import TestClient
 from browser_platform.app import create_app
 from browser_platform.cache.action_cache import ActionCache
 from browser_platform.config import Settings
-from browser_platform.local_access import access_token_ok, caller_role
+from browser_platform.local_access import access_token_ok, caller_role, require_admin
 from browser_platform.models.llm import LLMConfig
-from browser_platform.models.workflow import SelectorStrategy, WorkflowDefinition, WorkflowStep
+from browser_platform.models.workflow import HitlConfig, SelectorStrategy, WorkflowDefinition, WorkflowStep
 from browser_platform.orchestrator.runner import WorkflowRunner, _safe_repair_variables
 from browser_platform.store.file_store import FileStore
 
@@ -72,15 +72,30 @@ def _broken_click_wf() -> WorkflowDefinition:
 
 
 class _TokenReq:
-    def __init__(self, token: str | None):
-        self.headers = {"authorization": f"Bearer {token}"} if token else {}
+    def __init__(self, token: str | None, *, forwarded_for: str | None = None, client_host: str = "127.0.0.1"):
+        self.headers = {}
+        if token:
+            self.headers["authorization"] = f"Bearer {token}"
+        if forwarded_for:
+            self.headers["x-forwarded-for"] = forwarded_for
         self.query_params = {}
-        self.scope = {"client": ("127.0.0.1", 9), "scheme": "http", "server": ("127.0.0.1", 8745)}
+        self.client = (client_host, 9)
+        self.scope = {"client": (client_host, 9), "scheme": "http", "server": ("127.0.0.1", 8745)}
 
 
 def test_caller_role_loopback_without_tokens_is_admin():
     settings = Settings(access_token="", user_token="")
-    assert caller_role(_TokenReq(None), settings) == "admin"
+    req = _TokenReq(None)
+    assert require_admin(req, settings) is True
+    assert caller_role(req, settings) == "admin"
+
+
+def test_proxied_request_without_tokens_is_not_admin():
+    """Caddy / X-Forwarded-For traffic must not be treated as loopback admin."""
+    settings = Settings(access_token="", user_token="")
+    req = _TokenReq(None, forwarded_for="203.0.113.9")
+    assert require_admin(req, settings) is False
+    assert caller_role(req, settings) == "user"
 
 
 def test_caller_role_is_admin_only_for_access_token():
@@ -94,10 +109,14 @@ def test_caller_role_is_admin_only_for_access_token():
     assert access_token_ok(_TokenReq("nope"), settings) is False
 
 
-def test_identical_tokens_are_treated_as_admin(caplog):
+def test_identical_tokens_still_unlock_admin_endpoints_only(caplog):
+    """The same token may be accepted as the access token on /admin-run and /repair,
+    but that does not change /run (always user). See the HTTP tests below."""
     settings = Settings(access_token=ADMIN, user_token=ADMIN)
+    assert require_admin(_TokenReq(ADMIN), settings) is True
     assert caller_role(_TokenReq(ADMIN), settings) == "admin"
     assert "identical" in caplog.text.lower()
+    assert "/run stays user" in caplog.text or "admin only" in caplog.text.lower()
 
 
 def test_safe_repair_variables_drop_secrets():
@@ -196,6 +215,104 @@ def test_repair_endpoint_400_without_repair_from(data_dir: Path):
     client = TestClient(app)
     res = client.post(f"/api/workflows/{stored.id}/repair", headers={"X-Browser-Platform-Token": ADMIN})
     assert res.status_code == 400
+
+
+
+def _broken_click_wf_llm_only() -> WorkflowDefinition:
+    definition = _broken_click_wf()
+    definition.hitl = HitlConfig(mode="llm_only", timeout_s=2)
+    return definition
+
+
+def _http_app(data_dir: Path, page, **settings_kw):
+    settings = _settings(data_dir, allow_in_run_repair=True, require_token_on_localhost=True, **settings_kw)
+    app = create_app(settings, root=ROOT)
+    repair = FakeRepair([SelectorStrategy(type="css", value="h1", priority=1)])
+
+    async def connect(url: str):
+        return FakeSession(page=page, opened_pages=[page])
+
+    async def disconnect(session) -> None:
+        session.closed = True
+
+    app.state.runner._connect = connect
+    app.state.runner._disconnect = disconnect
+    app.state.runner.use_browser_use = False
+    app.state.runner.repair_client = repair
+    app.state.runner.settings.allow_in_run_repair = True
+    return TestClient(app), repair
+
+
+def _wait_run(client: TestClient, path: str, workflow_id: str, headers: dict, extra: dict | None = None):
+    body = {
+        "wait": True,
+        "cdp_url": "http://127.0.0.1:0",
+        "llm": {"api_key": "sk-or-v1-should-never-be-stored", "model": "qwen/qwen3.7-flash"},
+        **(extra or {}),
+    }
+    return client.post(f"/api/workflows/{workflow_id}{path}", headers=headers, json=body)
+
+
+def test_http_run_is_user_mode_even_with_the_access_token(data_dir: Path):
+    page = FakePage()
+    page.broken_click = True
+    client, repair = _http_app(data_dir, page, access_token=ADMIN, user_token=USER)
+    stored = client.app.state.store.create_workflow(_broken_click_wf_llm_only())
+    headers = {"X-Browser-Platform-Token": ADMIN}
+    res = _wait_run(client, "/run", stored.id, headers)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "failed"
+    assert body.get("repaired") is not True
+    assert "Submit the form" in (body.get("error") or "")
+    assert "strict selectors" in (body.get("error") or "")
+    assert repair.calls == 0
+    assert client.app.state.store.get_workflow(stored.id).definition.version == "1"
+
+
+def test_admin_run_requires_access_token_and_may_repair(data_dir: Path):
+    page = FakePage()
+    page.broken_click = True
+    client, repair = _http_app(data_dir, page, access_token=ADMIN, user_token=USER)
+    stored = client.app.state.store.create_workflow(_broken_click_wf_llm_only())
+    url = f"/api/workflows/{stored.id}/admin-run"
+    assert client.post(url, json={"wait": False, "cdp_url": "http://127.0.0.1:0"}).status_code == 401
+    denied = client.post(url, headers={"X-Browser-Platform-Token": USER}, json={"wait": False, "cdp_url": "http://127.0.0.1:0"})
+    assert denied.status_code == 403
+    res = _wait_run(client, "/admin-run", stored.id, {"X-Browser-Platform-Token": ADMIN})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] in {"succeeded", "succeeded_with_fallback"}
+    assert body.get("repaired") is True
+    assert repair.calls == 1
+    assert client.app.state.store.get_workflow(stored.id).definition.version != "1"
+
+
+def test_identical_tokens_do_not_make_run_an_admin_path(data_dir: Path):
+    """Even when access and user tokens match, POST /run stays user mode."""
+    page = FakePage()
+    page.broken_click = True
+    client, repair = _http_app(data_dir, page, access_token=ADMIN, user_token=ADMIN)
+    store = client.app.state.store
+    stored = store.create_workflow(_broken_click_wf_llm_only())
+    headers = {"X-Browser-Platform-Token": ADMIN}
+    userish = _wait_run(client, "/run", stored.id, headers)
+    assert userish.status_code == 200, userish.text
+    assert userish.json()["status"] == "failed"
+    assert userish.json().get("repaired") is not True
+    assert repair.calls == 0
+    assert store.get_workflow(stored.id).definition.version == "1"
+
+    page2 = FakePage()
+    page2.broken_click = True
+    client2, repair2 = _http_app(data_dir, page2, access_token=ADMIN, user_token=ADMIN)
+    stored2 = client2.app.state.store.create_workflow(_broken_click_wf_llm_only())
+    admin = _wait_run(client2, "/admin-run", stored2.id, headers)
+    assert admin.status_code == 200, admin.text
+    assert admin.json()["status"] in {"succeeded", "succeeded_with_fallback"}
+    assert admin.json().get("repaired") is True
+    assert repair2.calls == 1
+
 
 
 class ExpandPage(FakePage):

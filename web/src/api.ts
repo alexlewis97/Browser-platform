@@ -199,7 +199,7 @@ export const api = {
       body: JSON.stringify({ published }),
     }),
   startRun: (id: string, body: Record<string, unknown>) =>
-    request<RunRecord>(`/api/workflows/${id}/run`, { method: "POST", body: JSON.stringify({ ...body, wait: false }) }),
+    request<RunRecord>(`/api/workflows/${id}/admin-run`, { method: "POST", body: JSON.stringify({ ...body, wait: false }) }),
   repairWorkflow: (id: string, body: Record<string, unknown> = {}) =>
     request<RunRecord>(`/api/workflows/${id}/repair`, { method: "POST", body: JSON.stringify({ wait: false, ...body }) }),
   listRuns: () => request<{ runs: RunRecord[] }>("/api/runs"),

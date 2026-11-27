@@ -542,6 +542,54 @@ def _track_task(request: Request, task: asyncio.Task) -> None:
 
 @router.post("/api/workflows/{workflow_id}/run")
 async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) -> dict[str, Any]:
+    """User-mode run for the run site, extension, and any other /run client.
+
+    Always ``caller="user"``, even if the request presented the admin access
+    token (including when the access and user tokens are the same). Fuzzy
+    rescue, HITL, and in-run repair are not available on this path.
+    """
+
+    return await _start_workflow_run(
+        workflow_id,
+        payload,
+        request,
+        caller="user",
+        allow_hitl=bool(getattr(payload, "interactive", False)),
+        write_back=False,
+    )
+
+
+@router.post("/api/workflows/{workflow_id}/admin-run")
+async def admin_run_workflow(workflow_id: str, payload: RunRequest, request: Request) -> dict[str, Any]:
+    """Admin test-run: may use fuzzy, HITL, and in-run repair, and can write back.
+
+    Requires the access token (or a direct loopback request when no tokens are
+    configured). Not used by the run site or the extension.
+    """
+
+    from browser_platform.local_access import require_admin
+
+    if not require_admin(request, _state(request).settings):
+        raise HTTPException(status_code=403, detail="admin token required")
+    return await _start_workflow_run(
+        workflow_id,
+        payload,
+        request,
+        caller="admin",
+        allow_hitl=True,
+        write_back=bool(payload.write_back),
+    )
+
+
+async def _start_workflow_run(
+    workflow_id: str,
+    payload: RunRequest,
+    request: Request,
+    *,
+    caller: str,
+    allow_hitl: bool,
+    write_back: bool,
+) -> dict[str, Any]:
     state = _state(request)
     try:
         stored = state.store.get_workflow(workflow_id)
@@ -578,26 +626,22 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
         status="running",
         cdp_url=cdp_url,
         model=payload.llm.model if payload.llm else None,
-        write_back=payload.write_back,
+        write_back=write_back,
         started_at=datetime.now(timezone.utc),
     )
     state.store.save_run(pending)
 
-    from browser_platform.local_access import caller_role
-
-    role = caller_role(request, state.settings)
     async def _run_in_background() -> Any:
         return await state.runner.run(
             stored,
             cdp_url=cdp_url,
             variables=payload.variables,
             llm=payload.llm,
-            write_back_repairs=payload.write_back,
+            write_back_repairs=write_back,
             run_id=run_id,
             strict=payload.strict,
-            # HITL: user runs only when interactive; admin runs may pause for confirmation.
-            allow_hitl=bool(getattr(payload, "interactive", False)) or role == "admin",
-            caller=role,
+            allow_hitl=allow_hitl,
+            caller=caller,
         )
 
     task = asyncio.create_task(_run_in_background())
@@ -626,12 +670,12 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
 async def repair_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
     """Admin-only: replay the last failed user run and write back a repaired version on success."""
 
-    from browser_platform.local_access import caller_role
+    from browser_platform.local_access import require_admin
     from browser_platform.models.llm import LLMConfig
     from browser_platform.models.run import RunRecord
 
     state = _state(request)
-    if caller_role(request, state.settings) != "admin":
+    if not require_admin(request, state.settings):
         raise HTTPException(status_code=403, detail="admin token required")
     try:
         stored = state.store.get_workflow(workflow_id)

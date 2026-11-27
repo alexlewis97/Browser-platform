@@ -59,7 +59,7 @@ def test_confirmation_rest_and_websocket(data_dir: Path):
             assert "needs_confirmation" in hello["features"]
 
             started = client.post(
-                f"/api/workflows/{wf_id}/run",
+                f"/api/workflows/{wf_id}/admin-run",
                 json={"cdp_url": "http://127.0.0.1:0", "wait": False, "interactive": True, "variables": {"name": "Ann Cohen"}},
             )
             assert started.status_code == 200

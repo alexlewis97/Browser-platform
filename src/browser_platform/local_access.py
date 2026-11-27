@@ -151,26 +151,42 @@ def _configured_tokens(settings: Any | None) -> dict[str, str]:
     if admin and user and hmac.compare_digest(admin, user) and not _warned_identical_tokens:
         _warned_identical_tokens = True
         log.warning(
-            "access_token and user_token are identical; matching requests are treated as admin"
+            "access_token and user_token are identical; /run stays user mode, "
+            "admin only on /repair and /admin-run"
         )
     return {"admin": admin, "user": user}
 
 
-def caller_role(connection: Any, settings: Any | None, *, allow_query: bool = False) -> str:
-    """'admin' only when the request presented the admin access token.
+def require_admin(connection: Any, settings: Any | None, *, allow_query: bool = False) -> bool:
+    """True only for the explicit admin endpoints (/repair, /admin-run).
 
-    The user token, a missing token on loopback, or an unidentified caller is 'user'.
-    In-run repair is never allowed for 'user', regardless of env or request flags.
+    When an access token is configured, the request must present that token.
+    When no tokens are configured, only a *direct* loopback request (peer on
+    loopback and no X-Forwarded-* / X-Real-IP headers) is admin. Traffic that
+    arrives via Caddy cannot spoof that: forwarded headers, or a non-loopback
+    peer, are not local.
     """
 
     tokens = _configured_tokens(settings)
     provided = provided_access_token(connection, allow_query=allow_query)
-    if provided and tokens["admin"] and hmac.compare_digest(provided, tokens["admin"]):
-        return "admin"
-    # No tokens configured: loopback-only operator mode (laptop admin UI, TestClient).
-    if not tokens["admin"] and not tokens["user"]:
-        return "admin"
-    return "user"
+    if tokens["admin"]:
+        return bool(provided and hmac.compare_digest(provided, tokens["admin"]))
+    # No tokens: only a direct (unproxied) loopback process — same bar as
+    # access_token_ok. Forwarded headers, including those Caddy adds, are not local.
+    if is_local_request(connection, settings):
+        return True
+    bound = is_loopback_host(getattr(settings, "host", None) if settings is not None else "127.0.0.1")
+    return bool(bound and not has_proxy_headers(connection))
+
+
+def caller_role(connection: Any, settings: Any | None, *, allow_query: bool = False) -> str:
+    """'admin' only when require_admin is true. Used by the admin endpoints.
+
+    ``POST /run`` does not consult this: it is always user mode, even if the
+    access token was presented (including when access and user tokens match).
+    """
+
+    return "admin" if require_admin(connection, settings, allow_query=allow_query) else "user"
 
 
 def origin_allowed(origin: str | None, settings: Any | None) -> bool:
@@ -234,6 +250,7 @@ __all__ = [
     "DEFAULT_CORS_ORIGINS",
     "access_token_ok",
     "caller_role",
+    "require_admin",
     "has_proxy_headers",
     "hostname_without_port",
     "is_local_request",
