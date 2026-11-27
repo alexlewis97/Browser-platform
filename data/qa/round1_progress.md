@@ -52,3 +52,17 @@
   - Ligue 1 slug: 3/3 (french-ligue-one).
   - Yesterday's results: filter=results inferred every time. After the fixes it is correct ("no matches Thursday 26 Nov").
 - Open: occasional "none" on an undated Today view (synthesis variance, about 1 in 4 TRAIN); a 75k-char Wikipedia-style page is still cut at 4000 chars (unchanged).
+
+## 12:47-13:00 ordering/typo bugs (generic)
+- 1728506 + fd4fbd1 (planner/answer code only):
+  - facts_order.py parses facts into events (date, time, context). An undated item in a page view labelled Today is dated today.
+  - Code computes `events_on_question_dates` (a weekend covers Sat+Sun) and `computed_order` (asc for first/earliest/next, desc for last/latest; date phrases excluded; ties share a rank; undated items listed but not ranked). It is passed to synthesis as `computed`.
+  - Post-answer check: if the lead names a lower rank first, or says "none" while items exist, one rewrite is tried, then the answer is built from the computed data.
+  - Fuzzy spelling: edit distance (OSA) ≥0.8 against the input's examples/enum. The best match is used and recorded as `resolved` (resolved_from). A tie becomes "did you mean A or B?". A planner-corrected spelling counts as stated when the user's word is a near match. List items are resolved one by one and never dropped.
+  - Intent coverage: an unmapped intent naming a step's argument value counts as served (fixed the spurious "partial").
+- 4c… web-run redeployed 12:53 (https://browser-platform-run.vercel.app/browser-platform-extension.zip serves 1.5.0, byte-identical). Backend live 12:57 (backup src-backup-order-1252.tgz).
+- Live (after fd4fbd1):
+  - TRAIN: "Tottenham, arsenal or chelse": Chelsea now runs, and the order is consistent with the data (Spurs 14:05 before Arsenal 16:30; Chelsea's item has no printed date and is reported as unranked). Brighton/Fulahm: Fulham resolved; the Brighton run failed (tool run, flaky).
+  - TEST 5/6: Wolves/Everton/Leeds, Bournemouth/Palce (tie), Brentford/Nottm Forest this weekend, Celtic/Rangers, PL today all OK. Chelsea/Arsnal: typo resolved, but the answer is "Arsenal first" because Chelsea's tonight game has no printed date on the team page.
+  - Typos 4/4 resolved; 0 dropped.
+- Open: team pages print today's game without a date. The team fixtures tool has no explore-detected default_view (an authoring gap, BRO-19 area), so code can't date it. The consistency rewrite never fired live (unit-tested only).
