@@ -292,6 +292,45 @@ async def llm_normalize_values(
     return mapped, usage or {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
 
 
+async def llm_implied_value(
+    item: dict[str, Any], user_words: str, *, complete: CompleteFn | None = None
+) -> tuple[str, str, dict[str, Any]]:
+    """(value, implied_by, usage): the one value that follows from what the user named, or ("", "")."""
+
+    usage = {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
+    if complete is None and not env_api_key():
+        return "", "", usage
+    system = (
+        "A website tool needs a value the user did not name. Decide whether exactly one value follows from what "
+        "the user did name (for example the one competition that all the named clubs play in, or the country of a "
+        "named city). Never pick one of many (a club for a league, an example value, a guess). "
+        'Reply JSON only: {"value": "<value in the tool\'s format, or empty>", '
+        '"implied_by": "<exact words copied from user_words, or empty>"}'
+    )
+    payload = {
+        "user_words": (user_words or "")[:600],
+        "param": item.get("name"),
+        "description": item.get("description") or item.get("label") or "",
+        "examples": (item.get("examples") or [])[:8],
+    }
+    try:
+        message, usage = await (complete or chat_complete)(
+            [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            max_tokens=80,
+            response_format={"type": "json_object"},
+        )
+        text = message_text(message) if isinstance(message, dict) else str(message or "")
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.I)
+        data = json.loads(text or "{}")
+    except Exception:
+        return "", "", usage or {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
+    value = str(data.get("value") or "").strip() if isinstance(data, dict) else ""
+    implied = " ".join(str(data.get("implied_by") or "").lower().split()) if isinstance(data, dict) else ""
+    if not value or not implied or not _span_in_user_words(implied, user_words) or stated_in(value, implied):
+        return "", "", usage
+    return value, implied, usage
+
+
 def apply_local_canonical(value: str, hints: dict[str, Any]) -> str | None:
     return match_canonical_example(value, hints.get("examples") or [])
 
@@ -561,6 +600,19 @@ async def normalize_prepared_calls(
         call["arguments"] = args
         call["normalized"] = True
     mapped, usage = await llm_normalize_values(pending, complete=complete)
+    # Before declining a required value as unstated, ask once, on its own, whether exactly one
+    # value follows from what the user named (the competition two named clubs play in). The
+    # model's span is verified against the user's words by code. Rare path, at most 3 calls.
+    declined = [
+        item for item in pending
+        if item.get("check") and (mapped.get((str(item.get("call") or ""), str(item.get("name") or ""))) or {}).get("stated") is False
+    ]
+    for item in declined[:3]:
+        value, implied, extra = await llm_implied_value(item, str(item.get("_user_words") or user_words or ""), complete=complete)
+        usage = merge_usage(usage, extra)
+        if value and implied:
+            key = (str(item.get("call") or ""), str(item.get("name") or ""))
+            mapped[key] = {"canonical": value, "slug": path_slug(value), "implied_by": implied}
     for call in calls:
         definition = (definitions or {}).get(call.get("workflow_id") or "") or call.get("_definition")
         args = dict(call.get("arguments") or {})
@@ -592,6 +644,16 @@ async def normalize_prepared_calls(
                 continue
             if row.get("implied_by"):
                 call.setdefault("inferred", []).append({"param": name, "value": text, "implied_by": row["implied_by"]})
+            # Never swap one named entity for another the user also named ("arsnal" -> Liverpool).
+            canonical = str(row.get("canonical") or "")
+            if (
+                user_words and canonical and canonical.lower() != text.lower()
+                and (stated_in(text, user_words) or fuzzy_user_span(text, user_words))
+                and (stated_in(canonical, user_words) or fuzzy_user_span(canonical, user_words))
+                and fuzzy_known(text, [canonical])[0] is None
+                and not stated_in(text, canonical)
+            ):
+                continue
             # If the first pass already changed this field locally, do not overwrite.
             if raw.get(name) is not None and str(raw.get(name)).strip() != text:
                 continue

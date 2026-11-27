@@ -124,3 +124,37 @@ def test_implied_required_value_runs_and_is_recorded():
     asyncio.run(normalize_prepared_calls([bad], definitions={"w": d}, user_words=words, complete=make(
         {"call": "c1", "param": "competition", "canonical": "north-league", "from": "", "implied_by": "the north league"})))
     assert bad.get("unstated")
+
+
+def test_normaliser_never_swaps_two_named_entities_and_retries_implied():
+    import asyncio, json
+    from browser_platform.models.workflow import WorkflowDefinition
+    from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
+
+    d = WorkflowDefinition.model_validate({
+        "name": "T", "steps": [{"type": "navigation", "url": "https://ex.org/{team|slug}/{competition|slug}"}, {"type": "extract", "extractionGoal": "x"}],
+        "input_schema": [{"name": "team", "type": "string", "required": True},
+                         {"name": "competition", "type": "string", "required": True, "format": "slug", "examples": ["north-league"]}],
+    })
+    words = "who has more pts, alphaa or betaville"
+    calls_seen = []
+
+    async def fake(messages, **_k):
+        body = json.loads(messages[1]["content"])
+        if "inputs" not in body:  # the focused implied-value question
+            calls_seen.append("implied")
+            return {"content": json.dumps({"value": "north-league", "implied_by": "alphaa or betaville"})}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0, "used": True}
+        payload = body["inputs"]
+        calls_seen.append(len(payload))
+        rows = []
+        for it in payload:
+            if it["param"] == "team":
+                rows.append({"call": it["call"], "param": "team", "canonical": "Betaville", "slug": "betaville"})
+            else:
+                rows.append({"call": it["call"], "param": "competition", "canonical": "north-league", "from": ""})
+        return {"content": json.dumps({"values": rows})}, {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0.0, "used": True}
+
+    call = {"id": "c1", "workflow_id": "w", "arguments": {"team": "Alphaa", "competition": "north-league"}}
+    asyncio.run(normalize_prepared_calls([call], definitions={"w": d}, user_words=words, complete=fake))
+    assert call["arguments"]["team"] == "Alphaa"  # not swapped for the other named club
+    assert not call.get("unstated") and call.get("inferred") and calls_seen[-1] == "implied"
