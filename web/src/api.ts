@@ -89,6 +89,7 @@ export type RunRecord = {
   needs_confirmation?: unknown;
   confirmation_event?: unknown;
   event?: unknown;
+  workflow_deleted?: boolean;
   [key: string]: unknown;
 };
 
@@ -185,6 +186,8 @@ export const api = {
     request<StoredWorkflow>("/api/workflows", { method: "POST", body: JSON.stringify(payload) }),
   updateWorkflow: (id: string, definition: WorkflowDefinition) =>
     request<StoredWorkflow>(`/api/workflows/${id}`, { method: "PUT", body: JSON.stringify({ definition }) }),
+  deleteWorkflow: (id: string) =>
+    request<{ ok: boolean; id: string; runs_kept?: number }>(`/api/workflows/${id}`, { method: "DELETE" }),
   startRun: (id: string, body: Record<string, unknown>) =>
     request<RunRecord>(`/api/workflows/${id}/run`, { method: "POST", body: JSON.stringify({ ...body, wait: false }) }),
   listRuns: () => request<{ runs: RunRecord[] }>("/api/runs"),

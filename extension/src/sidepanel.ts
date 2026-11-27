@@ -533,7 +533,9 @@ document.addEventListener("click", (event) => {
   }
   if (action === "remove") {
     const id = (target.closest("[data-id]") as HTMLElement).dataset.id || "";
-    if (!id || !confirm(he.flash.removeConfirm)) return;
+    const installed = workflows.find((w) => w.id === id);
+    const message = installed?.source === "record" ? he.flash.removeLibraryConfirm : he.flash.removeConfirm;
+    if (!id || !confirm(message)) return;
     void send("bp-remove", { id }).then(async () => {
       if (selectedId === id) selectedId = "";
       await refreshState();

@@ -322,13 +322,20 @@ async def replace_workflow(workflow_id: str, payload: WorkflowReplace, request: 
 
 @router.delete("/api/workflows/{workflow_id}")
 async def delete_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
+    """Owner-scoped delete: drop the workflow and caches, keep flagged run history."""
+    state = _state(request)
     try:
-        _state(request).store.delete_workflow(workflow_id)
+        runs_kept = state.store.delete_workflow(workflow_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="workflow not found")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "id": workflow_id}
+    caches_cleared = 0
+    runner = getattr(state, "runner", None)
+    if runner is not None:
+        caches_cleared += runner.result_cache.drop_workflow(workflow_id)
+        caches_cleared += runner.action_cache.drop_workflow(workflow_id)
+    return {"ok": True, "id": workflow_id, "runs_kept": runs_kept, "caches_cleared": caches_cleared}
 
 
 def _track_task(request: Request, task: asyncio.Task) -> None:

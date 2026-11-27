@@ -87,7 +87,48 @@ class FileStore:
             self._save_index(index)
             return StoredWorkflow(id=wf_id, path=str(path), definition=definition)
 
-    def delete_workflow(self, workflow_id: str) -> None:
+    def _related_version_files(self, wf_id: str) -> list[Path]:
+        """Version snapshots and backups for a workflow id, never another id's files."""
+        # Only exact id or dotted suffixes (foo.workflow.json.bak, foo.v1.json).
+        # A hyphen/underscore prefix would also match a different id such as foo-bar.
+        folders = [
+            self.workflows_dir,
+            self.data_dir / "versions",
+            self.data_dir / "workflow_versions",
+            self.workflows_dir / "versions",
+        ]
+        found: list[Path] = []
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            for path in folder.iterdir():
+                if not path.is_file():
+                    continue
+                name = path.name
+                if name == wf_id or name.startswith(f"{wf_id}."):
+                    found.append(path)
+        return found
+
+    def _flag_runs_deleted(self, wf_id: str) -> int:
+        """Keep run history, but mark that the source workflow is gone."""
+        flagged = 0
+        for path in self.runs_dir.glob("*.json"):
+            try:
+                data = self._read_json(path)
+            except Exception:
+                continue
+            if not isinstance(data, dict) or str(data.get("workflow_id") or "") != wf_id:
+                continue
+            if data.get("workflow_deleted") is True:
+                flagged += 1
+                continue
+            data["workflow_deleted"] = True
+            self._write_json(path, redact(data))
+            flagged += 1
+        return flagged
+
+    def delete_workflow(self, workflow_id: str) -> int:
+        """Remove the workflow document and related versions. Returns flagged run count."""
         with self._lock:
             wf_id = safe_workflow_id(workflow_id)
             index = self._index()
@@ -96,8 +137,14 @@ class FileStore:
             path = self._workflow_file(wf_id)
             if path.is_file():
                 path.unlink()
+            for extra in self._related_version_files(wf_id):
+                try:
+                    extra.unlink()
+                except OSError:
+                    continue
             index.pop(wf_id, None)
             self._save_index(index)
+            return self._flag_runs_deleted(wf_id)
 
     def _workflow_path(self, workflow_id: str, recorded: str | None = None) -> Path:
         """Prefer a recorded path under workflows_dir; never follow escapes."""

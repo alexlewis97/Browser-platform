@@ -55,3 +55,4 @@ class RunRecord(BaseModel):
     error: str | None = None
     write_back: bool = True
     confirmation: dict[str, Any] | None = None
+    workflow_deleted: bool = False

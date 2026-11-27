@@ -41,6 +41,9 @@ def test_file_store_rejects_bad_ids(tmp_path: Path):
 
 def test_file_store_delete(tmp_path: Path):
     store = FileStore(tmp_path)
+    from datetime import datetime, timezone
+
+    from browser_platform.models.run import RunRecord
     from browser_platform.models.workflow import WorkflowDefinition, WorkflowStep
 
     definition = WorkflowDefinition(
@@ -53,9 +56,31 @@ def test_file_store_delete(tmp_path: Path):
         ],
     )
     stored = store.create_workflow(definition)
-    store.delete_workflow(stored.id)
+    version_dir = tmp_path / "versions"
+    version_dir.mkdir()
+    snapshot = version_dir / f"{stored.id}.v1.workflow.json"
+    snapshot.write_text("{}", encoding="utf-8")
+    leftover = tmp_path / "workflows" / f"{stored.id}.workflow.json.bak"
+    leftover.write_text("{}", encoding="utf-8")
+    run = store.save_run(
+        RunRecord(
+            id="run-keep-1",
+            workflow_id=stored.id,
+            workflow_name="x",
+            workflow_version="1",
+            status="succeeded",
+            started_at=datetime.now(timezone.utc),
+        )
+    )
+    flagged = store.delete_workflow(stored.id)
+    assert flagged == 1
     with pytest.raises(KeyError):
         store.get_workflow(stored.id)
+    kept = store.get_run(run.id)
+    assert kept.workflow_deleted is True
+    assert kept.workflow_name == "x"
+    assert not snapshot.exists()
+    assert not leftover.exists()
 
 
 def test_nav_policy_blocks_file_and_loopback_for_remote():
@@ -73,13 +98,18 @@ def test_redaction_covers_sk_proj_and_query_tokens():
 
 
 def test_delete_workflow_api(data_dir: Path):
+    from datetime import datetime, timezone
+
+    from browser_platform.models.run import RunRecord
+
     settings = Settings(
         data_dir=data_dir,
         pomerado_host=data_dir / "no-such-host.mjs",
         auto_launch_chrome=False,
         host="127.0.0.1",
     )
-    client = TestClient(create_app(settings, root=Path(__file__).resolve().parents[1]))
+    app = create_app(settings, root=Path(__file__).resolve().parents[1])
+    client = TestClient(app)
     created = client.post(
         "/api/workflows",
         json={
@@ -94,9 +124,92 @@ def test_delete_workflow_api(data_dir: Path):
     )
     assert created.status_code == 200, created.text
     wf_id = created.json()["id"]
+    other = client.post(
+        "/api/workflows",
+        json={
+            "name": "keep-me",
+            "description": "x",
+            "version": "1",
+            "steps": [
+                {"type": "navigation", "url": "https://example.com"},
+                {"type": "extract", "extractionGoal": "heading"},
+            ],
+        },
+    ).json()["id"]
+    app.state.store.save_run(
+        RunRecord(
+            id="kept-run",
+            workflow_id=wf_id,
+            workflow_name="to-delete",
+            workflow_version="1",
+            status="succeeded",
+            started_at=datetime.now(timezone.utc),
+        )
+    )
+    from browser_platform.models.workflow import SelectorStrategy
+
+    app.state.runner.result_cache.put(wf_id, 0, "https://example.com/", "heading", {"ok": True})
+    app.state.runner.action_cache.put(
+        wf_id, 1, "https://example.com/", SelectorStrategy(type="css", value="h1")
+    )
+    missing = client.delete("/api/workflows/does-not-exist")
+    assert missing.status_code == 404
+    bad = client.delete("/api/workflows/not valid!")
+    assert bad.status_code in {400, 404, 422}
     deleted = client.delete(f"/api/workflows/{wf_id}")
-    assert deleted.status_code == 200
+    assert deleted.status_code == 200, deleted.text
+    body = deleted.json()
+    assert body["ok"] is True
+    assert body["id"] == wf_id
+    assert body["runs_kept"] == 1
+    assert body["caches_cleared"] >= 1
     assert client.get(f"/api/workflows/{wf_id}").status_code == 404
+    listed = client.get("/api/workflows").json()["workflows"]
+    assert all(w["id"] != wf_id for w in listed)
+    assert any(w["id"] == other for w in listed)
+    kept = client.get("/api/runs/kept-run")
+    assert kept.status_code == 200
+    assert kept.json()["workflow_deleted"] is True
+    assert kept.json()["workflow_name"] == "to-delete"
+    assert app.state.runner.result_cache.get(wf_id, 0, "https://example.com/", "heading") is None
+    assert app.state.runner.action_cache.get(wf_id, 1, "https://example.com/") is None
+    again = client.delete(f"/api/workflows/{wf_id}")
+    assert again.status_code == 404
+
+
+def test_delete_workflow_requires_access_token(data_dir: Path):
+    settings = Settings(
+        data_dir=data_dir,
+        pomerado_host=data_dir / "no-such-host.mjs",
+        auto_launch_chrome=False,
+        host="127.0.0.1",
+        access_token="test-token-not-for-production",
+        cors_origins="https://example-app.vercel.app",
+    )
+    client = TestClient(create_app(settings, root=Path(__file__).resolve().parents[1]))
+    headers = {"X-Browser-Platform-Token": "test-token-not-for-production"}
+    created = client.post(
+        "/api/workflows",
+        headers=headers,
+        json={
+            "name": "token-delete",
+            "description": "x",
+            "version": "1",
+            "steps": [
+                {"type": "navigation", "url": "https://example.com"},
+                {"type": "extract", "extractionGoal": "heading"},
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    wf_id = created.json()["id"]
+    denied = client.delete(f"/api/workflows/{wf_id}")
+    assert denied.status_code == 401
+    wrong = client.delete(f"/api/workflows/{wf_id}", headers={"X-Browser-Platform-Token": "nope"})
+    assert wrong.status_code == 401
+    allowed = client.delete(f"/api/workflows/{wf_id}", headers=headers)
+    assert allowed.status_code == 200, allowed.text
+    assert client.get(f"/api/workflows/{wf_id}", headers=headers).status_code == 404
 
 
 def test_websocket_rejects_bad_origin(data_dir: Path):

@@ -751,7 +751,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
       }
       if (kind === "bp-remove") {
-        await removeInstalled((message as { id: string }).id);
+        const id = (message as { id: string }).id;
+        const item = await getInstalled(id);
+        await removeInstalled(id);
+        if (item?.source === "record") {
+          try {
+            await backendFetch(`/api/workflows/${encodeURIComponent(id)}`, { method: "DELETE" });
+          } catch {
+            // Local uninstall still succeeds if the library copy is already gone or offline.
+          }
+        }
         sendResponse({ ok: true });
         return;
       }

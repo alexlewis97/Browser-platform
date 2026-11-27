@@ -61,5 +61,12 @@ class ActionCache:
     ) -> None:
         self._items[cache_key(workflow_id, step_index, url, variables)] = strategy
 
+    def drop_workflow(self, workflow_id: str) -> int:
+        removed = 0
+        for key in [k for k in self._items if k[0] == workflow_id]:
+            self._items.pop(key, None)
+            removed += 1
+        return removed
+
     def clear(self) -> None:
         self._items.clear()

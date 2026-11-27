@@ -147,6 +147,7 @@ The e2e smoke test launches a local Chromium with `--remote-debugging-port` (sta
 | --- | --- | --- |
 | GET | `/health` | Liveness |
 | POST/GET/PUT | `/api/workflows` | Create / list / update / fetch a workflow-use document |
+| DELETE | `/api/workflows/{id}` | Delete a workflow (requires the access token when one is configured). Clears result and action caches and version snapshots; past run records are kept and flagged `workflow_deleted` |
 | POST | `/api/workflows/from-task` | Create a workflow from a natural-language task (browser-use demo + 0-token replay). `wait: false` returns a job immediately |
 | GET | `/api/workflows/from-task/{job_id}` | Poll a from-task job (status, creation vs replay tokens/time, saved workflow) |
 | POST | `/api/workflows/from-task/{job_id}/confirmation` | Resume if the job needs variable confirmation or the agent asks a human |

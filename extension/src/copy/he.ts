@@ -144,6 +144,7 @@ export const he = {
     marketFailed: "לא ניתן לטעון את השוק",
     listingsRefreshed: "הרשימה רועננה.",
     removeConfirm: "להסיר את הזרימה המותקנת מהתוסף?",
+    removeLibraryConfirm: "למחוק את הזרימה מהתוסף ומהספרייה? הרצות קודמות יישמרו.",
     codeInstallConfirm: "חבילה זו מכילה קוד אוטומציה להרצה. בדקו לפני הרצה. להתקין בכל זאת?",
     installFailed: "ההתקנה נכשלה",
     updated: "עודכן.",

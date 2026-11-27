@@ -299,6 +299,7 @@ async function renderWorkflows(): Promise<string> {
             </a>
             <div class="btn-row" style="margin-top:10px">
               <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.publish}</button>
+              <button type="button" class="btn danger" data-action="delete-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.delete}</button>
             </div>
           </div>`,
           )
@@ -464,6 +465,7 @@ async function renderWorkflow(id: string): Promise<string> {
         ${typeof def.mint_job_id === "string" && def.mint_job_id ? `<p style="margin:16px 0 0"><a class="btn" href="#/mint/${encodeURIComponent(String(def.mint_job_id))}">${he.workflow.mintTrace}</a></p>` : ""}
         <div class="btn-row" style="margin-top:14px">
           <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(stored.id)}">${he.workflows.publish}</button>
+          <button type="button" class="btn danger" data-action="delete-workflow" data-id="${escapeHtml(stored.id)}">${he.workflows.delete}</button>
         </div>
       </div>
       <form id="run-form" class="card" data-id="${escapeHtml(stored.id)}">
@@ -527,6 +529,7 @@ function runView(run: RunRecord): string {
       <div class="row">
         <span class="pill ${statusClass(run.status)}"><span class="dot"></span>${escapeHtml(run.status)}${spin}</span>
         <span class="mono muted">${escapeHtml(run.id.slice(0, 10))}</span>
+        ${run.workflow_deleted ? `<span class="muted">${escapeHtml(he.runs.deletedWorkflow)}</span>` : ""}
       </div>
       <div class="status-grid">
         <div class="stat"><b>${escapeHtml(duration)}</b><span>${he.runPage.duration}</span></div>
@@ -567,7 +570,7 @@ async function renderRuns(): Promise<string> {
               <div class="row">
                 <div class="grow">
                   <strong>${escapeHtml(run.workflow_name)}</strong>
-                  <div class="meta">${escapeHtml(when)} · ${escapeHtml(totalTokens(run))}</div>
+                  <div class="meta">${escapeHtml(when)} · ${escapeHtml(totalTokens(run))}${run.workflow_deleted ? " · " + he.runs.deletedWorkflow : ""}</div>
                 </div>
                 <span class="pill ${statusClass(run.status)}">${escapeHtml(run.status)}</span>
               </div>
@@ -1756,6 +1759,29 @@ async function onClick(event: Event): Promise<void> {
     const id = (target.closest("[data-id]") as HTMLElement | null)?.dataset.id;
     if (!id) return;
     location.hash = `#/marketplace?publish=${encodeURIComponent(id)}`;
+    return;
+  }
+  if (action === "delete-workflow") {
+    event.preventDefault();
+    const id = (target.closest("[data-id]") as HTMLElement | null)?.dataset.id;
+    if (!id) return;
+    if (!window.confirm(he.flash.deleteWorkflowConfirm)) return;
+    const btn = target.closest("button") as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    try {
+      await api.deleteWorkflow(id);
+      saveRunInputs(id, {});
+      flashMessage = { kind: "ok", text: he.flash.workflowDeleted };
+      if (parseRoute().name === "workflows") {
+        await render();
+      } else {
+        go("/workflows");
+      }
+    } catch (err) {
+      if (btn) btn.disabled = false;
+      flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
+      await render();
+    }
     return;
   }
   if (action === "market-delete") {
