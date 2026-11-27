@@ -38,3 +38,17 @@
 - Results: TEST Premier League today was correct, and an earlier Bundesliga today run was correct. TRAIN Championship/La Liga today were still wrong: synthesis says "none" because the extract has no printed date and is wrapped in month/Results navigation text.
 - Tried 081aa81: a code-stated view note prefixed to the facts. It was worse live (TRAIN 0/2, TEST4 Serie A/Bundesliga 0/2), so I reverted it in 61ff636 and redeployed (12:26, /health ok). The REGRESS "fixtures this month" case was correct.
 - Open: synthesis misreads nav-wrapped extracts (a better next step is to strip navigation/boilerplate from facts or extract the list region); the planner omits filter=results for "yesterday's results" (it sent month="yesterday"); the Ligue 1 slug normaliser gap.
+
+## 12:27-12:45 BRO-18 answer side (generic)
+- f2711c4: the extract's main/body fallback drops page chrome before the model sees it: semantic nav/header/footer/aside, in-page jump links, short control buttons and link strips (many short links, little other text). Elements are hidden only while innerText is read. Falls back to the raw text if the result is empty or tiny. Chat items carry `page_view` metadata (input, value, or "page default view" plus the page's label). The prose rule was replaced by a schema note. Tense inference: a question wholly in the past/future fills an omitted view enum with the one value whose words say that tense. `match_known_value`: free text maps to an enum value or a slug-format example value when there is a unique match (number words, word subset).
+- 3b61041: view controls (inputs with default_view) are not required to appear in the extract; page_view is kept on stored items.
+- d186604: only the innermost link strip is dropped (DemoQA books kept its table; Wikipedia lost 4%; BBC nav removed).
+- 6f76586: dates_in_question carry weekday names.
+- Live 12:44 (backup /home/ubuntu/src-backup-answer-1232.tgz; restarts waited for zero live jobs; /health ok each time).
+- Results over 4 post-fix runs:
+  - TRAIN (Championship today, La Liga today): 7/9; the misses were synthesis variance in runs 1 and 3.
+  - TEST (Premier League, Serie A, Bundesliga today): 9/9.
+  - REGRESS (Championship fixtures this month): 3/3.
+  - Ligue 1 slug: 3/3 (french-ligue-one).
+  - Yesterday's results: filter=results inferred every time. After the fixes it is correct ("no matches Thursday 26 Nov").
+- Open: occasional "none" on an undated Today view (synthesis variance, about 1 in 4 TRAIN); a 75k-char Wikipedia-style page is still cut at 4000 chars (unchanged).
