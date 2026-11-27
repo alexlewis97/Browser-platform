@@ -293,7 +293,7 @@ class ChatOrchestrator:
 
         # 1) Retrieve a short slate of skills; never the whole library.
         pool = self.skills.selection_pool(manifests) or manifests
-        ranked = await rank_skills(retrieval_query(message, history), pool, k=TOP_K, embedder=self.skills.embedder)
+        ranked = await rank_skills(retrieval_query(message, history), pool, k=TOP_K, embedder=self.skills.embedder, prior=self.skills.reliability())
         candidates = ranked["skills"]
         job["skills_considered"] = [m.get("slug") for m in candidates]
         for manifest in candidates:

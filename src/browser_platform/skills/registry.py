@@ -136,6 +136,9 @@ class SkillRegistry:
         self._stats = (time.monotonic(), stats)
         return stats
 
+    def reliability(self) -> dict[str, float]:
+        return {wf: (ok + 1) / (total + 2) for wf, (ok, total) in self.run_stats().items()}
+
     def selection_pool(self, manifests: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """One skill per capability: same site + same input names collapse to the most reliable.
 
@@ -175,7 +178,7 @@ class SkillRegistry:
     async def search(self, query: str, *, k: int = 6, include_duplicates: bool = False) -> dict[str, Any]:
         _tools, manifests = self.catalog()
         pool = manifests if include_duplicates else self.selection_pool(manifests)
-        return await rank_skills(query, pool, k=k, embedder=self.embedder)
+        return await rank_skills(query, pool, k=k, embedder=self.embedder, prior=self.reliability())
 
     # ---- enrichment ----------------------------------------------------
     async def enrich(self, wf_id: str, *, api_key: str | None = None, model: str | None = None) -> dict[str, Any]:

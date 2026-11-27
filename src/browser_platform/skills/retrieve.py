@@ -133,6 +133,7 @@ async def rank_skills(
     *,
     k: int = 6,
     embedder: Embedder | None = None,
+    prior: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Return {"skills": [manifest...], "method": ..., "embed_tokens": n, "scores": [...]}"""
 
@@ -161,6 +162,10 @@ async def rank_skills(
         except Exception as exc:  # network or quota: lexical only
             embedder.disabled_reason = type(exc).__name__
             dense = []
+    if prior:
+        # Reliability prior from run history (0..1): nudges, never overrides, relevance.
+        for i in list(fused):
+            fused[i] *= 0.85 + 0.3 * float(prior.get(str(manifests[i].get("id")), 0.5))
     if not fused:
         # Nothing matched lexically and no embeddings: give the planner a small default slate.
         chosen = list(range(min(k, len(manifests))))
