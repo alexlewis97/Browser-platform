@@ -539,7 +539,17 @@ async def explore_definition(
         sibling_views = propose_sibling_views(html, str(start_url or ""), nav_template or "")
         families, name_usage = await name_option_families(families, definition, llm=llm)
         usage_extra = name_usage
-        for item in families + propose_from_html(html, str(start_url or ""), existing=existing):
+        html_props = propose_from_html(html, str(start_url or ""), existing=existing)
+        bound_values = {str(p.get("default")) for p in proposals + html_props if p.get("default") not in (None, "")}
+        # A link family on a URL place another proposal already binds is the same parameter.
+        families = [
+            f for f in families
+            if not any(
+                v and re.search(r"(?<![0-9A-Za-z])" + re.escape(v) + r"(?![0-9A-Za-z])", str((f.get("binding") or {}).get("replace") or ""))
+                for v in bound_values
+            )
+        ]
+        for item in html_props + families:
             if item["name"] not in seen:
                 proposals.append(item)
                 seen.add(item["name"])

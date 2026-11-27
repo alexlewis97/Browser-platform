@@ -56,3 +56,9 @@ def test_derive_view_keeps_used_inputs_and_whole_page_extract():
         "view": "calendar", "label": "Calendar", "url_template": BASE + "/r/{region}/calendar"})
     assert derived.steps[0].url.endswith("/calendar") and derived.steps[-1].extractionGoal == "Calendar"
     assert [i.name for i in derived.input_schema] == ["region"] and derived.id is None
+
+
+def test_last_segment_values_are_a_parameter_when_url_has_none():
+    html = "".join(f'<a href="/tag/{t}/">{t}</a>' for t in ("love", "life", "humor", "books"))
+    props = propose_from_link_families(html, BASE + "/tag/love/", step_template=BASE + "/tag/love/")
+    assert props and props[0]["default"] == "love" and props[0]["link_family"]["kind"] == "option"

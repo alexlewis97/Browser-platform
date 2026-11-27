@@ -104,8 +104,8 @@ def propose_from_link_families(
         current = cur[pos]
         options = [current] + [v for v in values if v != current]
         kind = _kind(options)
-        if kind == "option" and pos == len(cur) - 1 and len(cur) > 1:
-            continue  # the last segment names a different view of the same thing: a sibling tool, not an input
+        if kind == "option" and _is_view_family(pos, cur, values, template_segs):
+            continue  # a different view of the same parameterised thing: a sibling tool, not an input
         name = _name_for(kind, cur, pos, used)
         if not name:
             continue
@@ -132,7 +132,7 @@ def propose_from_link_families(
         if name in used:
             continue
         current = cur_query.get(key, "")
-        options = [v for v in values]
+        options = ([current] if current else []) + [v for v in values if v != current]
         kind = _kind(options)
         proposals.append(_proposal(name, kind, current, options, values, step_index, url, query_key=key))
         used.add(name)
@@ -197,6 +197,20 @@ def _proposal(
     return proposal
 
 
+MAX_VIEWS = 6
+
+
+def _is_view_family(pos: int, cur: list[str], values: dict[str, str] | None, template_segs: list[str]) -> bool:
+    """The last path segment of an already-parameterised URL, with only a few alternatives,
+    names a *view* of that entity (/{competition}/table vs /fixtures), not a value to pick."""
+
+    if pos != len(cur) - 1 or len(cur) < 2:
+        return False
+    if not any("{" in seg for seg in template_segs):
+        return False
+    return values is None or len(values) <= MAX_VIEWS
+
+
 def propose_sibling_views(html: str, url: str, template: str, *, limit: int = 6) -> list[dict[str, Any]]:
     """Other views of the same parameterised entity that the page links to.
 
@@ -225,6 +239,8 @@ def propose_sibling_views(html: str, url: str, template: str, *, limit: int = 6)
             continue
         diff = [i for i, (a, b) in enumerate(zip(segs, cur)) if a != b]
         if len(diff) != 1 or diff[0] not in fixed or diff[0] != len(cur) - 1:
+            continue
+        if not _is_view_family(diff[0], cur, None, tmpl):
             continue
         pos = diff[0]
         if any(_ISO_DAY.match(s) or _ISO_MONTH.match(s) for s in (segs[pos],)):
