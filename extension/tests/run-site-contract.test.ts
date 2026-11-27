@@ -14,7 +14,7 @@ describe("run-site extension contract", () => {
       externally_connectable: { matches: string[] };
     };
     const origin = "https://browser-platform-run.vercel.app/*";
-    assert.equal(manifest.version, "1.4.0");
+    assert.equal(manifest.version, "1.5.0");
     assert.ok(manifest.content_scripts[0].matches.includes(origin));
     assert.ok(manifest.externally_connectable.matches.includes(origin));
 
