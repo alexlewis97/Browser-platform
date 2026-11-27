@@ -123,6 +123,7 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                     # Explore reads the default off the live page and verifies it.
                     default_source="runtime" if proposal.get("runtime_default") else ("page" if proposal.get("default") not in (None, "") else None),
                     **({"examples": list(proposal["examples"])} if proposal.get("examples") else {}),
+                    **({"enum": list(proposal["enum"])} if proposal.get("enum") else {}),
                 )
             )
             names.add(name)

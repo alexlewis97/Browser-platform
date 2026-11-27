@@ -29,6 +29,7 @@ _YEAR = re.compile(r"^(19|20)\d{2}$")
 _LINK = re.compile(r"<a\b[^>]*?href=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>", re.I | re.S)
 MIN_ALTERNATIVES = 2
 MAX_EXAMPLES = 12
+MAX_ENUM = 6  # a small closed control (filter, sort, view); larger families stay open with examples
 
 
 def _text(fragment: str) -> str:
@@ -188,6 +189,9 @@ def _proposal(
         proposal.update({"format": "YYYY", "default": current})
     elif current:
         proposal["default"] = current  # the page's current selection (page state)
+    if kind == "option" and 2 <= len(examples) <= MAX_ENUM:
+        # The page's own links are the choices it offers: shown to the planner as name=a|b.
+        proposal["enum"] = list(examples)
     if query_key is not None:
         proposal["binding"] = {"kind": "url_query", "step_index": step_index, "key": query_key,
                                "placeholder": placeholder, "source_url": url}
