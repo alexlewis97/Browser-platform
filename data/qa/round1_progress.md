@@ -31,3 +31,10 @@
 - Live explore apply on Sports: team fixtures gained `filter` (results|fixtures). Derived "BBC Football league Scores & Fixtures" (262e3143…, competition + month + filter) from the league table's sibling view and added it to Sports (now 8 tools).
 - Live chats: "Championship fixtures on 15 June 2026?" now correct (no events). "Today's Championship fixtures?" now routes but is WRONG: planner sends filter=fixtures, which leaves out today's match.
 - Admin web redeployed (live bundle index-BuGuev7a.js). Staging and /workspace/browser-qa in the container removed. Extension 1.5.0 zip in releases/ (web-run not redeployed).
+
+## 12:12-12:26 "today" view bug (generic fix attempt)
+- Approach: date semantics drive the view choice. If the question resolves to today and a tool input has an explore-detected `default_view`, drop that input so the page opens in its default view (b249a68). Also: optional unstated inputs are dropped, not declined (5865856); search_text carries input examples (f1c184f). The twin-call approach (2995e2c) was superseded.
+- Live (b249a68): today questions now fetch the page's default "Today" view, and the facts contain the missing match (e.g. Southampton v Middlesbrough 20:00).
+- Results: TEST Premier League today was correct, and an earlier Bundesliga today run was correct. TRAIN Championship/La Liga today were still wrong: synthesis says "none" because the extract has no printed date and is wrapped in month/Results navigation text.
+- Tried 081aa81: a code-stated view note prefixed to the facts. It was worse live (TRAIN 0/2, TEST4 Serie A/Bundesliga 0/2), so I reverted it in 61ff636 and redeployed (12:26, /health ok). The REGRESS "fixtures this month" case was correct.
+- Open: synthesis misreads nav-wrapped extracts (a better next step is to strip navigation/boilerplate from facts or extract the list region); the planner omits filter=results for "yesterday's results" (it sent month="yesterday"); the Ligue 1 slug normaliser gap.
