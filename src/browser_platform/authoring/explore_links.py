@@ -74,6 +74,7 @@ def propose_from_link_families(
     path_families: dict[int, dict[str, str]] = {}
     query_families: dict[str, dict[str, str]] = {}
     child_family: dict[str, str] = {}
+    self_label = ""
     for href, inner in _LINK.findall(html):
         target = urlsplit(urljoin(url, unescape(href.strip())))
         if target.netloc and target.netloc.lower() != here.netloc.lower():
@@ -81,6 +82,9 @@ def propose_from_link_families(
         segs = _segments(target.path)
         query = dict(parse_qsl(target.query, keep_blank_values=True))
         label = _text(inner)
+        if segs == cur and query == cur_query:
+            self_label = self_label or label  # how the page labels its current (default) view
+            continue
         if segs == cur:
             diff = [k for k in set(query) | set(cur_query) if query.get(k) != cur_query.get(k)]
             if len(diff) == 1 and query.get(diff[0]):
@@ -135,7 +139,11 @@ def propose_from_link_families(
         current = cur_query.get(key, "")
         options = ([current] if current else []) + [v for v in values if v != current]
         kind = _kind(options)
-        proposals.append(_proposal(name, kind, current, options, values, step_index, url, query_key=key))
+        proposal = _proposal(name, kind, current, options, values, step_index, url, query_key=key)
+        if not current:
+            shown = f" ('{self_label}')" if self_label else ""
+            proposal["description"] += f" Leave it out for the page's default view{shown}."
+        proposals.append(proposal)
         used.add(name)
     return proposals
 

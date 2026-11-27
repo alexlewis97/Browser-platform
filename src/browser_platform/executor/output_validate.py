@@ -93,7 +93,7 @@ def has_strong_content(sample: str | None) -> bool:
     return bool(_STRONG_CONTENT_RE.search(" ".join(str(sample or "").split())))
 
 
-def collect_sample(outputs: dict[str, Any] | None, extra: str = "") -> str:
+def collect_sample(outputs: dict[str, Any] | None, extra: str = "", *, limit: int = SAMPLE_LIMIT) -> str:
     parts: list[str] = []
     for key, value in (outputs or {}).items():
         if value is None:
@@ -113,7 +113,7 @@ def collect_sample(outputs: dict[str, Any] | None, extra: str = "") -> str:
         if not body.strip() or not has_strong_content(body):
             parts.append(extra_text)
             body = "\n".join(parts)
-    return trim_sample(body)
+    return trim_sample(body, limit)
 
 
 def deterministic_verdict(

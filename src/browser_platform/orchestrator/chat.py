@@ -101,6 +101,8 @@ def is_action_call(stored: StoredWorkflow | None) -> bool:
 
 
 MAX_FAN_OUT = 5
+FACTS_LIMIT = 4000  # chars of extract kept per chat item
+SYNTH_FACTS_BUDGET = 5000  # chars of facts shared by all items in the synthesis prompt
 
 
 def fan_out_calls(prepared: list[dict[str, Any]], store: Any, notes: list[str] | None = None) -> list[dict[str, Any]]:
@@ -908,7 +910,7 @@ class ChatOrchestrator:
                 job["usage"] = merge_usage(job.get("usage"), usage)
                 tb = job.setdefault("token_breakdown", {})
                 tb["validation"] = merge_usage(tb.get("validation"), usage)
-                sample = collect_sample(item.get("outputs"))
+                sample = collect_sample(item.get("outputs"), limit=FACTS_LIMIT)
                 chrome_only = is_nav_footer_only(sample, action_ending=bool(item.get("action_ending")))
                 if chrome_only:
                     reason = "The extract contains only navigation or footer text, not the requested content."
@@ -989,7 +991,11 @@ class ChatOrchestrator:
 
 
     async def synthesize(self, job: dict[str, Any], *, emit: Emit | None = None) -> dict[str, Any]:
-        compact = [compact_item(item) for item in job.get("items") or []]
+        items_all = job.get("items") or []
+        # Share one facts budget across items: a single month listing is not cut to 800 chars,
+        # several items still fit the synthesis prompt.
+        per_item = max(600, min(3000, SYNTH_FACTS_BUDGET // max(1, len(items_all))))
+        compact = [compact_item(item, fact_limit=per_item) for item in items_all]
         job["compact"] = compact
         flagged = [
             item
@@ -1065,7 +1071,7 @@ class ChatOrchestrator:
                             {"question": job.get("message"), **date_context(str(job.get("message") or "")),
                              "results": compact, "flagged": job.get("flagged") or []},
                             ensure_ascii=False,
-                        )[:6000],
+                        )[:9000],
                     },
                 ]
             message, usage = await chat_complete(
