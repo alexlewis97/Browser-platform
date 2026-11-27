@@ -255,7 +255,7 @@ async def test_llm_repair_write_back_when_selectors_fail(runner):
         )
     )
     llm = LLMConfig(api_key="sk-or-v1-testkey-not-for-storage", model="qwen/qwen3.7-flash")
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:9222", llm=llm)
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:9222", llm=llm, caller="admin")
     click = next(s for s in run.steps if s.step_type == "click")
     assert click.success
     assert click.tier == "llm"
@@ -284,7 +284,7 @@ async def test_no_llm_config_does_not_call_repair(runner):
     client = FakeRepair([SelectorStrategy(type="css", value="h1")])
     runner.repair_client = client
     runner._fake_page.broken_click = True
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:9222")
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:9222", caller="admin")
     assert run.status == "failed"
     assert client.calls == 0
     assert "no LLM config" in (run.error or "")

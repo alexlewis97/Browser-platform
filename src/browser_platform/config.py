@@ -24,8 +24,11 @@ class Settings(BaseSettings):
     action_timeout_ms: int = 8_000
     host: str = "127.0.0.1"
     port: int = 8745
-    # Shared access token for a publicly tunneled API. Empty = loopback-only.
+    # Shared admin access token for a publicly tunneled API. Empty = loopback-only.
     access_token: str = ""
+    # End-user token (run site, extension, workspace chat, MCP). Accepted for API
+    # auth, but never unlocks in-run LLM / browser-use repair.
+    user_token: str = ""
     # When a token is set it is required everywhere by default (including localhost).
     # Set false only for trusted same-machine clients that cannot send the header.
     require_token_on_localhost: bool = True
@@ -60,10 +63,10 @@ class Settings(BaseSettings):
     # hitl_timeout_s instead and is not counted here.
     step_timeout_s: float = 60.0
     run_timeout_s: float = 240.0
-    # In-run LLM / browser-use step repair is kept in the tree but hard-disabled.
-    # Only the server env BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR can turn it back on.
-    # There is no per-run, per-workflow, API, chat, or extension override.
-    allow_in_run_repair: bool = False
+    # Kill-switch for *admin* in-run LLM / browser-use repair. Default on.
+    # User-side runs never repair, even when this is true. Set false to disable
+    # admin repair globally. There is no per-run or request override.
+    allow_in_run_repair: bool = True
 
     def resolve(self, root: Path | None = None) -> "Settings":
         base = root or Path.cwd()

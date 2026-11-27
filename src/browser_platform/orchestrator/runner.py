@@ -13,10 +13,15 @@ AI is used only when deterministic (including confident fuzzy) resolution fails.
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Literal
+
+log = logging.getLogger(__name__)
+_SECRET_VAR = re.compile(r"(password|passwd|secret|token|api[_-]?key|authorization|cookie|session)", re.I)
 
 from playwright.async_api import Page
 
@@ -121,6 +126,8 @@ class WorkflowRunner:
         self.confirmation_broker = confirmation_broker
         # Runs whose caller cannot answer a confirmation (chat, MCP): never pause for HITL.
         self._no_hitl_runs: set[str] = set()
+        # Admin runs that may use in-run repair when the env kill-switch allows it.
+        self._admin_repair_runs: set[str] = set()
 
     async def run(
         self,
@@ -137,6 +144,7 @@ class WorkflowRunner:
         raw_inputs: dict[str, Any] | None = None,
         strict: bool | None = None,
         allow_hitl: bool = True,
+        caller: Literal["user", "admin"] = "user",
     ) -> RunRecord:
         run = RunRecord(
             id=run_id or uuid.uuid4().hex,
@@ -149,8 +157,14 @@ class WorkflowRunner:
             do_write_back=write_back_repairs,
         )
         run.strict = resolve_strict(self.settings, stored.definition, strict)
+        caller = "admin" if caller == "admin" else "user"
+        if caller != "admin":
+            # User-side runs never persist selector write-back or in-run repair.
+            write_back_repairs = False
         if not allow_hitl:
             self._no_hitl_runs.add(run.id)
+        if caller == "admin":
+            self._admin_repair_runs.add(run.id)
         llm = resolve_llm(llm)
         run.model = llm.model if llm else run.model
         self.store.save_run(run)
@@ -279,13 +293,32 @@ class WorkflowRunner:
                 run.status = "succeeded"
             run.outputs = outputs
             if write_back_repairs and definition.version != original_version:
+                if hasattr(self.store, "snapshot_workflow_version"):
+                    try:
+                        self.store.snapshot_workflow_version(stored.id, stored.definition)
+                    except Exception:
+                        log.exception("failed to snapshot workflow %s before repair write-back", stored.id)
+                definition.needs_repair = False
+                definition.repair_from = None
                 stored = self.store.update_workflow(stored.id, definition)
                 run.workflow_version = stored.definition.version
+                run.repaired = True
+                changes = [
+                    rec.model_dump(exclude_none=True)
+                    for rec in (definition.repair_history or [])
+                    if str(getattr(rec, "new_version", "")) == str(stored.definition.version)
+                ]
+                run.repair = {
+                    "previous_version": original_version,
+                    "new_version": stored.definition.version,
+                    "changes": changes,
+                }
         except Exception as exc:
             run.status = "failed"
             run.error = str(exc)
         finally:
             self._no_hitl_runs.discard(run.id)
+            self._admin_repair_runs.discard(run.id)
             page_meta: dict[str, Any] = {}
             if session is not None and run.status == "succeeded" and validate_output:
                 page_meta = await _page_meta(session)
@@ -305,6 +338,8 @@ class WorkflowRunner:
                 run.needs_repair = True
                 if run.status == "succeeded":
                     run.status = "succeeded_with_fallback"
+            if caller == "user" and run.status in {"failed", "succeeded_with_fallback"}:
+                self._flag_workflow_needs_repair(stored.id, run, raw_variables)
             run.finished_at = datetime.now(timezone.utc)
             self.store.save_run(run)
         if getattr(run, "retry_output_validation", False) and validation_attempt == 0:
@@ -320,6 +355,7 @@ class WorkflowRunner:
                 raw_inputs=raw_variables,
                 strict=strict,
                 allow_hitl=allow_hitl,
+                caller=caller,
             )
         return run
 
@@ -586,9 +622,9 @@ class WorkflowRunner:
             if hitl_result is not None:
                 return hitl_result
 
-        # In-run LLM / browser-use repair is kept below but hard-disabled unless the
-        # server env BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR is set. No per-run override.
-        if not self._in_run_repair_allowed():
+        # In-run LLM / browser-use repair: admin runs only, and only when the
+        # server env kill-switch allows it. User-side runs never reach this path.
+        if not self._in_run_repair_allowed(run):
             if pending_hitl and pending_hitl["hitl"].mode == "llm_then_human":
                 hitl_result = await self._await_hitl(
                     page,
@@ -639,7 +675,7 @@ class WorkflowRunner:
         repair_started = time.perf_counter()
         tokens_in = tokens_out = 0
 
-        if self._should_use_browser_use(page) and cdp_url:
+        if self._should_use_browser_use(page, run) and cdp_url:
             try:
                 fn = self.browser_use_repair or run_browser_use_repair
                 repaired_bu = await fn(
@@ -1162,13 +1198,50 @@ class WorkflowRunner:
             {"query": query, "matched": picked.text, "reason": "human"},
         )
 
-    def _in_run_repair_allowed(self) -> bool:
-        """True only when the server env flag is on. Not overridable per run or workflow."""
+    def _in_run_repair_allowed(self, run: RunRecord | None = None) -> bool:
+        """Admin runs only, and only when the env kill-switch is on.
 
-        return bool(getattr(self.settings, "allow_in_run_repair", False))
+        User-side runs never repair, even if the flag is on. There is no request override.
+        """
 
-    def _should_use_browser_use(self, page: Page) -> bool:
-        if not self._in_run_repair_allowed():
+        if not bool(getattr(self.settings, "allow_in_run_repair", False)):
+            return False
+        run_id = getattr(run, "id", None)
+        return bool(run_id and run_id in self._admin_repair_runs)
+
+    def _flag_workflow_needs_repair(self, workflow_id: str, run: RunRecord, variables: dict[str, Any] | None) -> None:
+        """Mark the workflow so the admin site can offer a Repair run."""
+
+        try:
+            current = self.store.get_workflow(workflow_id).definition.model_copy(deep=True)
+        except Exception:
+            log.exception("failed to load workflow %s to flag needs_repair", workflow_id)
+            return
+        current.needs_repair = True
+        failed = None
+        for step in reversed(run.steps or []):
+            if not step.success:
+                failed = {
+                    "index": step.step_index,
+                    "type": step.step_type,
+                    "description": step.description,
+                    "error": step.error,
+                }
+                break
+        current.repair_from = {
+            "run_id": run.id,
+            "error": (run.error or "")[:2000],
+            "variables": _safe_repair_variables(variables),
+            "step": failed,
+            "status": run.status,
+        }
+        try:
+            self.store.update_workflow(workflow_id, current)
+        except Exception:
+            log.exception("failed to flag workflow %s as needs_repair", workflow_id)
+
+    def _should_use_browser_use(self, page: Page, run: RunRecord | None = None) -> bool:
+        if not self._in_run_repair_allowed(run):
             return False
         if self.browser_use_repair is not None:
             return True
@@ -1325,3 +1398,19 @@ def _pick_candidate(candidates: list[Candidate], choice: ConfirmationDecision) -
             if cand.text == text or normalize_text(cand.text) == want:
                 return cand
     return None
+
+
+def _safe_repair_variables(variables: dict[str, Any] | None) -> dict[str, Any]:
+    """Inputs to replay for an admin Repair run, with credential-like keys dropped."""
+
+    out: dict[str, Any] = {}
+    for key, value in (variables or {}).items():
+        if _SECRET_VAR.search(str(key)):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            out[str(key)] = value
+        elif isinstance(value, list) and all(isinstance(item, (str, int, float, bool)) for item in value):
+            out[str(key)] = list(value)
+        else:
+            out[str(key)] = str(value)[:200]
+    return out

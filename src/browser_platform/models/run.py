@@ -63,6 +63,9 @@ class RunRecord(BaseModel):
     # Every step resolved by something other than its recorded primary selector.
     fallbacks: list[dict[str, Any]] = Field(default_factory=list)
     needs_repair: bool = False
+    # Admin in-run repair succeeded and wrote a new workflow version.
+    repaired: bool = False
+    repair: dict[str, Any] | None = None
     strict: bool = False
     # Named failure kind when the run stopped on a guard (step_timeout, run_timeout, strict_selector, extract_missing).
     failure_kind: str | None = None

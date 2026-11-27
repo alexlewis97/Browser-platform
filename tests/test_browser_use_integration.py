@@ -100,7 +100,7 @@ async def test_runner_browser_use_tier_writes_back(data_dir: Path):
         )
     )
     llm = LLMConfig(api_key="sk-or-v1-testkey-not-for-storage", model="qwen/qwen3.7-flash")
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:9222", llm=llm)
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:9222", llm=llm, caller="admin")
     click = next(s for s in run.steps if s.step_type == "click")
     assert click.success
     assert click.tier == "browser_use"

@@ -199,11 +199,13 @@ Example body:
 
 A local form fixture used in tests lives at `tests/fixtures/from_task_form.html` (copied under `examples/fixtures/`).
 
-## Deterministic replay (no in-run LLM)
+## Deterministic replay (user-side; admin repair)
 
 When a saved workflow runs, every step is resolved deterministically (recorded selectors, aliases, and — unless `strict` is on — confident fuzzy match). A step that cannot be resolved fails by name, or the run returns `needs_input` when a required or closed value is missing or unknown.
 
-In-run LLM repair and `browser-use` agent fallback are **kept in the codebase but hard-disabled**. They are not available as a per-run, per-workflow, API, chat, or extension flag. The only switch is the server environment variable `BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR` (default `false`). LLM use remains allowed in the chat orchestration layer (planning, choosing tools, answering) and at authoring time (`from-task`, explore naming, recording cleanup).
+**User-side runs** (run site, extension, workspace chat, user-token API, MCP) never escalate to in-run LLM repair or `browser-use`. A failure flags the workflow as `needs_repair` (with the last inputs in `repair_from`) so it appears on the admin site.
+
+**Admin-side runs** (admin site, admin-token API, or the admin **Repair** button) may use in-run LLM / `browser-use` repair when `BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR` is on (the default). On success the previous version is snapshotted under `workflow_versions/`, the winning selector is written back as a new version, and the run is marked `repaired`. The env flag is a global kill-switch for admin repair only — there is no per-run, per-workflow, API, chat, or extension override. Caller identity comes from the token (`BROWSER_PLATFORM_ACCESS_TOKEN` vs `BROWSER_PLATFORM_USER_TOKEN`), not a request flag. LLM use remains allowed in the chat orchestration layer (planning, choosing tools, answering) and at authoring time (`from-task`, explore naming, recording cleanup).
 
 ## Human-in-the-loop confirmation (mobile / web app)
 

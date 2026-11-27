@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from threading import Lock
@@ -99,6 +100,21 @@ class FileStore:
             stored = StoredWorkflow(id=wf_id, path=str(path), definition=definition)
         self._notify("updated", wf_id)
         return stored
+
+    def snapshot_workflow_version(self, workflow_id: str, definition: WorkflowDefinition) -> Path:
+        """Keep a copy of a workflow version before write-back overwrites it."""
+
+        wf_id = safe_workflow_id(workflow_id)
+        folder = self.data_dir / "workflow_versions"
+        folder.mkdir(parents=True, exist_ok=True)
+        version = re.sub(r"[^A-Za-z0-9._-]+", "_", str(definition.version or "1"))[:80] or "1"
+        path = folder / f"{wf_id}.{version}.json"
+        if path.exists():
+            path = folder / f"{wf_id}.{version}.{int(time.time())}.json"
+        payload = definition.model_copy(deep=True)
+        payload.id = wf_id
+        self._write_json(path, payload.model_dump(exclude_none=True))
+        return path
 
     def _related_version_files(self, wf_id: str) -> list[Path]:
         """Version snapshots and backups for a workflow id, never another id's files."""

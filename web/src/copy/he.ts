@@ -48,6 +48,9 @@ export const he = {
     hiddenFromUsers: "מוסתר מאתר המשתמשים",
     showOnRunSite: "הצג באתר למשתמשים",
     runSiteHint: "כשזה דלוק, המשתמשים רואים את הזרימה באתר ההרצה ומריצים אותה דרך התוסף בדפדפן שלהם.",
+    needsRepair: "צריך תיקון",
+    repair: "תיקון",
+    repairHint: "הרצה אחרונה נכשלה. תיקון מריץ שוב עם אותם קלטים מהצד של הניהול, ואם זה מצליח שומר גרסה חדשה.",
   },
   newWorkflow: {
     title: "זרימה חדשה",
@@ -257,6 +260,7 @@ export const he = {
     deleteMarketConfirm: "למחוק את פרסום השוק? חבילת האוטומציה תוסר.",
     deleteWorkflowConfirm: "למחוק את הזרימה? הרצות קודמות יישמרו בהיסטוריה, אך לא יהיה אפשר להריץ אותה שוב.",
     workflowDeleted: "הזרימה נמחקה.",
+    repairStarted: "תיקון התחיל.",
     workflowVisible: "הזרימה גלויה באתר למשתמשים.",
     workflowHidden: "הזרימה הוסתרה מאתר המשתמשים.",
     savedDevice: "נשמר במכשיר הזה.",

@@ -241,7 +241,7 @@ async def test_hitl_timeout_fail_and_fall_to_llm(data_dir: Path):
         _definition(mode="always_on_uncertain", timeout_s=0.05, timeout_policy="fall_to_llm")
     )
     llm = LLMConfig(api_key="sk-or-v1-should-never-be-stored", model="qwen/qwen3.7-flash")
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, llm=llm)
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, llm=llm, caller="admin")
     assert repair.calls == 1
     assert run.status == "failed"  # repair returns no strategies
     assert "sk-or-v1-should-never-be-stored" not in str(run.model_dump())
@@ -255,7 +255,7 @@ async def test_llm_only_skips_hitl(data_dir: Path):
     runner, store = _runner(data_dir, page, broker=broker, repair=repair, allow_in_run_repair=True)
     stored = store.create_workflow(_definition(mode="llm_only", timeout_s=5))
     llm = LLMConfig(api_key="sk-or-v1-should-never-be-stored", model="qwen/qwen3.7-flash")
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, llm=llm)
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, llm=llm, caller="admin")
     assert run.status == "failed"
     assert repair.calls == 1
     assert not any(s.resolution == "hitl" for s in run.steps)

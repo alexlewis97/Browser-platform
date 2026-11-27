@@ -127,6 +127,8 @@ def _workflow_summary(w) -> dict[str, Any]:
         "version": definition.version,
         "path": w.path,
         "published": bool(getattr(definition, "published", True)),
+        "needs_repair": bool(getattr(definition, "needs_repair", False)),
+        "repair_from": getattr(definition, "repair_from", None) if getattr(definition, "needs_repair", False) else None,
         "input_schema": [item.model_dump(exclude_none=True) for item in (definition.input_schema or [])],
     }
 
@@ -134,6 +136,8 @@ def _workflow_summary(w) -> dict[str, Any]:
 def _catalog_item(w) -> dict[str, Any]:
     item = _workflow_summary(w)
     item.pop("path", None)
+    item.pop("needs_repair", None)
+    item.pop("repair_from", None)
     return item
 
 
@@ -579,6 +583,9 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
     )
     state.store.save_run(pending)
 
+    from browser_platform.local_access import caller_role
+
+    role = caller_role(request, state.settings)
     async def _run_in_background() -> Any:
         return await state.runner.run(
             stored,
@@ -588,9 +595,9 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
             write_back_repairs=payload.write_back,
             run_id=run_id,
             strict=payload.strict,
-            # HITL only when the caller is an interactive UI. API / unattended
-            # wait=true clients must not sit on needs_confirmation for 300s.
-            allow_hitl=bool(getattr(payload, "interactive", False)),
+            # HITL: user runs only when interactive; admin runs may pause for confirmation.
+            allow_hitl=bool(getattr(payload, "interactive", False)) or role == "admin",
+            caller=role,
         )
 
     task = asyncio.create_task(_run_in_background())
@@ -599,6 +606,86 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
         return pending.model_dump(mode="json")
     # wait=true: block until the run finishes, or return early (with its run_id and the
     # confirmation prompt) when it pauses for a human, instead of holding the request open.
+    while not task.done():
+        await asyncio.wait({task}, timeout=0.5)
+        if task.done():
+            break
+        try:
+            current = state.store.get_run(run_id)
+        except Exception:
+            continue
+        if current.status == "needs_confirmation":
+            return current.model_dump(mode="json")
+    try:
+        return task.result().model_dump(mode="json")
+    except Exception:
+        return state.store.get_run(run_id).model_dump(mode="json")
+
+
+@router.post("/api/workflows/{workflow_id}/repair")
+async def repair_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
+    """Admin-only: replay the last failed user run and write back a repaired version on success."""
+
+    from browser_platform.local_access import caller_role
+    from browser_platform.models.llm import LLMConfig
+    from browser_platform.models.run import RunRecord
+
+    state = _state(request)
+    if caller_role(request, state.settings) != "admin":
+        raise HTTPException(status_code=403, detail="admin token required")
+    try:
+        stored = state.store.get_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workflow not found")
+    repair_from = getattr(stored.definition, "repair_from", None) or {}
+    if not repair_from:
+        raise HTTPException(status_code=400, detail="workflow has no failed run to repair from")
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    variables = body.get("variables") if isinstance(body.get("variables"), dict) else repair_from.get("variables") or {}
+    cdp_url = body.get("cdp_url") or state.settings.default_cdp_url
+    llm = None
+    if isinstance(body.get("llm"), dict):
+        try:
+            llm = LLMConfig.model_validate(body["llm"])
+        except Exception:
+            llm = None
+    run_id = uuid.uuid4().hex
+    from datetime import datetime, timezone
+
+    pending = RunRecord(
+        id=run_id,
+        workflow_id=stored.id,
+        workflow_name=stored.definition.name,
+        workflow_version=stored.definition.version,
+        status="running",
+        cdp_url=cdp_url,
+        model=llm.model if llm else None,
+        write_back=True,
+        started_at=datetime.now(timezone.utc),
+    )
+    state.store.save_run(pending)
+
+    async def _run_in_background() -> Any:
+        return await state.runner.run(
+            stored,
+            cdp_url=cdp_url,
+            variables=variables,
+            llm=llm,
+            write_back_repairs=True,
+            run_id=run_id,
+            allow_hitl=True,
+            caller="admin",
+        )
+
+    task = asyncio.create_task(_run_in_background())
+    _track_task(request, task)
+    wait = bool(body.get("wait", False))
+    if not wait:
+        return pending.model_dump(mode="json")
     while not task.done():
         await asyncio.wait({task}, timeout=0.5)
         if task.done():

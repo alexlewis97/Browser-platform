@@ -82,6 +82,8 @@ class WorkflowInput(BaseModel):
     sensitive: bool | None = None
     # Human label / alias -> canonical option value (from explore link families).
     value_map: dict[str, str] | None = None
+    # Page's own label for this control's default (e.g. "Today"), when the input is omitted.
+    default_view: str | None = None
 
 
 class ExpectedState(BaseModel):
@@ -189,6 +191,11 @@ class WorkflowDefinition(BaseModel):
     strict_selectors: bool | None = None
     # Visible on the end-user run site. Missing on existing documents => published.
     published: bool = True
+    # User-side replay failed; admin can Repair with the last failed inputs.
+    needs_repair: bool = False
+    repair_from: dict[str, Any] | None = None
+    # Default / current-day view label when no view control is sent (e.g. "Today").
+    default_view: str | None = None
 
     @field_validator("version", mode="before")
     @classmethod
@@ -222,6 +229,9 @@ class WorkflowDefinition(BaseModel):
                 "aliases",
                 "strict_selectors",
                 "published",
+                "needs_repair",
+                "repair_from",
+                "default_view",
             },
             exclude_none=True,
         )

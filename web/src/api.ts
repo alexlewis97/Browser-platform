@@ -2,7 +2,7 @@ import { refreshDiscovery, isNetworkError } from "./discover";
 import { isManualBackendOverride, loadSettings, type Settings } from "./storage";
 
 export type WorkflowInput = { name: string; type?: string; required?: boolean; default?: string | number | boolean; label?: string; description?: string };
-export type WorkflowSummary = { id: string; name: string; version: string; path?: string; description?: string; published?: boolean; input_schema?: WorkflowInput[] };
+export type WorkflowSummary = { id: string; name: string; version: string; path?: string; description?: string; published?: boolean; needs_repair?: boolean; repair_from?: { run_id?: string; error?: string; variables?: Record<string, unknown>; step?: unknown; status?: string } | null; input_schema?: WorkflowInput[] };
 export type WorkflowStep = {
   type: string;
   description?: string;
@@ -200,6 +200,8 @@ export const api = {
     }),
   startRun: (id: string, body: Record<string, unknown>) =>
     request<RunRecord>(`/api/workflows/${id}/run`, { method: "POST", body: JSON.stringify({ ...body, wait: false }) }),
+  repairWorkflow: (id: string, body: Record<string, unknown> = {}) =>
+    request<RunRecord>(`/api/workflows/${id}/repair`, { method: "POST", body: JSON.stringify({ wait: false, ...body }) }),
   listRuns: () => request<{ runs: RunRecord[] }>("/api/runs"),
   getRun: (id: string) => request<RunRecord>(`/api/runs/${id}`),
   mint: (payload: Record<string, unknown>) =>

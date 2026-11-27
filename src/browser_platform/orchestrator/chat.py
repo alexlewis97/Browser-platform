@@ -231,6 +231,10 @@ def page_view_meta(definition: Any, arguments: dict[str, Any] | None) -> list[di
             meta.append({"input": inp.name, "value": None, "shown": "page default view", "page_label": str(label)})
         else:
             meta.append({"input": inp.name, "value": value, "shown": "selected view"})
+    if not meta:
+        label = getattr(definition, "default_view", None)
+        if label:
+            meta.append({"input": None, "value": None, "shown": "page default view", "page_label": str(label)})
     return meta
 
 

@@ -116,12 +116,12 @@ async def test_train_missing_required_input_is_needs_input(data_dir: Path):
 
 @pytest.mark.asyncio
 async def test_train_default_config_never_calls_llm_or_browser_use_on_replay(data_dir: Path):
-    """Alex: workflow replay must not escalate to LLM or browser_use with the default config."""
+    """User-side replay never escalates to LLM or browser_use, even if the admin kill-switch is on."""
     page = FakePage()
     page.broken_click = True
     repair = FakeRepair([SelectorStrategy(type="css", value="h1", priority=1)])
-    runner, store = _runner(data_dir, page, repair=repair, use_browser_use=True)
-    assert runner.settings.allow_in_run_repair is False
+    runner, store = _runner(data_dir, page, repair=repair, use_browser_use=True, allow_in_run_repair=True)
+    assert runner.settings.allow_in_run_repair is True
     stored = store.create_workflow(WorkflowDefinition(
         name="form",
         steps=[
@@ -234,8 +234,9 @@ def test_train_repair_has_no_per_run_or_api_override():
     from browser_platform.api.schemas import RunRequest
     from browser_platform.models.workflow import WorkflowDefinition as WD
 
-    assert Settings().allow_in_run_repair is False
+    assert Settings().allow_in_run_repair is True
     assert "allow_in_run_repair" not in RunRequest.model_fields
+    assert "caller" not in RunRequest.model_fields
     assert "use_browser_use" not in RunRequest.model_fields
     assert "allow_in_run_repair" not in WD.model_fields
     text = Path("src/browser_platform/orchestrator/runner.py").read_text(encoding="utf-8")

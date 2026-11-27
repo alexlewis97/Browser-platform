@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import logging
 import re
 from typing import Any
 from urllib.parse import urlparse
+
+log = logging.getLogger(__name__)
+_warned_identical_tokens = False
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "[::1]"})
 
@@ -121,9 +125,9 @@ def access_token_ok(connection: Any, settings: Any | None, *, allow_query: bool 
       ``require_token_on_localhost=false`` only for trusted same-machine clients.
     """
 
-    expected = (getattr(settings, "access_token", "") if settings is not None else "") or ""
+    expected = _configured_tokens(settings)
     local = is_local_request(connection, settings)
-    if not expected:
+    if not expected["admin"] and not expected["user"]:
         bound_loopback = is_loopback_host(getattr(settings, "host", None) if settings is not None else "127.0.0.1")
         # Bound to loopback ⇒ unreachable from the network; allow (incl. TestClient).
         if bound_loopback and not has_proxy_headers(connection):
@@ -137,7 +141,33 @@ def access_token_ok(connection: Any, settings: Any | None, *, allow_query: bool 
     provided = provided_access_token(connection, allow_query=allow_query)
     if not provided:
         return False
-    return hmac.compare_digest(provided, expected)
+    return any(hmac.compare_digest(provided, token) for token in expected.values() if token)
+
+
+def _configured_tokens(settings: Any | None) -> dict[str, str]:
+    global _warned_identical_tokens
+    admin = ((getattr(settings, "access_token", "") if settings is not None else "") or "").strip()
+    user = ((getattr(settings, "user_token", "") if settings is not None else "") or "").strip()
+    if admin and user and hmac.compare_digest(admin, user) and not _warned_identical_tokens:
+        _warned_identical_tokens = True
+        log.warning(
+            "access_token and user_token are identical; matching requests are treated as admin"
+        )
+    return {"admin": admin, "user": user}
+
+
+def caller_role(connection: Any, settings: Any | None, *, allow_query: bool = False) -> str:
+    """'admin' only when the request presented the admin access token.
+
+    The user token, a missing token on loopback, or an unidentified caller is 'user'.
+    In-run repair is never allowed for 'user', regardless of env or request flags.
+    """
+
+    tokens = _configured_tokens(settings)
+    provided = provided_access_token(connection, allow_query=allow_query)
+    if provided and tokens["admin"] and hmac.compare_digest(provided, tokens["admin"]):
+        return "admin"
+    return "user"
 
 
 def origin_allowed(origin: str | None, settings: Any | None) -> bool:
@@ -200,6 +230,7 @@ __all__ = [
     "CORS_ORIGIN_REGEX",
     "DEFAULT_CORS_ORIGINS",
     "access_token_ok",
+    "caller_role",
     "has_proxy_headers",
     "hostname_without_port",
     "is_local_request",

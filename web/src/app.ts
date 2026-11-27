@@ -313,6 +313,7 @@ async function renderWorkflows(): Promise<string> {
                   <div class="meta">v${escapeHtml(w.version)} · ${escapeHtml(w.id.slice(0, 8))}</div>
                 </div>
                 <span class="pill ${w.published !== false ? "ok" : ""}">${w.published !== false ? he.workflows.visibleToUsers : he.workflows.hiddenFromUsers}</span>
+                ${w.needs_repair ? `<span class="pill warn">${he.workflows.needsRepair}</span>` : ""}
               </div>
             </a>
             <label class="check" data-action="toggle-published" data-id="${escapeHtml(w.id)}">
@@ -320,6 +321,7 @@ async function renderWorkflows(): Promise<string> {
               <span>${he.workflows.showOnRunSite}</span>
             </label>
             <div class="btn-row" style="margin-top:10px">
+              ${w.needs_repair ? `<button type="button" class="btn primary" data-action="repair-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.repair}</button>` : ""}
               <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.publish}</button>
               <button type="button" class="btn danger" data-action="delete-workflow" data-id="${escapeHtml(w.id)}">${he.workflows.delete}</button>
             </div>
@@ -496,6 +498,7 @@ async function renderWorkflow(id: string): Promise<string> {
       `<div class="card">
         <p class="sub" style="margin:0 0 12px">${escapeHtml(def.description || he.workflows.noDescription)}</p>
         <div class="mono muted">id ${escapeHtml(stored.id)} · v${escapeHtml(def.version || "1")}</div>
+        ${def.needs_repair ? `<div class="banner warn" style="margin:12px 0 0"><b>${he.workflows.needsRepair}</b><p class="muted" style="margin:6px 0 0">${escapeHtml(String((def.repair_from as { error?: string } | undefined)?.error || he.workflows.repairHint))}</p></div>` : ""}
         <label class="check" data-action="toggle-published" data-id="${escapeHtml(stored.id)}">
           <input type="checkbox" ${def.published !== false ? "checked" : ""} />
           <span>${he.workflows.showOnRunSite}</span>
@@ -504,6 +507,7 @@ async function renderWorkflow(id: string): Promise<string> {
         <div style="margin-top:14px">${steps}</div>
         ${typeof def.mint_job_id === "string" && def.mint_job_id ? `<p style="margin:16px 0 0"><a class="btn" href="#/mint/${encodeURIComponent(String(def.mint_job_id))}">${he.workflow.mintTrace}</a></p>` : ""}
         <div class="btn-row" style="margin-top:14px">
+          ${def.needs_repair ? `<button type="button" class="btn primary" data-action="repair-workflow" data-id="${escapeHtml(stored.id)}">${he.workflows.repair}</button>` : ""}
           <button type="button" class="btn wide" data-action="publish-workflow" data-id="${escapeHtml(stored.id)}">${he.workflows.publish}</button>
           <button type="button" class="btn danger" data-action="delete-workflow" data-id="${escapeHtml(stored.id)}">${he.workflows.delete}</button>
         </div>
@@ -1820,6 +1824,27 @@ async function onClick(event: Event): Promise<void> {
     const id = (target.closest("[data-id]") as HTMLElement | null)?.dataset.id;
     if (!id) return;
     location.hash = `#/marketplace?publish=${encodeURIComponent(id)}`;
+    return;
+  }
+  if (action === "repair-workflow") {
+    event.preventDefault();
+    const id = (target.closest("[data-id]") as HTMLElement | null)?.dataset.id;
+    if (!id) return;
+    const btn = target.closest("button") as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    const settings = loadSettings();
+    const body: Record<string, unknown> = {};
+    const llm = llmPayload(settings);
+    if (llm) body.llm = llm;
+    try {
+      const run = await api.repairWorkflow(id, body);
+      flashMessage = { kind: "ok", text: he.flash.repairStarted };
+      go(`/runs/${run.id}`);
+    } catch (err) {
+      if (btn) btn.disabled = false;
+      flashMessage = { kind: "err", text: err instanceof Error ? err.message : String(err) };
+      await render();
+    }
     return;
   }
   if (action === "delete-workflow") {

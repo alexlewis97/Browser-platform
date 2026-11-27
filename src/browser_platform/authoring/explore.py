@@ -582,6 +582,33 @@ async def explore_definition(
                     html = rendered
         except Exception:
             pass
+    view_html = html
+    try:
+        from browser_platform.authoring.default_view import default_view_urls, default_view_variables
+
+        dvars = default_view_variables(definition, variables)
+        for view_url in default_view_urls(definition, dvars):
+            if not view_url or view_url == start_url:
+                if view_html:
+                    break
+                continue
+            try:
+                import httpx
+                headers = {"User-Agent": "Mozilla/5.0 (compatible; BrowserPlatformExplore/1.0)", "Accept-Language": "en"}
+                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True, headers=headers) as client:
+                    fetched = await client.get(str(view_url))
+                if fetched.status_code < 400 and fetched.text:
+                    view_html = fetched.text
+                    from browser_platform.authoring.explore_verify import _looks_like_js_shell, fetch_rendered_html
+                    if _looks_like_js_shell(view_html):
+                        rendered = await fetch_rendered_html(str(view_url))
+                        if rendered:
+                            view_html = rendered
+                    break
+            except Exception:
+                continue
+    except Exception:
+        view_html = view_html or html
     if html:
         seen = {p["name"] for p in proposals}
         nav_index = next((i for i, step in enumerate(definition.steps or []) if step.url), 0)
@@ -635,6 +662,24 @@ async def explore_definition(
     else:
         verified = list(proposals)
     applied = apply_proposals(definition, verified) if verified else definition
+    view_label = None
+    try:
+        from browser_platform.authoring.default_view import attach_default_view, detect_default_view
+
+        # Prefer the default-page snapshot when it actually names a view; otherwise
+        # fall back to the html already fetched for link-family proposals.
+        provided = (page_state or {}).get("html") if isinstance(page_state, dict) else None
+        for candidate in (view_html, html, provided):
+            if not candidate:
+                continue
+            view_label = detect_default_view(candidate)
+            if view_label:
+                break
+        if view_label:
+            applied = attach_default_view(applied, view_label)
+    except Exception:
+        view_label = None
+    changed = bool(verified) or bool(view_label)
     return {
         "enabled": True,
         "proposals": proposals,
@@ -642,9 +687,10 @@ async def explore_definition(
         "dropped": dropped,
         "accepted": [item["name"] for item in verified],
         "usage": usage,
-        "applied": bool(verified),
-        "definition": applied.model_dump(exclude_none=True) if verified else None,
+        "applied": changed,
+        "definition": applied.model_dump(exclude_none=True) if changed else None,
         "sibling_views": sibling_views,
+        "default_view": view_label,
     }
 
 
