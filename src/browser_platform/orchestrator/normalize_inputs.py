@@ -399,6 +399,12 @@ async def normalize_prepared_calls(
             if not row:
                 continue
             if row.get("stated") is False:
+                item = _schema_item(definition, name)
+                if item is not None and item.required is False:
+                    # An optional control the user did not name is simply left out (the page's
+                    # own default applies); only a missing required value blocks the call.
+                    args.pop(name, None)
+                    continue
                 hints = parameter_hints(definition, name)
                 call.setdefault("unstated", []).append(
                     {"param": name, "value": text, "expects": hints.get("description") or hints.get("label") or name}

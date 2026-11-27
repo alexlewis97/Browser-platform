@@ -157,7 +157,10 @@ def default_view_companions(
         ]
         if not controls:
             continue
-        twin = {**call, "id": f"{call['id']}_default", "arguments": {k: v for k, v in args.items() if k not in controls}}
+        views = ", ".join(str(getattr(i, "default_view", "")) for i in definition.input_schema if i.name in controls)
+        twin = {**call, "id": f"{call['id']}_default", "arguments": {k: v for k, v in args.items() if k not in controls},
+                # Tells synthesis what this page shows (e.g. a "Today" view lists today's items).
+                "workflow_name": f"{call.get('workflow_name') or call.get('tool')} (page default view: {views})"}
         twin["raw_arguments"] = {k: v for k, v in (call.get("raw_arguments") or {}).items() if k not in controls}
         out.append(twin)
     return out
