@@ -388,7 +388,9 @@ async def save_recording_endpoint(payload: FromRecordingSaveRequest, request: Re
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    stored = _state(request).store.create_workflow(definition)
+    from browser_platform.workflow_inputs import finalize_authored_inputs
+
+    stored = _state(request).store.create_workflow(finalize_authored_inputs(definition))
     workspaces = _assign(request, stored.id, getattr(payload, "workspace_ids", None))
     return {"id": stored.id, "path": stored.path, "workspaces": workspaces, "definition": stored.definition.model_dump(exclude_none=True)}
 
@@ -479,18 +481,9 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
             detail="Missing required inputs: " + ", ".join(missing),
         )
     cdp_url = payload.cdp_url or state.settings.default_cdp_url
-    if payload.wait:
-        run = await state.runner.run(
-            stored,
-            cdp_url=cdp_url,
-            variables=payload.variables,
-            llm=payload.llm,
-            write_back_repairs=payload.write_back,
-        )
-        return run.model_dump(mode="json")
-
     run_id = uuid.uuid4().hex
-    # Persist a running record immediately so GET /api/runs/{id} does not 404.
+    # Persist a running record immediately: every run has a run_id even if it hangs or the
+    # caller disconnects, and GET /api/runs/{id} never 404s.
     from datetime import datetime, timezone
 
     from browser_platform.models.run import RunRecord
@@ -508,18 +501,37 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
     )
     state.store.save_run(pending)
 
-    async def _run_in_background() -> None:
-        await state.runner.run(
+    async def _run_in_background() -> Any:
+        return await state.runner.run(
             stored,
             cdp_url=cdp_url,
             variables=payload.variables,
             llm=payload.llm,
             write_back_repairs=payload.write_back,
             run_id=run_id,
+            strict=payload.strict,
         )
 
-    _track_task(request, asyncio.create_task(_run_in_background()))
-    return pending.model_dump(mode="json")
+    task = asyncio.create_task(_run_in_background())
+    _track_task(request, task)
+    if not payload.wait:
+        return pending.model_dump(mode="json")
+    # wait=true: block until the run finishes, or return early (with its run_id and the
+    # confirmation prompt) when it pauses for a human, instead of holding the request open.
+    while not task.done():
+        await asyncio.wait({task}, timeout=0.5)
+        if task.done():
+            break
+        try:
+            current = state.store.get_run(run_id)
+        except Exception:
+            continue
+        if current.status == "needs_confirmation":
+            return current.model_dump(mode="json")
+    try:
+        return task.result().model_dump(mode="json")
+    except Exception:
+        return state.store.get_run(run_id).model_dump(mode="json")
 
 
 @router.get("/api/runs")

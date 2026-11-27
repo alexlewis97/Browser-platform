@@ -218,8 +218,11 @@ async def llm_normalize_values(
         "(for example Spurs → Tottenham Hotspur / tottenham-hotspur, "
         "Man Utd → Manchester United / manchester-united). "
         "Leave a value unchanged when it is already official or you are not sure it is the same entity. "
-        "Do not invent a different entity. Reply JSON only: "
-        '{"values":[{"call":"c1","param":"team","canonical":"Official Name","slug":"official-name"}]}.'
+        "Do not invent a different entity. "
+        "If the value is clearly a different kind of thing than the parameter describes "
+        "(for example a league or competition given for a club parameter, or a person for a place), "
+        'add "fits":false and "kind":"<what the value is>". Reply JSON only: '
+        '{"values":[{"call":"c1","param":"team","canonical":"Official Name","slug":"official-name","fits":true}]}.'
     )
     fn = complete or chat_complete
     try:
@@ -252,7 +255,12 @@ async def llm_normalize_values(
         param = str(row.get("param") or row.get("name") or "")
         canonical = str(row.get("canonical") or row.get("value") or "").strip()
         slug = str(row.get("slug") or "").strip()
-        if not param or not canonical:
+        if not param:
+            continue
+        if row.get("fits") is False:
+            mapped[(call_id, param)] = {"canonical": "", "slug": "", "fits": False, "kind": str(row.get("kind") or "").strip()[:60]}
+            continue
+        if not canonical:
             continue
         mapped[(call_id, param)] = {"canonical": canonical, "slug": slug or path_slug(canonical)}
     return mapped, usage or {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": False}
@@ -313,6 +321,12 @@ async def normalize_prepared_calls(
             text = "" if value is None else str(value).strip()
             row = mapped.get((str(call.get("id") or ""), name))
             if not row:
+                continue
+            if row.get("fits") is False:
+                hints = parameter_hints(definition, name)
+                call.setdefault("kind_mismatch", []).append(
+                    {"param": name, "value": text, "value_kind": row.get("kind") or "", "expects": hints.get("description") or hints.get("label") or name}
+                )
                 continue
             # If the first pass already changed this field locally, do not overwrite.
             if raw.get(name) is not None and str(raw.get(name)).strip() != text:

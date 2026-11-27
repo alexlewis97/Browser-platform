@@ -120,6 +120,8 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                     description=proposal.get("description"),
                     format=proposal.get("format"),
                     runtime_default=proposal.get("runtime_default"),
+                    # Explore reads the default off the live page and verifies it.
+                    default_source="runtime" if proposal.get("runtime_default") else ("page" if proposal.get("default") not in (None, "") else None),
                 )
             )
             names.add(name)

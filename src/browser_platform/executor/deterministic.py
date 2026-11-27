@@ -247,12 +247,49 @@ async def _extract_first_item(page: Page) -> str:
     return ""
 
 
-async def extract_content(page: Page, step: WorkflowStep) -> str:
+class ExtractMissing(StepFailed):
+    """A mandatory extract found nothing: never rescued by fallbacks, never an empty success."""
+
+
+def _is_optional(step: WorkflowStep) -> bool:
+    return bool(getattr(step, "optional", False))
+
+
+async def extract_content(page: Page, step: WorkflowStep, *, variables: dict[str, Any] | None = None) -> str:
+    """Read the extract target. A step's ``cssSelector`` is mandatory: if it matches nothing or
+    only empty text the step fails (naming the selector and what the page showed) unless the
+    step is explicitly ``optional: true``, in which case it falls back to the page's main text."""
+
     goal = (step.extractionGoal or step.goal or step.description or "").lower()
     if step.cssSelector:
-        loc = page.locator(step.cssSelector)
-        if await loc.count():
-            return (await loc.first.inner_text()).strip()
+        selector = interpolate(step.cssSelector, variables or {})
+        loc = page.locator(selector)
+        count = await loc.count()
+        if count:
+            text = (await loc.first.inner_text()).strip()
+            if not text:
+                # Inputs/progress bars hold their value in an attribute, not inner text.
+                try:
+                    text = str(await loc.first.evaluate("el => el.value ?? el.getAttribute('aria-valuenow') ?? el.getAttribute('value') ?? ''") or "").strip()
+                except Exception:
+                    text = ""
+            if text:
+                return text
+            if not _is_optional(step):
+                raise ExtractMissing(
+                    f"extract selector {selector!r} matched {count} element(s) but they are empty",
+                    last_error=f"expected text in {selector!r}; found an empty element",
+                )
+        elif not _is_optional(step):
+            title = ""
+            try:
+                title = (await page.title()).strip()
+            except Exception:
+                pass
+            raise ExtractMissing(
+                f"extract selector {selector!r} matched no element",
+                last_error=f"expected {selector!r} on {page.url} ({title!r}); found no matching element",
+            )
     if "heading" in goal or "title" in goal or "h1" in goal:
         h1 = page.locator("h1")
         if await h1.count():
@@ -280,7 +317,10 @@ async def extract_content(page: Page, step: WorkflowStep) -> str:
         text = (await main.first.inner_text()).strip()
         if text:
             return text[:4000]
-    return (await page.locator("body").inner_text())[:4000].strip()
+    text = (await page.locator("body").inner_text())[:4000].strip()
+    if not text and not _is_optional(step):
+        raise ExtractMissing("extract found no text on the page", last_error=f"expected page text on {page.url}; found none")
+    return text
 
 
 async def _apply_input_value(loc, value: str, timeout_ms: int) -> None:
@@ -394,7 +434,7 @@ async def run_step(
         return StepSuccess(output={"scrollX": dx, "scrollY": dy})
 
     if typ in {"extract", "extract_page_content"}:
-        output = await extract_content(page, step)
+        output = await extract_content(page, step, variables=variables)
         await assert_expected(page, step.expected_state, variables=variables)
         return StepSuccess(output=output)
 
@@ -437,6 +477,37 @@ async def run_step(
         except Exception as exc:
             last_error = f"{attempt.type}:{attempt.value}: {exc}"
     raise StepFailed(f"all selector strategies failed for {typ}", last_error=last_error)
+
+
+def primary_attempt(plan: list[SelectorAttempt]) -> SelectorAttempt | None:
+    """The step's recorded first-choice selector (lowest-priority recorded strategy)."""
+
+    for attempt in plan:
+        if attempt.kind == "selector":
+            return attempt
+    return next((a for a in plan if a.kind == "heuristic"), None)
+
+
+def same_attempt(left: SelectorAttempt | None, right: SelectorAttempt | None) -> bool:
+    return bool(left and right and left.type == right.type and left.value == right.value)
+
+
+async def probe_alternatives(page: Page, plan: list[SelectorAttempt], variables: dict[str, Any] | None, skip: SelectorAttempt | None) -> str:
+    """Describe what a non-primary strategy would have matched (read-only, used for strict errors)."""
+
+    for attempt in plan:
+        if same_attempt(attempt, skip):
+            continue
+        value = interpolate(attempt.strategy.value, variables or {})
+        strategy = attempt.strategy.model_copy(update={"value": value})
+        try:
+            loc = locator_for(page, strategy)
+            count = await loc.count()
+        except Exception:
+            continue
+        if count:
+            return f"{attempt.kind} {attempt.type}:{value!r} matches {count} element(s)"
+    return "no other strategy matches either"
 
 
 _SAFE_GOAL = re.compile(r"[^\w\s-]+")

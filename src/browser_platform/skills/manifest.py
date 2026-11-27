@@ -20,12 +20,14 @@ from browser_platform.interpolate import is_placeholder_value
 from browser_platform.models.workflow import StoredWorkflow, WorkflowDefinition
 from browser_platform.workflow_inputs import (
     ensure_definition_inputs,
+    default_is_trusted,
     has_runtime_default,
+    input_grain,
     input_is_required,
     pretty_label,
 )
 
-MANIFEST_VERSION = 3
+MANIFEST_VERSION = 4
 _WORD = re.compile(r"\w+", re.UNICODE)
 _STOP = {
     "the", "a", "an", "of", "for", "to", "and", "or", "in", "on", "with", "from", "task", "workflow",
@@ -98,23 +100,29 @@ def words(text: str) -> list[str]:
     return [w for w in _WORD.findall((text or "").lower()) if w not in _STOP and len(w) > 1]
 
 
-def _input_entry(item: Any) -> dict[str, Any]:
-    runtime = has_runtime_default(item)
+def _input_entry(item: Any, definition: WorkflowDefinition | None = None) -> dict[str, Any]:
+    runtime = has_runtime_default(item, definition)
+    grain = input_grain(item, definition)
     example = item.default if item.default is not None else None
     if is_placeholder_value(example):
         example = None
     entry: dict[str, Any] = {
         "name": item.name,
         "type": item.type or "string",
-        "required": bool(input_is_required(item)),
+        "required": bool(input_is_required(item, definition)),
         "description": item.description or pretty_label(item.name, label=item.label, description=item.description),
     }
+    if grain:
+        entry["grain"] = grain
     if runtime:
-        entry["default"] = "runtime:current_month" if (item.name or "").lower() in {"month", "date"} or item.format else "runtime"
+        entry["default"] = f"runtime:current_{grain}" if grain else ("runtime:current_month" if (item.name or "").lower() in {"month", "date"} or item.format else "runtime")
         if item.format:
             entry["format"] = item.format
-    elif example is not None and str(example).strip():
+    elif example is not None and str(example).strip() and default_is_trusted(item):
         entry["default" if not entry["required"] else "example"] = example
+    examples = [str(v) for v in (getattr(item, "examples", None) or []) if str(v).strip() and not is_placeholder_value(v)]
+    if examples:
+        entry["examples"] = examples[:6]
     enum = getattr(item, "enum", None)
     if isinstance(enum, list) and enum:
         entry["enum"] = list(enum)[:20]
@@ -142,7 +150,7 @@ def base_manifest(stored: StoredWorkflow, *, slug: str, action_ending: bool, inp
     site = site_of(definition)
     name = definition.name or slug
     desc = (definition.description or "").strip()
-    inputs = [_input_entry(item) for item in definition.input_schema or [] if item.name]
+    inputs = [_input_entry(item, definition) for item in definition.input_schema or [] if item.name]
     goal = _output_shape(definition, action_ending)
     title = re.sub(r"[_\s]+", " ", re.sub(r"\{[^}]*\}", "", name)).strip() or slug
     summary = desc.split("\n")[0][:140] if desc else ""
@@ -264,6 +272,23 @@ def parse_json_object(text: str) -> dict[str, Any]:
     return {}
 
 
+def input_kind(item: dict[str, Any], *, words_max: int = 4) -> str:
+    """Short entity-kind hint from an input's description ("Club name", "competition slug"),
+    so the planner can tell a team input from a competition input."""
+
+    text = str(item.get("description") or "").strip()
+    if not text:
+        return ""
+    head = re.split(r"[,.;:(]| such as | e\.g\.| for example", text, maxsplit=1)[0].strip()
+    toks = head.split()
+    if not toks or len(toks) > words_max + 2:
+        toks = toks[:words_max]
+    hint = " ".join(toks[:words_max]).lower()
+    if hint in {"", str(item.get("name") or "").lower().replace("_", " ")}:
+        return ""
+    return hint
+
+
 def card(manifest: dict[str, Any]) -> str:
     """One compact line per skill for the planner (~20-40 tokens)."""
 
@@ -275,10 +300,17 @@ def card(manifest: dict[str, Any]) -> str:
         extra = ""
         if item.get("enum"):
             extra = "=" + "|".join(str(v) for v in item["enum"][:6])
+        elif item.get("grain"):
+            # Typed dates: the planner passes the user's words; code resolves them.
+            extra = ":" + {"date": "day", "month": "month", "year": "year"}[item["grain"]]
         elif str(item.get("default") or "").startswith("runtime"):
             extra = "=YYYY-MM" if (item.get("name") or "").lower() in {"month", "date"} else "=auto"
         elif item.get("type") and item["type"] != "string":
             extra = f":{item['type']}"
+        else:
+            kind = input_kind(item)
+            if kind:
+                extra = f"[{kind}]"
         args.append(f"{item['name']}{mark}{extra}")
     site = f" [{manifest['site']}]" if manifest.get("site") else ""
     act = " (action)" if manifest.get("action_ending") else ""

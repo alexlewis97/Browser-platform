@@ -224,6 +224,10 @@ export const he = {
     runnerUp: "שני",
   },
   runPage: {
+    needsRepair: "הצליח דרך חלופה — הזרימה צריכה תיקון",
+    fallbackRecorded: "נשמר",
+    fallbackMatched: "נמצא במקום",
+    strict: "מצב קפדני",
     live: "הרצה חיה",
     duration: "משך",
     tokens: "טוקנים",
@@ -418,6 +422,8 @@ export const he = {
     assign: "הוספה לסביבה",
   },
   chat: {
+    needsRepair: "צריך תיקון",
+    noData: "אין נתונים",
     presetName: "שם תבנית",
     title: "צ׳אט",
     eyebrow: "זרימות ככלים",

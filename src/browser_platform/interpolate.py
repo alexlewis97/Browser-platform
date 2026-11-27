@@ -29,11 +29,10 @@ def is_placeholder_value(value: object) -> bool:
 
 
 def current_year_month() -> str:
-    """Calendar month in Asia/Jerusalem, as YYYY-MM."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+    """Calendar month in the user's time zone (default Asia/Jerusalem), as YYYY-MM."""
+    from browser_platform.dates import now_value
 
-    return datetime.now(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m")
+    return now_value("month")
 
 
 def shift_year_month(value: str | None, months: int = 1) -> str:
@@ -49,28 +48,30 @@ def shift_year_month(value: str | None, months: int = 1) -> str:
 
 
 def year_month(value: str | None) -> str:
-    """Normalize a month value to YYYY-MM. Empty or 'current' uses the current month."""
+    """Normalize a month value to YYYY-MM. Empty or 'current' uses the current month.
+
+    Relative expressions ("last month", "yesterday") resolve deterministically.
+    """
+    from browser_platform.dates import resolve
+
     text = str(value or "").strip()
     if not text or text.lower() in {"current", "current_month", "now", "$current_month"}:
         return current_year_month()
-    match = re.match(r"^(20\d{2})[-/](\d{1,2})(?:[-/]\d{1,2})?$", text)
-    if match:
-        return f"{int(match.group(1)):04d}-{int(match.group(2)):02d}"
-    tokens = re.findall(r"[A-Za-z]+|\d{4}|\d{1,2}", text)
-    month_num = None
-    year = None
-    for tok in tokens:
-        low = tok.lower()
-        if low in _MONTH_NAMES:
-            month_num = _MONTH_NAMES[low]
-        elif re.fullmatch(r"20\d{2}", tok):
-            year = int(tok)
-    if month_num:
-        year = year or int(current_year_month()[:4])
-        return f"{year:04d}-{month_num:02d}"
-    return current_year_month()
+    resolved = resolve(text, "month")
+    return resolved or current_year_month()
 
 
+def format_date(value: str | None, grain: str) -> str:
+    """Interpolation filter for date grains; unparseable text is passed through unchanged."""
+    from browser_platform.dates import now_value, resolve
+
+    text = str(value or "").strip()
+    if not text:
+        return now_value(grain)
+    return resolve(text, grain) or text
+
+
+_DATE_FILTERS = {"ymd": "date", "date": "date", "day": "date", "iso_date": "date", "y": "year", "year": "year", "yyyy": "year"}
 
 
 def format_value(value: str, fmt: str | None) -> str:
@@ -88,6 +89,12 @@ def format_value(value: str, fmt: str | None) -> str:
         return (tokens[0] if tokens else text).lower()
     if fmt in _YM_FORMATS:
         return year_month(text)
+    if fmt in _DATE_FILTERS:
+        return format_date(text, _DATE_FILTERS[fmt])
+    if fmt == "dmy":
+        iso = format_date(text, "date")
+        parts = iso.split("-")
+        return f"{parts[2]}/{parts[1]}/{parts[0]}" if len(parts) == 3 else iso
     return text
 
 
@@ -114,6 +121,8 @@ def interpolate(value: Any, variables: dict[str, Any] | None) -> Any:
         found = lookup_variable(variables, key)
         if fmt in _YM_FORMATS:
             return year_month(None if found is None or str(found).strip() == "" else str(found))
+        if fmt in _DATE_FILTERS and (found is None or str(found).strip() == ""):
+            return format_date(None, _DATE_FILTERS[fmt])
         if found is not None:
             return format_value(str(found), fmt)
         return match.group(0)

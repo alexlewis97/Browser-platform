@@ -21,6 +21,7 @@ from browser_platform.executor.isolated import IsolatedBrowser, close_isolated, 
 from browser_platform.executor.output_validate import collect_sample, is_nav_footer_only
 from browser_platform.llm.openrouter import chat_complete, env_api_key, merge_usage, message_text
 from browser_platform.models.workflow import StoredWorkflow
+from browser_platform.orchestrator.grounding import data_status, ungrounded_claims
 from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
 from browser_platform.orchestrator.planner import (
     TOP_K,
@@ -43,6 +44,8 @@ from browser_platform.redaction import redact
 from browser_platform.store.file_store import FileStore
 from browser_platform.workflow_inputs import (
     inputs_for_output_validation,
+    invalid_typed_inputs,
+    input_grain,
     missing_required_inputs,
     resolve_input_values,
 )
@@ -86,6 +89,8 @@ def compact_item(item: dict[str, Any], *, fact_limit: int = 800) -> dict[str, An
         else None,
         "error": item.get("error"),
         "facts": facts,
+        "data_status": data_status(facts, status=item.get("status")),
+        "needs_repair": bool(item.get("needs_repair")),
         "url": item.get("url") or "",
     }
 
@@ -107,6 +112,28 @@ def resolve_prepared_defaults(prepared: list[dict[str, Any]], definitions: dict[
             # definitions is keyed by workflow id; also try identity
             definition = definitions.get(call["workflow_id"])
         call["arguments"] = resolve_input_values(definition, args)
+
+
+def anchor_relative_dates(calls: list[dict[str, Any]], definitions: dict[str, Any], message: str, notes: list[str]) -> None:
+    """Deterministic dates: if the user said "yesterday" and the planner computed a date that
+    disagrees, code's resolution (server clock, user time zone) wins."""
+
+    from browser_platform.dates import anchor_to_message
+
+    for call in calls or []:
+        definition = (definitions or {}).get(call.get("workflow_id"))
+        if definition is None:
+            continue
+        args = dict(call.get("arguments") or {})
+        for item in definition.input_schema or []:
+            grain = input_grain(item, definition)
+            if not grain or item.name not in args or is_ref(args[item.name]):
+                continue
+            fixed = anchor_to_message(args[item.name], grain, message)
+            if fixed and fixed != args[item.name]:
+                notes.append(f"date anchored: {call.get('tool')}.{item.name} {args[item.name]!r} -> {fixed} (from the user's words)")
+                args[item.name] = fixed
+        call["arguments"] = args
 
 
 def _missing(stored: StoredWorkflow, arguments: dict[str, Any]) -> list[str]:
@@ -196,7 +223,9 @@ def _status_from_items(compact: list[dict[str, Any]], flagged: list[dict[str, An
     ok = [
         item
         for item in compact
-        if item.get("status") == "succeeded" and (item.get("validation") or {}).get("verdict") not in {"wrong", "suspect"}
+        if item.get("status") == "succeeded"
+        and (item.get("validation") or {}).get("verdict") not in {"wrong", "suspect"}
+        and item.get("data_status") != "no_data"
     ]
     if ok and len(ok) == len(compact) and not flagged:
         return "succeeded"
@@ -610,9 +639,6 @@ class ChatOrchestrator:
                     args[key] = {"from": id_map.get(str(value.get("from")), str(value.get("from"))), "pick": value.get("pick") or key}
             after = [id_map[a] for a in step.get("after") or [] if a in id_map]
             after += [v["from"] for v in args.values() if is_ref(v) and v["from"] not in after]
-            absent = _missing(stored, args)
-            if absent:
-                missing.append(f"{stored.definition.name} is missing required input(s): {', '.join(absent)}.")
             ends = is_action_ending(stored.definition)
             action = action or ends
             prepared.append(
@@ -625,9 +651,9 @@ class ChatOrchestrator:
                     "after": after,
                     "action_ending": ends,
                     "definition": stored.definition.model_dump(exclude_none=True) if job["target"] == "extension" else None,
+                    "_plan_step": step["id"],
                 }
             )
-        job["all_calls"] = prepared
         # The extension runs one dependency layer per round trip; the server keeps the rest.
         job["calls"] = [c for c in prepared if not c.get("after")] if job["target"] == "extension" else prepared
         if prepared:
@@ -646,7 +672,52 @@ class ChatOrchestrator:
                 job["usage"] = merge_usage(job.get("usage"), norm_usage)
             except Exception:
                 pass
+            anchor_relative_dates(ready, definitions, message, job["notes"])
             resolve_prepared_defaults(ready, definitions)
+            # Entity-kind mismatch (a competition sent to a club input): never call the tool with
+            # the wrong kind of value; the intent is reported as not covered instead.
+            dropped = [c for c in prepared if c.get("kind_mismatch")]
+            if dropped:
+                step_intent = {sid: i.get("ask") for i in intents for sid in i.get("steps") or []}
+                uncovered = list(job.get("uncovered") or [])
+                for call in dropped:
+                    mm = call["kind_mismatch"][0]
+                    ask = step_intent.get(call.get("_plan_step")) or message
+                    reason = (
+                        f"{ask} (not covered: '{mm['value']}' is {mm['value_kind'] or 'a different kind of thing'}, "
+                        f"but {call['tool']}.{mm['param']} expects {mm['expects']})"
+                    )
+                    uncovered.append(reason)
+                    job["notes"].append("kind mismatch: " + reason)
+                job["uncovered"] = uncovered
+                gone = {c["id"] for c in dropped}
+                prepared = [c for c in prepared if c["id"] not in gone and not (set(c.get("after") or []) & gone)]
+            # Ask only after normalisation and resolved defaults (runtime tokens, trusted defaults).
+            for call in prepared:
+                if any(is_ref(v) for v in (call.get("arguments") or {}).values()):
+                    continue
+                definition = definitions.get(call["workflow_id"])
+                if definition is None:
+                    continue
+                absent = missing_required_inputs(definition, call.get("arguments") or {})
+                if absent:
+                    missing.append(f"{call['workflow_name']} is missing required input(s): {', '.join(absent)}.")
+                problems = invalid_typed_inputs(definition, call.get("arguments") or {})
+                if problems:
+                    missing.append(f"{call['workflow_name']}: " + "; ".join(problems) + ".")
+        for call in prepared:
+            call.pop("_plan_step", None)
+        job["all_calls"] = prepared
+        # The extension runs one dependency layer per round trip; the server keeps the rest.
+        job["calls"] = [c for c in prepared if not c.get("after")] if job["target"] == "extension" else prepared
+        if not prepared and not missing:
+            job["status"] = "succeeded"
+            job["declined"] = True
+            job["answer"] = "That isn't covered by the tools in this workspace: " + "; ".join(job.get("uncovered") or [message]) + "."
+            if reply:
+                job["answer"] = f"{reply.strip()}\n\n{job['answer']}"
+            await _emit(emit, {"type": "message", "text": job["answer"], "job_id": job["id"]})
+            return job
         if missing:
             job["status"] = "needs_input"
             job["question"] = " ".join(missing) + " Please provide the missing value(s)."
@@ -777,8 +848,13 @@ class ChatOrchestrator:
                     ),
                     validate_output=True,
                     raw_inputs=item.get("raw_inputs"),
+                    # Nobody can answer a confirmation inside a chat turn: fail fast, never hang.
+                    allow_hitl=False,
                 )
                 item["run_id"] = run.id
+                if getattr(run, "fallbacks", None):
+                    item["needs_repair"] = True
+                    item["fallbacks"] = list(run.fallbacks)
                 item["outputs"] = run.outputs or {}
                 item["url"] = _url_from_run(run)
                 item["validation"] = getattr(run, "validation", None) or (run.model_dump().get("validation") if hasattr(run, "model_dump") else None)
@@ -796,7 +872,7 @@ class ChatOrchestrator:
                     validation.update({"verdict": "wrong", "reason": reason, "source": "deterministic"})
                     item["validation"] = validation
                     last_error = reason
-                if run.status == "succeeded" and not chrome_only:
+                if run.status in {"succeeded", "succeeded_with_fallback"} and not chrome_only:
                     item["status"] = "succeeded"
                     item["facts"] = sample
                     if item.get("action_ending"):
@@ -888,8 +964,27 @@ class ChatOrchestrator:
         ]
         for ask in job.get("uncovered") or []:
             job["flagged"].append({"id": None, "workflow": None, "inputs": {}, "verdict": "not_run", "reason": f"No skill call was planned for: {ask}"})
+        for item in compact:
+            if item.get("status") == "succeeded" and item.get("data_status") == "no_data":
+                job["flagged"].append(
+                    {
+                        "id": item["id"],
+                        "workflow": item["workflow"],
+                        "inputs": item["inputs"],
+                        "verdict": "no_data",
+                        "reason": "The page showed no data for this request, so nothing could be verified.",
+                    }
+                )
+            if item.get("needs_repair"):
+                job.setdefault("notes", []).append(
+                    f"{item.get('workflow')}: a step only worked through a fallback selector; the workflow needs repair."
+                )
         fallback = _fallback_answer(job, compact)
         api_key = (job.get("llm_api_key") or "").strip() or env_api_key()
+        has_data = any(item.get("status") == "succeeded" and item.get("data_status") == "ok" for item in compact)
+        if not has_data:
+            # Nothing to summarise from: never let a model fill the gap.
+            api_key = ""
         if not api_key:
             job["answer"] = fallback
             job["status"] = _status_from_items(compact, job["flagged"])
@@ -911,6 +1006,9 @@ class ChatOrchestrator:
                             "Use the user's language and format. "
                             "Cite which workflow and input each fact came from (for example football_fixtures / team=Arsenal). "
                             "Clearly mention any item the output validator flagged as suspect or wrong, that failed, or that was not run (verdict not_run). "
+                            "State only facts present in results[].facts: inputs are what was requested, not what the page showed. "
+                            "data_status no_data means the page showed nothing; say the data was not available or could not be verified, "
+                            "never conclude that something does not exist. "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
                         ),
@@ -931,6 +1029,16 @@ class ChatOrchestrator:
             job["synthesis_usage"] = usage
             job.setdefault("token_breakdown", {})["synthesis"] = usage
             text = message_text(message)
+            problems = ungrounded_claims(text, compact, str(job.get("message") or ""))
+            if problems:
+                job["grounding"] = {"ok": False, "ungrounded": problems[:10]}
+                job.setdefault("notes", []).append(
+                    "The summary was replaced with the raw results: it stated things not found in the extracts ("
+                    + ", ".join(problems[:5]) + ")."
+                )
+                text = ""
+            else:
+                job["grounding"] = {"ok": True}
             job["answer"] = text or fallback
         except Exception as exc:
             job["answer"] = fallback
@@ -964,6 +1072,8 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "intents": job.get("intents") or [],
         "workspace": {k: v for k, v in (job.get("workspace") or {}).items() if k in {"id", "slug", "name"}} or None,
         "uncovered": job.get("uncovered") or [],
+        "grounding": job.get("grounding"),
+        "needs_repair": any(bool(item.get("needs_repair")) for item in job.get("items") or []),
         "elapsed_ms": job.get("elapsed_ms"),
         "error": job.get("error"),
     }
@@ -1005,6 +1115,8 @@ def public_item(item: dict[str, Any]) -> dict[str, Any]:
         "run_id": item.get("run_id"),
         "action_ending": bool(item.get("action_ending")),
         "attempts": item.get("attempts"),
+        "needs_repair": bool(item.get("needs_repair")),
+        "fallbacks": item.get("fallbacks") or [],
     }
 
 
@@ -1079,7 +1191,7 @@ def _run_validation_usage(validation: dict[str, Any] | None) -> dict[str, Any] |
 
 def _fallback_answer(job: dict[str, Any], compact: list[dict[str, Any]]) -> str:
     lines = []
-    ok = [item for item in compact if item.get("status") == "succeeded"]
+    ok = [item for item in compact if item.get("status") == "succeeded" and item.get("data_status") != "no_data"]
     if len(ok) == 1:
         lines.append(ok[0].get("facts") or "Action completed." if ok[0].get("status") == "succeeded" else "")
     elif ok:

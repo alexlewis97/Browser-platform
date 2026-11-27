@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     hitl_mode: str = "always_on_uncertain"
     hitl_timeout_s: float = 300.0
     hitl_timeout_policy: str = "fail"
+    # Strict selectors: a step that only works through a non-primary strategy (another
+    # recorded selector, cache, heuristic, fuzzy/alias, HITL, LLM repair) fails by name
+    # instead of being rescued. Single platform default (env BROWSER_PLATFORM_STRICT_SELECTORS);
+    # workflows (`strict_selectors`) and runs (`strict`) can override it.
+    strict_selectors: bool = False
+    # Named timeouts. Time spent waiting for a human confirmation (HITL) is bounded by
+    # hitl_timeout_s instead and is not counted here.
+    step_timeout_s: float = 60.0
+    run_timeout_s: float = 240.0
 
     def resolve(self, root: Path | None = None) -> "Settings":
         base = root or Path.cwd()

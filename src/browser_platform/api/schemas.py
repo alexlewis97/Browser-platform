@@ -32,6 +32,8 @@ class RunRequest(BaseModel):
     llm: LLMConfig | None = None
     write_back: bool = True
     wait: bool = True
+    # None = workflow / platform default. True makes any non-primary selector resolution a named failure.
+    strict: bool | None = None
 
 
 class MintRequest(BaseModel):

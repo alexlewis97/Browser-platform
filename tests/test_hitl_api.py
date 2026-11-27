@@ -94,10 +94,10 @@ def test_confirmation_rest_and_websocket(data_dir: Path):
             final = None
             for _ in range(40):
                 final = client.get(f"/api/runs/{run_id}").json()
-                if final["status"] in {"succeeded", "failed", "cancelled"}:
+                if final["status"] in {"succeeded", "succeeded_with_fallback", "failed", "cancelled"}:
                     break
                 time.sleep(0.05)
-            assert final and final["status"] == "succeeded"
+            assert final and final["status"] == "succeeded_with_fallback"
             assert final.get("confirmation") is None
             click = next(s for s in final["steps"] if s["step_type"] == "click")
             assert click["tier"] == "workflow_use"

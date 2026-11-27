@@ -26,8 +26,8 @@ from browser_platform.skills.manifest import card, parse_json_object
 TOP_K = 6
 
 PLANNER_SYSTEM = (
-    "You plan calls to saved browser skills (like MCP tools) to answer the user. Today is {month}.\n"
-    "Skills (name(args): summary [site]; * required, ? optional):\n{cards}\n\n"
+    "You plan calls to saved browser skills (like MCP tools) to answer the user.\n"
+    "Skills (name(args): summary [site]; * required, ? optional; [kind] is what an argument holds):\n{cards}\n\n"
     "Reply JSON only: {{\"intents\":[{{\"ask\":\"<one thing the user wants>\",\"steps\":[\"s1\"]}}],"
     "\"steps\":[{{\"id\":\"s1\",\"skill\":\"<name>\",\"args\":{{}},\"after\":[]}}],\"answer\":null}}\n"
     "Rules: first split the request into intents, one per entity and kind of information "
@@ -37,11 +37,14 @@ PLANNER_SYSTEM = (
     "Use only skills listed above, with their exact argument names. "
     "Fill arguments only from values the user stated; never invent them. If a required value is missing, still add the step without it. "
     "Apply a stated value (date, month, filter) only to the intents it was said for. "
+    "For :day, :month or :year arguments pass the user's own words (\"yesterday\", \"last Saturday\", \"June 2026\"); code converts them, so never compute a date yourself. "
+    "Bind a value only to an argument of the same kind: a league or competition is not a club or team, and a team is not a competition. "
+    "If no listed skill takes the kind of entity an intent is about, give that intent no steps rather than forcing a mismatched argument. "
     "Omit optional arguments unless the user named a specific value; never send placeholders such as current, now or default. "
     "Several values (teams, terms, dates) get one step each; steps run in parallel. "
     "Use \"after\" only when a step needs an earlier step's result, and pass that value as {{\"from\":\"s1\",\"pick\":\"what to take\"}}. "
     "Never answer from your own knowledge when a listed skill can fetch it. "
-    "Only if no listed skill fits, return no steps and put a short reply or question in \"answer\"."
+    "Only if no listed skill fits, return no steps and put a short reply in \"answer\" saying what is not covered."
 )
 
 REPAIR_SYSTEM = (

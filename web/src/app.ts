@@ -128,8 +128,20 @@ function totalTokens(run: RunRecord): string {
 function statusClass(status: string): string {
   if (status === "succeeded" || status === "completed" || status === "published") return "ok";
   if (status === "failed" || status === "cancelled" || status === "canceled" || status === "error" || status === "incomplete") return "bad";
-  if (status === "needs_confirmation" || status === "needs_input" || status === "input_required") return "warn";
+  if (status === "needs_confirmation" || status === "needs_input" || status === "input_required" || status === "succeeded_with_fallback") return "warn";
   return "";
+}
+
+function renderFallbacks(run: RunRecord): string {
+  const list = run.fallbacks ?? [];
+  if (!list.length) return run.strict ? `<div class="muted" style="margin-top:8px">${he.runPage.strict}</div>` : "";
+  const rows = list
+    .map(
+      (f) =>
+        `<li><b>${escapeHtml(`#${f.step_index + 1} ${f.step || ""}`)}</b> — ${he.runPage.fallbackRecorded}: <span class="mono">${escapeHtml(f.recorded || "—")}</span>; ${he.runPage.fallbackMatched}: <span class="mono">${escapeHtml(`${f.matched_by || ""} ${f.matched || ""}`)}</span></li>`,
+    )
+    .join("");
+  return `<div class="banner warn" style="margin:12px 0 0"><b>${he.runPage.needsRepair}</b><ul style="margin:6px 0 0">${rows}</ul></div>`;
 }
 
 function isLiveStatus(status: string): boolean {
@@ -564,6 +576,7 @@ function runView(run: RunRecord): string {
         <div class="stat"><b>${escapeHtml(totalTokens(run))}</b><span>${he.runPage.tokens}</span></div>
       </div>
       ${run.error ? `<div class="banner err" style="margin:12px 0 0">${escapeHtml(run.error)}</div>` : ""}
+      ${renderFallbacks(run)}
       <div style="margin-top:16px">${steps}</div>
     </div>
     <div class="card">

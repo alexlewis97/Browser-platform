@@ -28,6 +28,8 @@ export type ChatItem = {
   outputs?: Record<string, unknown>;
   url?: string;
   action_ending?: boolean;
+  needs_repair?: boolean;
+  fallbacks?: { step_index: number; step: string; recorded?: string | null; matched_by?: string; matched?: string }[];
 };
 
 export type ChatJob = {
@@ -189,6 +191,7 @@ function renderCallCard(call: ChatCall, item?: ChatItem): string {
       <strong>${escapeHtml(call.workflow_name || call.tool || he.workflow.title)}</strong>
       <span class="pill ${pill}">${escapeHtml(chatStatusLabel(status))}</span>
       ${verdictPill}
+      ${item?.needs_repair ? `<span class="pill warn" title="${escapeHtml((item.fallbacks || []).map((f) => `#${f.step_index + 1} ${f.step}: ${f.recorded || ""} → ${f.matched_by || ""} ${f.matched || ""}`).join("\n"))}">${he.chat.needsRepair}</span>` : ""}
     </div>
     <div class="mono muted">${escapeHtml(inputs || he.chat.noInputs)}</div>
     ${reason}${err}

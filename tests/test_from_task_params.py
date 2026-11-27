@@ -22,7 +22,8 @@ def test_seed_team_from_alex_task():
     assert "team" in names
     team = next(item for item in params if item.name == "team")
     assert team.required is True
-    assert team.example == "Arsenal"
+    # No hard-coded entity is invented for a task that names none.
+    assert team.example == ""
 
 
 def test_normalize_team_capitalization():

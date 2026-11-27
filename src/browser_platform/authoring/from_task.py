@@ -929,6 +929,9 @@ async def create_workflow_from_task(
                 job.creation.tokens_out = int(job.creation.tokens_out or 0) + int(usage.get("tokens_out") or 0)
         except Exception:
             job.input_validation = {"findings": [], "blocks_publish": False, "error": "input validation skipped"}
+        from browser_platform.workflow_inputs import finalize_authored_inputs
+
+        definition = finalize_authored_inputs(definition)
         stored = store.create_workflow(definition)
         job.workflow_id = stored.id
         job.definition = stored.definition
@@ -962,9 +965,12 @@ async def create_workflow_from_task(
                     for s in run.steps
                 ],
                 "outputs": run.outputs,
+                "needs_repair": bool(run.needs_repair),
+                "fallbacks": list(run.fallbacks or []),
             }
-            job.status = "succeeded" if run.status == "succeeded" else "failed"
-            if run.status != "succeeded":
+            ok = run.status in {"succeeded", "succeeded_with_fallback"}
+            job.status = "succeeded" if ok else "failed"
+            if not ok:
                 job.error = run.error or "deterministic replay failed"
         else:
             job.status = "succeeded"

@@ -12,6 +12,7 @@ AI is used only when deterministic (including confident fuzzy) resolution fails.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,14 @@ from browser_platform.cache.result_cache import ResultCache
 from browser_platform.config import Settings
 from browser_platform.executor import browser as browser_mod
 from browser_platform.executor.browser import CdpSession
-from browser_platform.executor.deterministic import StepFailed, run_step as run_deterministic_step
+from browser_platform.executor.deterministic import (
+    ExtractMissing,
+    StepFailed,
+    primary_attempt,
+    probe_alternatives,
+    run_step as run_deterministic_step,
+    same_attempt,
+)
 from browser_platform.executor.output_validate import collect_sample, validate_output as validate_run_output
 from browser_platform.executor.selectors import SelectorAttempt, build_selector_plan
 from browser_platform.fuzzy.candidates import Candidate, apply_candidate, collect_candidates
@@ -33,6 +41,7 @@ from browser_platform.fuzzy.config import find_alias, fuzzy_applies, make_alias,
 from browser_platform.fuzzy.hitl import ConfirmationBroker, ConfirmationDecision, EventHub
 from browser_platform.fuzzy.score import query_for_step, score_candidates
 from browser_platform.models.llm import LLMConfig, resolve_llm
+from browser_platform.interpolate import interpolate
 from browser_platform.models.run import RunRecord, StepTelemetry
 from browser_platform.models.workflow import SelectorStrategy, StoredWorkflow, WorkflowDefinition, WorkflowStep
 from browser_platform.pomerado.adapter import PomeradoAdapter, McpError
@@ -40,6 +49,7 @@ from browser_platform.repair.browser_use_agent import run_browser_use_repair
 from browser_platform.repair.llm import OpenRouterClient, RepairClient, browser_use_available, repair_messages
 from browser_platform.repair.writeback import write_back
 from browser_platform.store.file_store import FileStore
+from browser_platform.workflow_inputs import skippable_step_inputs
 
 ConnectFn = Callable[[str], Awaitable[CdpSession]]
 DisconnectFn = Callable[[CdpSession], Awaitable[None]]
@@ -109,6 +119,8 @@ class WorkflowRunner:
         self.use_browser_use = use_browser_use
         self.event_hub = event_hub or EventHub()
         self.confirmation_broker = confirmation_broker
+        # Runs whose caller cannot answer a confirmation (chat, MCP): never pause for HITL.
+        self._no_hitl_runs: set[str] = set()
 
     async def run(
         self,
@@ -123,6 +135,8 @@ class WorkflowRunner:
         validate_output: bool = True,
         validation_attempt: int = 0,
         raw_inputs: dict[str, Any] | None = None,
+        strict: bool | None = None,
+        allow_hitl: bool = True,
     ) -> RunRecord:
         run = RunRecord(
             id=run_id or uuid.uuid4().hex,
@@ -134,6 +148,9 @@ class WorkflowRunner:
             model=llm.model if llm else None,
             do_write_back=write_back_repairs,
         )
+        run.strict = resolve_strict(self.settings, stored.definition, strict)
+        if not allow_hitl:
+            self._no_hitl_runs.add(run.id)
         llm = resolve_llm(llm)
         run.model = llm.model if llm else run.model
         self.store.save_run(run)
@@ -194,19 +211,42 @@ class WorkflowRunner:
 
             session = await self._connect(cdp_url)
             page = session.page
+            budget = _Budget(float(self.settings.run_timeout_s or 0))
+            total = len(definition.steps)
             for index, step in enumerate(definition.steps):
-                tel, definition, step_output = await self._run_one_step(
-                    page,
-                    stored.id,
-                    definition,
-                    index,
-                    step,
-                    variables=variables or {},
-                    llm=llm,
-                    write_back_repairs=write_back_repairs,
-                    cdp_url=cdp_url,
+                absent = skippable_step_inputs(step, definition, variables or {})
+                if absent:
+                    run.steps.append(
+                        _tel(index, step, "workflow_use", True, time.perf_counter(),
+                             resolution=f"skipped: optional input not given ({', '.join(absent)})")
+                    )
+                    self.store.save_run(run)
+                    continue
+                tel, definition, step_output = await self._bounded_step(
+                    self._run_one_step(
+                        page,
+                        stored.id,
+                        definition,
+                        index,
+                        step,
+                        variables=variables or {},
+                        llm=llm,
+                        write_back_repairs=write_back_repairs,
+                        cdp_url=cdp_url,
+                        run=run,
+                    ),
                     run=run,
+                    index=index,
+                    step=step,
+                    definition=definition,
+                    budget=budget,
                 )
+                fallback = describe_fallback(index, step, tel, variables or {})
+                if fallback:
+                    run.fallbacks.append(fallback)
+                cancelled = (tel.error or "").lower().startswith("cancelled")
+                if not tel.success and tel.error:
+                    tel.error = step_label(index, total, step) + ": " + tel.error
                 run.steps.append(tel)
                 self.store.save_run(run)
                 if step.output and step_output is not None:
@@ -215,11 +255,12 @@ class WorkflowRunner:
                 if tel.success and step.type in {"extract", "extract_page_content"}:
                     outputs.setdefault("extract", step_output)
                 if not tel.success:
-                    if (tel.error or "").lower().startswith("cancelled"):
+                    if cancelled:
                         run.status = "cancelled"
                     else:
                         run.status = "failed"
                     run.error = tel.error
+                    run.failure_kind = run.failure_kind or _failure_kind(tel.error)
                     break
             else:
                 run.status = "succeeded"
@@ -231,6 +272,7 @@ class WorkflowRunner:
             run.status = "failed"
             run.error = str(exc)
         finally:
+            self._no_hitl_runs.discard(run.id)
             page_meta: dict[str, Any] = {}
             if session is not None and run.status == "succeeded" and validate_output:
                 page_meta = await _page_meta(session)
@@ -246,6 +288,10 @@ class WorkflowRunner:
                     validation_attempt=validation_attempt,
                     raw_inputs=raw_variables,
                 )
+            if run.fallbacks:
+                run.needs_repair = True
+                if run.status == "succeeded":
+                    run.status = "succeeded_with_fallback"
             run.finished_at = datetime.now(timezone.utc)
             self.store.save_run(run)
         if getattr(run, "retry_output_validation", False) and validation_attempt == 0:
@@ -259,8 +305,55 @@ class WorkflowRunner:
                 validate_output=True,
                 validation_attempt=1,
                 raw_inputs=raw_variables,
+                strict=strict,
+                allow_hitl=allow_hitl,
             )
         return run
+
+    async def _bounded_step(
+        self,
+        coro: Awaitable[tuple[StepTelemetry, WorkflowDefinition, Any]],
+        *,
+        run: RunRecord,
+        index: int,
+        step: WorkflowStep,
+        definition: WorkflowDefinition,
+        budget: "_Budget",
+    ) -> tuple[StepTelemetry, WorkflowDefinition, Any]:
+        """Run one step under the per-step and per-run timeouts.
+
+        Time spent waiting for a human confirmation is not counted (HITL has its own
+        timeout). On expiry the step is cancelled and fails with a named error."""
+
+        step_limit = float(self.settings.step_timeout_s or 0)
+        task = asyncio.ensure_future(coro)
+        started = time.perf_counter()
+        active = 0.0
+        last = time.monotonic()
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            now = time.monotonic()
+            if run.status != "needs_confirmation":
+                active += now - last
+                budget.used += now - last
+            last = now
+            if done:
+                return task.result()
+            kind = None
+            if step_limit and active > step_limit:
+                kind, message = "step_timeout", f"step timed out after {step_limit:g}s (limit step_timeout_s)"
+            elif budget.limit and budget.used > budget.limit:
+                kind, message = "run_timeout", f"run timed out after {budget.limit:g}s (limit run_timeout_s)"
+            if kind:
+                task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+                run.failure_kind = kind
+                if run.status == "needs_confirmation":
+                    run.status = "running"
+                return _tel(index, step, "workflow_use", False, started, error=message), definition, None
 
     async def _attach_output_validation(
         self,
@@ -372,6 +465,11 @@ class WorkflowRunner:
         url_for_cache = page.url
         cached = self.action_cache.get(workflow_id, index, url_for_cache, variables)
         plan = build_selector_plan(step, cached=cached)
+        strict = bool(run.strict) if run is not None else False
+        full_plan = plan
+        primary = primary_attempt(build_selector_plan(step))
+        if strict and primary is not None:
+            plan = [attempt for attempt in plan if same_attempt(attempt, primary)]
         started = time.perf_counter()
         try:
             success = await run_deterministic_step(
@@ -418,6 +516,24 @@ class WorkflowRunner:
             )
         except StepFailed as exc:
             det_error = exc.last_error or str(exc)
+            if isinstance(exc, ExtractMissing):
+                # A mandatory extract that found nothing is never rescued or turned into an empty success.
+                if run is not None:
+                    run.failure_kind = "extract_missing"
+                return _tel(index, step, "workflow_use", False, started, error=det_error), definition, None
+            if strict:
+                if run is not None:
+                    run.failure_kind = "strict_selector"
+                if primary is not None:
+                    recorded = interpolate(primary.value, variables)
+                    found = await probe_alternatives(page, full_plan, variables, primary)
+                    message = (
+                        f"strict selectors: recorded {primary.type}:{recorded!r} did not match "
+                        f"({det_error}); found: {found}"
+                    )
+                else:
+                    message = f"strict selectors: {det_error}"
+                return _tel(index, step, "workflow_use", False, started, error=message), definition, None
 
         # Still in workflow-use: resolve the step target with aliases + fuzzy match.
         pending_hitl: dict[str, Any] | None = None
@@ -862,7 +978,7 @@ class WorkflowRunner:
         query = pending["query"]
         fuzzy_cfg = pending["fuzzy"]
 
-        if self.confirmation_broker is None or run is None:
+        if self.confirmation_broker is None or run is None or run.id in self._no_hitl_runs:
             # Cannot pause (unit tests, no broker): defer to LLM when possible.
             return None
 
@@ -1040,6 +1156,80 @@ def _pomerado_ok(result: Any) -> bool:
             return True
         return False
     return False
+
+
+class _Budget:
+    """Run-level active-time budget shared by every step of one run."""
+
+    def __init__(self, limit: float):
+        self.limit = limit
+        self.used = 0.0
+
+
+def resolve_strict(settings: Settings, definition: WorkflowDefinition, override: bool | None) -> bool:
+    """Per-run override, else the workflow's setting, else the single platform default."""
+
+    if override is not None:
+        return bool(override)
+    own = getattr(definition, "strict_selectors", None)
+    if own is not None:
+        return bool(own)
+    return bool(getattr(settings, "strict_selectors", False))
+
+
+def step_label(index: int, total: int, step: WorkflowStep) -> str:
+    name = (step.description or "").strip()
+    label = f"Step {index + 1}/{total}"
+    if name:
+        label += f" {name[:80]!r}"
+    return f"{label} ({step.type})"
+
+
+def _failure_kind(error: str | None) -> str | None:
+    text = (error or "").lower()
+    if "strict selectors" in text:
+        return "strict_selector"
+    if "timed out after" in text and "step_timeout_s" in text:
+        return "step_timeout"
+    if "run_timeout_s" in text:
+        return "run_timeout"
+    return None
+
+
+_NON_PRIMARY_TIERS = {"heuristic", "llm", "browser_use"}
+_NON_PRIMARY_RESOLUTIONS = {"fuzzy", "alias", "hitl"}
+
+
+def describe_fallback(index: int, step: WorkflowStep, tel: StepTelemetry, variables: dict[str, Any]) -> dict[str, Any] | None:
+    """A record when a successful step was resolved by anything but its recorded primary selector."""
+
+    if not tel.success or (tel.resolution or "").startswith("skipped"):
+        return None
+    primary = primary_attempt(build_selector_plan(step))
+    if primary is None and tel.tier not in _NON_PRIMARY_TIERS and tel.resolution not in _NON_PRIMARY_RESOLUTIONS:
+        return None
+    fallback = False
+    if tel.tier in _NON_PRIMARY_TIERS or tel.resolution in _NON_PRIMARY_RESOLUTIONS:
+        fallback = True
+    elif tel.tier in {"selector", "action_cache"} and primary is not None:
+        got_type, got_value = tel.selector_type, tel.selector_value
+        recorded_value = interpolate(primary.value, variables)
+        if got_type != primary.type or got_value not in {primary.value, recorded_value}:
+            fallback = True
+    if not fallback:
+        return None
+    matched_by = tel.resolution if tel.resolution in _NON_PRIMARY_RESOLUTIONS else tel.tier
+    matched = f"{tel.selector_type}:{tel.selector_value!r}" if tel.selector_type else (
+        str(tel.output)[:120] if tel.output not in (None, "") else "(no selector recorded)"
+    )
+    return {
+        "step_index": index,
+        "step": step.description or step.type,
+        "step_type": step.type,
+        "recorded": f"{primary.type}:{interpolate(primary.value, variables)!r}" if primary else None,
+        "matched_by": matched_by,
+        "matched": matched,
+    }
 
 
 def _tel(

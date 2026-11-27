@@ -78,7 +78,11 @@ export type RunRecord = {
   workflow_id: string;
   workflow_name: string;
   workflow_version?: string;
-  status: "running" | "needs_confirmation" | "succeeded" | "failed" | "cancelled";
+  status: "running" | "needs_confirmation" | "succeeded" | "succeeded_with_fallback" | "failed" | "cancelled";
+  fallbacks?: { step_index: number; step: string; step_type?: string; recorded?: string | null; matched_by?: string; matched?: string }[];
+  needs_repair?: boolean;
+  strict?: boolean;
+  failure_kind?: string | null;
   started_at?: string;
   finished_at?: string | null;
   model?: string | null;

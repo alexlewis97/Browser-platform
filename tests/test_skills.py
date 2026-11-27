@@ -53,7 +53,7 @@ def test_manifest_and_card_are_compact(data_dir: Path):
     month = next(i for i in m["inputs"] if i["name"] == "month")
     assert month["required"] is False and month["default"].startswith("runtime")
     line = card(m)
-    assert line.startswith("football_fixtures(team*, month?=YYYY-MM)")
+    assert line.startswith("football_fixtures(team*, month?:month)")
     assert (data_dir / "skills" / f"{m['id']}.skill.json").is_file()
     action = reg.get("httpbin_form_post")
     assert action["action_ending"] is True and "(action)" in card(action)

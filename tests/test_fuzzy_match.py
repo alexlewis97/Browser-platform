@@ -125,7 +125,10 @@ async def test_workflow_use_fuzzy_accepts_name_order(data_dir: Path):
     runner, store = _runner(data_dir, page)
     stored = store.create_workflow(_definition())
     run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Lewis, Alex"})
-    assert run.status == "succeeded"
+    # Rescued by fuzzy: never silent.
+    assert run.status == "succeeded_with_fallback"
+    assert run.needs_repair is True
+    assert run.fallbacks and run.fallbacks[0]["matched_by"] == "fuzzy"
     click = next(s for s in run.steps if s.step_type == "click")
     assert click.tier == "workflow_use"
     assert click.resolution == "fuzzy"
@@ -139,14 +142,14 @@ async def test_workflow_use_fuzzy_accepts_hebrew_and_typo(data_dir: Path):
     runner, store = _runner(data_dir, page)
     stored = store.create_workflow(_definition())
     run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "כהן יונתן"})
-    assert run.status == "succeeded"
+    assert run.status == "succeeded_with_fallback"
     assert page.applied == ["יונתן כהן"]
 
     page2 = AttendancePage()
     runner, store = _runner(data_dir, page2)
     stored = store.create_workflow(_definition())
     run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Sara OConnor"})
-    assert run.status == "succeeded"
+    assert run.status == "succeeded_with_fallback"
     assert page2.applied == ["Sarah O'Connor"]
 
 
@@ -173,7 +176,7 @@ async def test_uncertain_match_pauses_and_alias_makes_next_run_deterministic(dat
     task = asyncio.create_task(confirm_when_ready())
     run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"})
     await task
-    assert run.status == "succeeded"
+    assert run.status == "succeeded_with_fallback"
     click = next(s for s in run.steps if s.step_type == "click")
     assert click.tier == "workflow_use"
     assert click.resolution == "hitl"
@@ -187,7 +190,8 @@ async def test_uncertain_match_pauses_and_alias_makes_next_run_deterministic(dat
     page2 = AttendancePage()
     runner2, _ = _runner(data_dir, page2)  # no broker; would fail if HITL were required
     run2 = await runner2.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"})
-    assert run2.status == "succeeded"
+    assert run2.status == "succeeded_with_fallback"
+    assert run2.fallbacks[0]["matched_by"] == "alias"
     click2 = next(s for s in run2.steps if s.step_type == "click")
     assert click2.resolution == "alias"
     assert click2.tier == "workflow_use"
@@ -256,3 +260,32 @@ async def test_llm_only_skips_hitl(data_dir: Path):
     assert repair.calls == 1
     assert not any(s.resolution == "hitl" for s in run.steps)
     assert page.applied == []
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_turns_fuzzy_rescue_into_named_failure(data_dir: Path):
+    page = AttendancePage()
+    runner, store = _runner(data_dir, page)
+    stored = store.create_workflow(_definition())
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Lewis, Alex"}, strict=True)
+    assert run.status == "failed"
+    assert run.failure_kind == "strict_selector"
+    assert run.error.startswith("Step ")
+    assert "strict selectors: recorded" in run.error
+    assert page.applied == []
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_from_workflow_and_platform_default(data_dir: Path):
+    from browser_platform.orchestrator.runner import resolve_strict
+
+    page = AttendancePage()
+    runner, store = _runner(data_dir, page)
+    definition = _definition()
+    assert resolve_strict(runner.settings, definition, None) is False  # platform default is OFF
+    definition.strict_selectors = True
+    assert resolve_strict(runner.settings, definition, None) is True
+    assert resolve_strict(runner.settings, definition, False) is False  # per-run override wins
+    runner.settings.strict_selectors = True
+    definition.strict_selectors = None
+    assert resolve_strict(runner.settings, definition, None) is True

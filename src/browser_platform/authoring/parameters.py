@@ -134,7 +134,7 @@ def seed_parameters_from_task(task: str, existing: list[TaskParameter] | None = 
     used = {item.name for item in existing}
     seeds: list[dict[str, Any]] = []
     if _TEAM_TASK.search(task or "") and "team" not in used:
-        seeds.append({"name": "team", "label": "Team", "example": "Arsenal", "required": True, "description": "Club or side to filter by"})
+        seeds.append({"name": "team", "label": "Team", "example": "", "required": True, "description": "Club or side to filter by"})
     if _MONTH_TASK.search(task or "") and "month" not in used:
         seeds.append({"name": "month", "label": "Month", "example": "November", "required": False, "description": "Month to show fixtures for"})
     if re.search(r"saucedemo|sauce labs", task or "", re.I):
@@ -170,11 +170,9 @@ def seed_parameters_from_task(task: str, existing: list[TaskParameter] | None = 
         if param:
             used.add(param.name)
             extras.append(param)
-    merged = merge_parameters(existing, extras)
-    for item in merged:
-        if item.name == "team" and not item.example:
-            item.example = "Arsenal"
-    return merged
+    # Never fill a missing example with a hard-coded entity: the demonstration value must come
+    # from the task or the caller, and examples never become defaults (finalize_authored_inputs).
+    return merge_parameters(existing, extras)
 
 
 def maybe_bind_known_urls(steps: list, parameters: list[TaskParameter] | None = None, *, task: str = "") -> list:
@@ -225,7 +223,9 @@ def schema_from_parameters(parameters: list[TaskParameter], resolved: dict[str, 
                 name=item.name,
                 type="string",
                 required=item.required if item.required is not None else True,
-                default=resolved.get(item.name) or item.example or None,
+                # Examples are demonstration values, never defaults.
+                default=None,
+                examples=[v for v in [resolved.get(item.name) or item.example] if v],
                 label=item.label or pretty_label(item.name),
                 description=item.description or None,
             )
@@ -320,10 +320,11 @@ async def extract_parameters_with_llm(
                     "role": "system",
                     "content": (
                         "Extract reusable input parameters from a browser automation task. "
-                        'Reply with JSON only: {"parameters":[{"name":"team","label":"Team","example":"Arsenal","required":true,"description":"Club or side to filter by"}]}. '
+                        'Reply with JSON only: {"parameters":[{"name":"<snake_case>","label":"<Label>","example":"<value for the demonstration>","required":true,"description":"<what kind of value>"}]}. '
                         "Include only values the user would change on a later run (search terms, team or competition names, dates, filters). "
                         "name must be a short snake_case identifier. Always include a realistic example. "
-                        "If the task is about football or sports team fixtures and does not name a team, still include a required team input with example Arsenal. "
+                        "If the task implies a filter the user will vary (an entity, date or category) but names no value, still include it as a required input "
+                        "and pick one realistic example for the demonstration only; it is not a default. "
                         "If the task already contains {placeholders}, use those names. "
                         "Do not invent a parameter for the website itself, cookies, or device info."
                     ),

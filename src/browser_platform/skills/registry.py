@@ -138,7 +138,7 @@ class SkillRegistry:
                 continue
             row = stats.setdefault(wf, [0, 0])
             row[1] += 1
-            if data.get("status") == "succeeded":
+            if data.get("status") in {"succeeded", "succeeded_with_fallback"}:
                 row[0] += 1
         self._stats = (time.monotonic(), stats)
         return stats

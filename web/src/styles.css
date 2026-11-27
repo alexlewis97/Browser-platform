@@ -237,6 +237,7 @@ input:focus, textarea:focus, select:focus {
   line-height: 1.4;
 }
 .banner.err { background: rgba(229, 72, 77, 0.1); color: #b42318; }
+.banner.warn { background: rgba(245, 158, 11, 0.12); color: #92400e; }
 .banner.ok { background: rgba(26, 155, 122, 0.1); color: var(--ok); }
 .banner.info { background: rgba(83, 109, 254, 0.1); color: #3b4fd4; }
 

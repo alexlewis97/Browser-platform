@@ -178,6 +178,8 @@ class WorkflowDefinition(BaseModel):
     fuzzy: FuzzyMatchConfig | None = None
     hitl: HitlConfig | None = None
     aliases: list[AliasMapping] = Field(default_factory=list)
+    # None = platform default (settings.strict_selectors); True/False overrides it for this workflow.
+    strict_selectors: bool | None = None
     # Visible on the end-user run site. Missing on existing documents => published.
     published: bool = True
 
@@ -211,6 +213,7 @@ class WorkflowDefinition(BaseModel):
                 "fuzzy",
                 "hitl",
                 "aliases",
+                "strict_selectors",
                 "published",
             },
             exclude_none=True,

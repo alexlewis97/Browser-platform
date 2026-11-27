@@ -227,7 +227,8 @@ def test_api_tools_validate_and_mcp(data_dir: Path):
 @pytest.mark.asyncio
 async def test_plan_asks_for_missing_inputs_and_confirms_action(data_dir: Path, monkeypatch):
     store = FileStore(data_dir)
-    fixtures = store.create_workflow(_fixtures_def())
+    # No default: an example value is never a default, so a missing team must be asked for.
+    fixtures = store.create_workflow(_fixtures_def(input_schema=[WorkflowInput(name="team", type="string", required=True, label="Team", examples=["Arsenal"])]))
     action = store.create_workflow(
         WorkflowDefinition(
             name="submit_form",
