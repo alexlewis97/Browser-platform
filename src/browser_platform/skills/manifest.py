@@ -324,7 +324,12 @@ def card(manifest: dict[str, Any]) -> str:
 
 
 def search_text(manifest: dict[str, Any]) -> str:
-    inputs = " ".join(f"{i.get('name')} {i.get('description') or ''}" for i in manifest.get("inputs") or [])
+    # Example values count too: a tool whose competition examples include "championship"
+    # should match "Championship results" even when its wording names another league.
+    inputs = " ".join(
+        f"{i.get('name')} {i.get('description') or ''} " + " ".join(str(v).replace("-", " ") for v in (i.get("examples") or [])[:6])
+        for i in manifest.get("inputs") or []
+    )
     return " ".join(
         str(x or "")
         for x in (

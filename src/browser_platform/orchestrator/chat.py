@@ -1099,6 +1099,7 @@ class ChatOrchestrator:
                             "Dates: use today and dates_in_question as given; never assume another current date. "
                             "Report the page's data as it is; never second-guess it from your own knowledge (for example who plays in a league). "
                             "When the question asks about one day and the results cover a longer period, answer for that day only. "
+                            "A result marked 'page default view: X' shows what the page labels X; a view labelled Today lists today's items even when no date is printed. "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
                         ),
