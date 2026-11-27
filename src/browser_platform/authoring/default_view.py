@@ -69,6 +69,14 @@ def _month_names(today: date) -> list[str]:
     return [n for n in (full, abbr, full[:3], abbr.rstrip(".")) if n]
 
 
+def _ordinal(day: int) -> str:
+    if 10 <= day % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
 def today_date_patterns(today: date | None = None) -> list[str]:
     """Human-visible forms of today's date, longest first, for generic matching."""
 
@@ -78,8 +86,18 @@ def today_date_patterns(today: date | None = None) -> list[str]:
     year = today.year
     full, abbr = calendar.month_name[month], calendar.month_abbr[month]
     weekday, wabbr = calendar.day_name[today.weekday()], calendar.day_abbr[today.weekday()]
+    ord_day = _ordinal(day)
     patterns = [
         today.isoformat(),
+        f"{weekday} {ord_day} {full} {year}",
+        f"{weekday} {ord_day} {full}",
+        f"{weekday} {ord_day} {abbr}",
+        f"{wabbr} {ord_day} {full}",
+        f"{wabbr} {ord_day} {abbr}",
+        f"{ord_day} {full} {year}",
+        f"{ord_day} {full}",
+        f"{ord_day} {abbr} {year}",
+        f"{ord_day} {abbr}",
         f"{day:02d} {full} {year}",
         f"{day} {full} {year}",
         f"{full} {day}, {year}",
@@ -90,6 +108,7 @@ def today_date_patterns(today: date | None = None) -> list[str]:
         f"{abbr} {day} {year}",
         f"{wabbr} {day} {abbr}",
         f"{weekday} {day} {abbr}",
+        f"{weekday} {day} {full}",
         f"{wabbr} {day} {full}",
         f"{day:02d} {abbr}",
         f"{day} {abbr}",
@@ -213,6 +232,27 @@ def detect_default_view(html: str, *, today: date | None = None) -> str | None:
         if month_only:
             return f"{_month_in(month_only)} {_TODAY_RE.search(picked).group(0)}"
     return picked
+
+
+_MONTH_WORDS = "|".join(
+    [calendar.month_name[i] for i in range(1, 13)] + [calendar.month_abbr[i] for i in range(1, 13)]
+)
+_WEEKDAY_WORDS = "|".join(list(calendar.day_name) + list(calendar.day_abbr))
+_DATE_SECTION = re.compile(
+    r"^(?:"
+    rf"(?:(?:{_WEEKDAY_WORDS})\s+)?(?P<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?P<month>{_MONTH_WORDS})(?:\s+(?P<year>\d{{4}}))?"
+    r"|"
+    rf"(?:(?:{_WEEKDAY_WORDS})\s+)?(?P<month2>{_MONTH_WORDS})\s+(?P<day2>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(?P<year2>\d{{4}}))?"
+    r")$",
+    re.I,
+)
+
+
+def _is_date_section_label(text: str) -> bool:
+    cleaned = _WS.sub(" ", (text or "").strip())
+    if not cleaned or len(cleaned) > 60:
+        return False
+    return bool(_DATE_SECTION.match(cleaned))
 
 
 def default_view_variables(definition: WorkflowDefinition, variables: dict[str, Any] | None = None) -> dict[str, Any]:

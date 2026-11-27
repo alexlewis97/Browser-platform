@@ -155,3 +155,20 @@ async def test_explore_records_default_view_from_page_state():
     applied = WorkflowDefinition.model_validate(result["definition"])
     filt = next(i for i in applied.input_schema if i.name == "filter")
     assert filt.default_view == "Today"
+
+
+def test_detects_ordinal_today_heading():
+    html = "<h2>Friday 27th November</h2><ul><li>20:00 Home vs Away</li></ul>"
+    assert detect_default_view(html, today=TODAY) == "Friday 27th November"
+
+
+def test_does_not_record_a_future_date_heading_as_default_view():
+    """A later match-day heading is not the page's current-day view; storing it
+    would go stale the next time the tool runs."""
+    html = """
+    <h1>Team Scores & Fixtures</h1>
+    <h2>Sunday 29th November</h2>
+    <ul><li>14:05 Home vs Away</li></ul>
+    <h2>Tuesday 1st December</h2>
+    """
+    assert detect_default_view(html, today=TODAY) is None
