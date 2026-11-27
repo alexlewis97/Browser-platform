@@ -163,9 +163,6 @@ def prefer_default_view_for_today(
         call["raw_arguments"] = {k: v for k, v in (call.get("raw_arguments") or {}).items() if k not in names}
         views = ", ".join(str(i.default_view) for i in controls)
         call["workflow_name"] = f"{call.get('workflow_name') or call.get('tool')} (page default view: {views})"
-        # Stated by code, not inferred: the page was opened in its default view for today.
-        dated = " items listed in this view are on " + today + " unless another date is shown;" if "today" in views.lower() else ""
-        call["view_note"] = f"[Page opened in its default view '{views}' for a question about today ({today});{dated}]"
         changed = True
     return changed
 
@@ -899,7 +896,6 @@ class ChatOrchestrator:
             "workflow_name": call["workflow_name"],
             "inputs": dict(call.get("arguments") or {}),
             "raw_inputs": dict(call.get("raw_arguments") or call.get("arguments") or {}),
-            **({"view_note": call["view_note"]} if call.get("view_note") else {}),
             "action_ending": bool(call.get("action_ending")),
             "status": "running",
             "attempts": 0,
@@ -961,8 +957,6 @@ class ChatOrchestrator:
                 if run.status in {"succeeded", "succeeded_with_fallback"} and not chrome_only:
                     item["status"] = "succeeded"
                     item["facts"] = sample
-                    if item.get("view_note"):
-                        item["facts"] = item["view_note"] + " " + (item.get("facts") or "")
                     if item.get("action_ending"):
                         item["facts"] = "Action completed. " + (item.get("facts") or "")
                     break
