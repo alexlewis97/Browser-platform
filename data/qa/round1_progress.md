@@ -25,3 +25,9 @@
 - F4 list inputs (type list, join filter, chat fan-out, array schema, /run rejects lists for one-value inputs).
 - Harness: synthesis gets today + code-resolved dates, shared facts budget, weekend expressions.
 - Staging evals: reports in /tmp/bp-staging/reports on the VM (deleted at cleanup); copies in /workspace/feat1.
+
+## 12:05-12:15 features deployed live
+- Backups: /home/ubuntu/src-backup-feat-202611271005.tgz, data-backup-feat-202611271005.tgz (10:05 UTC). 0 live jobs. 24 src files (c85fefe..7183e0c) copied, restart, /health ok.
+- Live explore apply on Sports: team fixtures gained `filter` (results|fixtures). Derived "BBC Football league Scores & Fixtures" (262e3143…, competition + month + filter) from the league table's sibling view and added it to Sports (now 8 tools).
+- Live chats: "Championship fixtures on 15 June 2026?" now correct (no events). "Today's Championship fixtures?" now routes but is WRONG: planner sends filter=fixtures, which leaves out today's match.
+- Admin web redeployed (live bundle index-BuGuev7a.js). Staging and /workspace/browser-qa in the container removed. Extension 1.5.0 zip in releases/ (web-run not redeployed).
