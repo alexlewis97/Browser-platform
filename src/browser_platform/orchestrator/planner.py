@@ -51,6 +51,20 @@ REPAIR_SYSTEM = (
 )
 
 
+def workspace_context(workspace: dict[str, Any] | None, *, limit: int = 1200) -> str:
+    """Short per-workspace prompt: what system this is and any author instructions."""
+
+    if not workspace:
+        return ""
+    head = f"\nWorkspace: {workspace.get('name')}"
+    if workspace.get("description"):
+        head += f" - {workspace['description']}"
+    text = head
+    if workspace.get("instructions"):
+        text += f"\nWorkspace instructions: {workspace['instructions']}"
+    return text[:limit]
+
+
 def history_lines(history: list[dict[str, Any]], message: str, *, turns: int = 4, chars: int = 300) -> list[dict[str, str]]:
     out = []
     for turn in (history or [])[-turns:]:
@@ -70,10 +84,15 @@ def retrieval_query(message: str, history: list[dict[str, Any]]) -> str:
 
 
 def planner_messages(
-    message: str, history: list[dict[str, Any]], manifests: list[dict[str, Any]], *, focus: list[str] | None = None
+    message: str,
+    history: list[dict[str, Any]],
+    manifests: list[dict[str, Any]],
+    *,
+    focus: list[str] | None = None,
+    workspace: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     cards = "\n".join(f"- {card(m)}" for m in manifests)
-    system = PLANNER_SYSTEM.format(cards=cards, month=current_year_month())
+    system = PLANNER_SYSTEM.format(cards=cards, month=current_year_month()) + workspace_context(workspace)
     user = message[:2000]
     if focus:
         user = f"Original request: {user}\nPlan steps only for these parts, which are not covered yet:\n" + "\n".join(f"- {f}" for f in focus)
@@ -193,10 +212,11 @@ async def repair_calls(
     api_key: str,
     model: str | None,
     parse_tool_calls,
+    workspace: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
     """Native tool calling over a handful of full schemas."""
 
-    messages = [{"role": "system", "content": REPAIR_SYSTEM}, *history_lines(history, message), {"role": "user", "content": message[:2000]}]
+    messages = [{"role": "system", "content": REPAIR_SYSTEM + workspace_context(workspace)}, *history_lines(history, message), {"role": "user", "content": message[:2000]}]
     assistant, usage = await chat_complete(messages, tools=openai_tools(tools), max_tokens=600, api_key=api_key, model=model)
     calls = parse_tool_calls(assistant, tools)
     return [{"id": f"s{i}", "skill": c["name"], "args": c.get("arguments") or {}, "after": []} for i, c in enumerate(calls, 1)], usage, message_text(assistant)

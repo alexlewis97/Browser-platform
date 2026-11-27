@@ -19,6 +19,7 @@ import {
   teardownRecordSockets,
 } from "./record";
 import { bindChatPage, handleChatClick, renderChatPage } from "./chat";
+import { bindWorkspacesPage, currentWorkspace, loadWorkspaces, renderWorkspacesBody, workspaceSelect } from "./workspaces";
 import { findingsCard, validateInputs, type InputValidation } from "./validation";
 import { refreshDiscovery } from "./discover";
 import { ALT_MODEL, DEFAULT_MODEL, isLocalOrigin, isManagedBackendUrl, loadRunInputs, loadSettings, saveRunInputs, saveSettings, settingsComplete, type Settings } from "./storage";
@@ -47,6 +48,7 @@ type Route =
   | { name: "from-task-job"; id: string }
   | { name: "record" }
   | { name: "chat" }
+  | { name: "workspaces"; slug?: string }
   | { name: "marketplace" }
   | { name: "settings" };
 
@@ -59,6 +61,7 @@ const ICONS = {
   record: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>`,
   market: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 10h16v9H4z"/><path d="M4 10 6 5h12l2 5"/><path d="M9 14v5M15 14v5"/></svg>`,
   chat: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 6h14v9H8l-3 3V6z"/></svg>`,
+  workspaces: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h6l2 2"/></svg>`,
 };
 
 let root: HTMLElement;
@@ -82,6 +85,7 @@ function parseRoute(): Route {
   if (parts[0] === "from-task") return { name: "from-task" };
   if (parts[0] === "record") return { name: "record" };
   if (parts[0] === "chat") return { name: "chat" };
+  if (parts[0] === "workspaces") return { name: "workspaces", slug: parts[1] ? decodeURIComponent(parts[1]) : undefined };
   if (parts[0] === "runs" && parts[1]) return { name: "run", id: parts[1] };
   if (parts[0] === "runs") return { name: "runs" };
   if (parts[0] === "workflows" && parts[1] === "new") return { name: "new" };
@@ -224,6 +228,7 @@ function nav(): string {
       <a href="#/from-task" class="${active("from-task")}">${ICONS.fromTask}${he.nav.fromTask}</a>
       <a href="#/record" class="${active("record")}">${ICONS.record}${he.nav.record}</a>
       <a href="#/chat" class="${active("chat")}">${ICONS.chat}${he.nav.chat}</a>
+      <a href="#/workspaces" class="${active("workspaces")}">${ICONS.workspaces}${he.nav.workspaces}</a>
       <a href="#/runs" class="${active("runs")}">${ICONS.runs}${he.nav.runs}</a>
       <a href="#/mint" class="${active("mint")}">${ICONS.mint}${he.nav.mint}</a>
       <a href="#/marketplace" class="${active("marketplace")}">${ICONS.market}${he.nav.market}</a>
@@ -327,9 +332,21 @@ async function renderWorkflows(): Promise<string> {
   }
 }
 
+async function renderWorkspaces(editing: string): Promise<string> {
+  const setup = needSetup();
+  if (setup) return setup;
+  try {
+    const [workspaces, workflows] = await Promise.all([loadWorkspaces(true), api.listWorkflows()]);
+    return shell(he.workspaces.title, he.workspaces.eyebrow, renderWorkspacesBody(workspaces, workflows.workflows, editing), he.workspaces.subtitle);
+  } catch (err) {
+    return shell(he.workspaces.title, he.workspaces.eyebrow, bannerError(err));
+  }
+}
+
 async function renderNew(): Promise<string> {
   const setup = needSetup();
   if (setup) return setup;
+  const spaces = await loadWorkspaces(true);
   return shell(
     he.newWorkflow.title,
     he.newWorkflow.eyebrow,
@@ -342,6 +359,7 @@ async function renderNew(): Promise<string> {
       <p class="muted" style="margin-top:-4px">${he.newWorkflow.jsonHint}</p>
       <label class="field"><span>${he.newWorkflow.orUrl}</span><input name="url" type="url" placeholder="https://example.com" /></label>
       <label class="field"><span>${he.newWorkflow.extract}</span><input name="goal" type="text" placeholder="${he.newWorkflow.mainHeading}" /></label>
+      ${spaces.length ? `<label class="field"><span>${he.workspaces.assign}</span>${workspaceSelect("create-workspace", currentWorkspace(), { name: "workspace", allLabel: "—" })}</label>` : ""}
       <button class="btn primary" type="submit">${he.newWorkflow.create}</button>
     </form>`,
   );
@@ -1374,6 +1392,7 @@ async function render(): Promise<void> {
   if (route.name === "settings") html = await renderSettings();
   else if (route.name === "marketplace") html = await renderMarketplace();
   else if (route.name === "record") html = renderRecordPage();
+  else if (route.name === "workspaces") html = await renderWorkspaces(route.slug || "");
   else if (route.name === "chat") html = shell(he.chat.title, he.chat.eyebrow, `<div id="chat-page">${renderChatPage()}</div>`, he.chat.subtitle);
   else if (route.name === "from-task") html = await renderFromTaskPage();
   else if (route.name === "from-task-job") html = await renderFromTaskPage(route.id);
@@ -1392,6 +1411,7 @@ async function render(): Promise<void> {
   if (route.name === "chat") {
     void bindChatPage();
   }
+  if (route.name === "workspaces") bindWorkspacesPage(() => void render());
   if (route.name === "record") {
     bindRecordScreen();
     resumeLiveSession();
@@ -2121,6 +2141,7 @@ async function onSubmit(event: Event): Promise<void> {
           ],
         };
       }
+      if (values.workspace) payload.workspace_ids = [values.workspace];
       const created = await api.createWorkflow(payload);
       go(`/workflows/${created.id}`);
     } catch (err) {

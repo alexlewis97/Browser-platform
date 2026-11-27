@@ -68,6 +68,7 @@ async def create_workflow(payload: WorkflowCreate, request: Request) -> dict[str
     else:
         data = payload.model_dump(exclude_none=True)
         data.pop("definition", None)
+        data.pop("workspace_ids", None)
         try:
             definition = ingest_payload(data)
         except Exception as exc:
@@ -79,7 +80,27 @@ async def create_workflow(payload: WorkflowCreate, request: Request) -> dict[str
         stored = _state(request).store.create_workflow(definition)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"id": stored.id, "path": stored.path, "definition": stored.definition.model_dump(exclude_none=True)}
+    workspaces = _assign(request, stored.id, getattr(payload, "workspace_ids", None))
+    return {"id": stored.id, "path": stored.path, "workspaces": workspaces, "definition": stored.definition.model_dump(exclude_none=True)}
+
+
+def _assign(request: Request, workflow_id: str, keys: Any) -> list[str]:
+    """Optional ``workspace_ids`` on create: add the new workflow to those workspaces."""
+
+    if not keys:
+        return []
+    from browser_platform.api.workspaces import assign_new_workflow
+
+    return assign_new_workflow(request, workflow_id, [str(k) for k in (keys if isinstance(keys, list) else [keys])])
+
+
+def _scope_or_404(request: Request, workspace: str | None):
+    from browser_platform.api.chat import _orch
+
+    try:
+        return _orch(request).scope(workspace)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="workspace not found")
 
 
 def _workflow_summary(w) -> dict[str, Any]:
@@ -102,16 +123,48 @@ def _catalog_item(w) -> dict[str, Any]:
 
 
 @router.get("/api/workflows")
-async def list_workflows(request: Request) -> dict[str, Any]:
-    items = [_workflow_summary(w) for w in _state(request).store.list_workflows()]
+async def list_workflows(request: Request, workspace: str | None = None) -> dict[str, Any]:
+    from browser_platform.api.chat import _orch
+
+    ws = _scope_or_404(request, workspace)
+    member: dict[str, list[str]] = {}
+    for space in _orch(request).workspaces.list():
+        for wid in space.workflow_ids:
+            member.setdefault(wid, []).append(space.slug)
+    items = [
+        {**_workflow_summary(w), "workspaces": member.get(w.id, [])}
+        for w in _state(request).store.list_workflows()
+        if ws is None or w.id in set(ws.workflow_ids)
+    ]
     return {"workflows": items}
 
 
 @router.get("/api/catalog")
-async def list_catalog(request: Request) -> dict[str, Any]:
-    """Public list of published workflows for the end-user run site. No access token."""
-    items = [_catalog_item(w) for w in _state(request).store.list_workflows() if getattr(w.definition, "published", True)]
-    return {"workflows": items}
+async def list_catalog(request: Request, workspace: str | None = None) -> dict[str, Any]:
+    """Public list of published workflows for the end-user run site. No access token.
+    ``workspace`` (id or slug) narrows it; omitted or 'all' lists every published workflow."""
+    ws = _scope_or_404(request, workspace)
+    allowed = set(ws.workflow_ids) if ws else None
+    items = [
+        _catalog_item(w)
+        for w in _state(request).store.list_workflows()
+        if getattr(w.definition, "published", True) and (allowed is None or w.id in allowed)
+    ]
+    return {"workflows": items, "workspace": ws.slug if ws else None}
+
+
+@router.get("/api/catalog/workspaces")
+async def list_catalog_workspaces(request: Request) -> dict[str, Any]:
+    """Public: workspaces with at least one published workflow (no instructions or ids leaked)."""
+    from browser_platform.api.chat import _orch
+
+    published = {w.id for w in _state(request).store.list_workflows() if getattr(w.definition, "published", True)}
+    out = []
+    for ws in _orch(request).workspaces.list():
+        count = sum(1 for i in ws.workflow_ids if i in published)
+        if count:
+            out.append({"id": ws.id, "slug": ws.slug, "name": ws.name, "description": ws.description, "workflow_count": count})
+    return {"workspaces": out}
 
 
 @router.get("/api/catalog/{workflow_id}")
@@ -336,7 +389,8 @@ async def save_recording_endpoint(payload: FromRecordingSaveRequest, request: Re
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     stored = _state(request).store.create_workflow(definition)
-    return {"id": stored.id, "path": stored.path, "definition": stored.definition.model_dump(exclude_none=True)}
+    workspaces = _assign(request, stored.id, getattr(payload, "workspace_ids", None))
+    return {"id": stored.id, "path": stored.path, "workspaces": workspaces, "definition": stored.definition.model_dump(exclude_none=True)}
 
 
 @router.get("/api/workflows/{workflow_id}")

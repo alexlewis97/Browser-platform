@@ -18,6 +18,9 @@ from browser_platform.skills.manifest import card
 from browser_platform.skills.registry import mcp_tool
 
 router = APIRouter()
+from browser_platform.api.workspaces import router as _workspaces_router  # noqa: E402
+
+router.include_router(_workspaces_router)
 
 
 class ChatRequest(BaseModel):
@@ -31,6 +34,7 @@ class ChatRequest(BaseModel):
     job_id: str | None = None
     results: list[dict[str, Any]] | None = None
     llm: dict[str, Any] | None = None
+    workspace: str | None = None
 
 
 class ValidateInputsRequest(BaseModel):
@@ -66,17 +70,29 @@ def _orch(request: Request) -> ChatOrchestrator:
     return orch
 
 
+def _scope_ids(request: Request, workspace: str | None) -> set[str] | None:
+    """Workflow ids for a workspace (None = whole library). Unknown workspace -> 404."""
+
+    try:
+        ws = _orch(request).scope(workspace)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown workspace '{workspace}'.")
+    return set(ws.workflow_ids) if ws else None
+
+
 @router.get("/api/tools")
-async def list_tools(request: Request) -> dict[str, Any]:
-    tools = tools_from_workflows(request.app.state.store.list_workflows())
+async def list_tools(request: Request, workspace: str | None = None) -> dict[str, Any]:
+    _scope_ids(request, workspace)
+    tools = _orch(request).catalog(workspace)
     return {"tools": tools, "openai": [{"type": "function", "function": t["function"]} for t in tools], "mcp": mcp_tools(tools)}
 
 
 @router.get("/api/skills")
-async def list_skills(request: Request, full: bool = False, include_duplicates: bool = False) -> dict[str, Any]:
-    """Skill manifests (one per workflow). Compact by default; full=true adds schemas."""
+async def list_skills(request: Request, full: bool = False, include_duplicates: bool = False, workspace: str | None = None) -> dict[str, Any]:
+    """Skill manifests (one per workflow). Compact by default; full=true adds schemas.
+    ``workspace`` (id or slug) scopes the list; omitted or 'all' is the whole library."""
 
-    manifests = _orch(request).skills.manifests()
+    manifests = _orch(request).skills.manifests(_scope_ids(request, workspace))
     if not include_duplicates:
         manifests = [m for m in manifests if m.get("primary", True)]
     if full:
@@ -84,14 +100,15 @@ async def list_skills(request: Request, full: bool = False, include_duplicates: 
     else:
         keys = ("id", "slug", "name", "summary", "site", "tags", "action_ending", "enriched", "primary")
         items = [{**{k: m.get(k) for k in keys}, "card": card(m)} for m in manifests]
-    return {"count": len(items), "skills": items}
+    return {"count": len(items), "workspace": workspace or None, "skills": items}
 
 
 @router.get("/api/skills/search")
-async def search_skills(request: Request, q: str = "", k: int = 6) -> dict[str, Any]:
-    result = await _orch(request).skills.search(q, k=max(1, min(k, 20)))
+async def search_skills(request: Request, q: str = "", k: int = 6, workspace: str | None = None) -> dict[str, Any]:
+    result = await _orch(request).skills.search(q, k=max(1, min(k, 20)), workflow_ids=_scope_ids(request, workspace))
     return {
         "query": q,
+        "workspace": workspace or None,
         "method": result["method"],
         "embed_tokens": result["embed_tokens"],
         "scores": result["scores"],
@@ -160,6 +177,8 @@ async def post_chat(payload: ChatRequest, request: Request):
     orch = _orch(request)
     if not payload.message and not payload.job_id:
         raise HTTPException(status_code=422, detail="message or job_id is required")
+    if payload.workspace and not payload.job_id:
+        _scope_ids(request, payload.workspace)
     llm = payload.llm if isinstance(payload.llm, dict) else {}
     kwargs = dict(
         message=payload.message,
@@ -170,6 +189,7 @@ async def post_chat(payload: ChatRequest, request: Request):
         results=payload.results,
         llm_api_key=(llm.get("api_key") or "") if llm else "",
         llm_model=(llm.get("model") or "") if llm else "",
+        workspace=payload.workspace,
     )
     if payload.stream and payload.results is None:
         queue: list[dict[str, Any]] = []
@@ -225,15 +245,31 @@ async def post_chat(payload: ChatRequest, request: Request):
     return public_job(job)
 
 
+@router.post("/mcp/{workspace}")
+async def mcp_workspace_endpoint(workspace: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """One MCP server per workspace: only that workspace's workflows are listed or callable."""
+
+    return await mcp_endpoint(payload, request, workspace=workspace)
+
+
 @router.post("/mcp")
-async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-    """Minimal JSON-RPC MCP: initialize, tools/list, tools/call, ping."""
+async def mcp_endpoint(payload: dict[str, Any], request: Request, workspace: str | None = None) -> dict[str, Any]:
+    """Minimal JSON-RPC MCP: initialize, tools/list, tools/call, ping.
+
+    Scope with /mcp/{workspace}, ?workspace=, or params.workspace; none or 'all' = whole library.
+    """
 
     method = str(payload.get("method") or "")
     req_id = payload.get("id")
     params = payload.get("params") or {}
     orch = _orch(request)
-    tools = orch.catalog()
+    workspace = workspace or request.query_params.get("workspace") or (params.get("workspace") if isinstance(params, dict) else None)
+    try:
+        ws = orch.scope(workspace)
+    except KeyError:
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": f"Unknown workspace '{workspace}'."}}
+    scope_ids = set(ws.workflow_ids) if ws else None
+    tools = orch.catalog(ws.id if ws else None)
 
     def ok(result: Any) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -246,7 +282,8 @@ async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, A
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "browser-platform", "version": "0.1.0"},
+                "serverInfo": {"name": f"browser-platform/{ws.slug}" if ws else "browser-platform", "version": "0.2.0"},
+                **({"instructions": "\n".join(x for x in (ws.description, ws.instructions) if x)} if ws and (ws.description or ws.instructions) else {}),
             }
         )
     if method == "ping":
@@ -255,9 +292,9 @@ async def mcp_endpoint(payload: dict[str, Any], request: Request) -> dict[str, A
         # MCP-style catalog from skill manifests. Optional extensions: params.query
         # returns the top-k matches, params.cursor / limit page through the library.
         if params.get("query"):
-            found = await orch.skills.search(str(params["query"]), k=int(params.get("limit") or 6))
+            found = await orch.skills.search(str(params["query"]), k=int(params.get("limit") or 6), workflow_ids=scope_ids)
             return ok({"tools": [mcp_tool(m) for m in found["skills"]]})
-        manifests = orch.skills.manifests()
+        manifests = orch.skills.manifests(scope_ids)
         start = int(params.get("cursor") or 0)
         limit = int(params.get("limit") or 100)
         page = manifests[start : start + limit]

@@ -15,6 +15,8 @@ export const he = {
     noDescription: "אין תיאור",
     open: "פתיחה",
     down: "לא ניתן לטעון את קטלוג הזרימות. בדקו את החיבור ונסו שוב.",
+    workspace: "סביבת עבודה",
+    allWorkspaces: "כל הזרימות",
   },
   workflow: {
     eyebrow: "זרימה",

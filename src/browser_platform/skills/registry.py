@@ -89,10 +89,17 @@ class SkillRegistry:
             self._write(fresh)
         return fresh
 
-    def catalog(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Return (tools, manifests) in the same order; manifests[i] describes tools[i]."""
+    def catalog(self, workflow_ids: set[str] | list[str] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return (tools, manifests) in the same order; manifests[i] describes tools[i].
+
+        ``workflow_ids`` scopes the catalogue (a workspace). Names are assigned over the whole
+        library first so a skill keeps the same name in every workspace it belongs to.
+        """
 
         tools = self.tools()
+        if workflow_ids is not None:
+            allowed = set(workflow_ids)
+            tools = [t for t in tools if t.get("workflow_id") in allowed]
         manifests = []
         for tool in tools:
             try:
@@ -104,11 +111,11 @@ class SkillRegistry:
             manifests.append(manifest)
         return tools, manifests
 
-    def manifests(self) -> list[dict[str, Any]]:
-        return self.catalog()[1]
+    def manifests(self, workflow_ids: set[str] | list[str] | None = None) -> list[dict[str, Any]]:
+        return self.catalog(workflow_ids)[1]
 
-    def get(self, key: str) -> dict[str, Any] | None:
-        for manifest in self.manifests():
+    def get(self, key: str, workflow_ids: set[str] | list[str] | None = None) -> dict[str, Any] | None:
+        for manifest in self.manifests(workflow_ids):
             if key in {manifest.get("id"), manifest.get("slug")}:
                 return manifest
         return None
@@ -174,8 +181,8 @@ class SkillRegistry:
             pool.append(best)
         return pool
 
-    async def search(self, query: str, *, k: int = 6, include_duplicates: bool = False) -> dict[str, Any]:
-        _tools, manifests = self.catalog()
+    async def search(self, query: str, *, k: int = 6, include_duplicates: bool = False, workflow_ids: set[str] | list[str] | None = None) -> dict[str, Any]:
+        _tools, manifests = self.catalog(workflow_ids)
         pool = manifests if include_duplicates else self.selection_pool(manifests)
         return await rank_skills(query, pool, k=k, embedder=self.embedder, prior=self.reliability())
 

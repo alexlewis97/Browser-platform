@@ -3,6 +3,7 @@ import { he } from "./copy/he";
 import { probeExtension } from "./record";
 import { loadSettings } from "./storage";
 import { escapeHtml, formatUsage } from "./validation";
+import { cachedWorkspaces, currentWorkspace, loadWorkspaces, setCurrentWorkspace, workspaceSelect } from "./workspaces";
 
 export type ChatCall = {
   id: string;
@@ -127,6 +128,7 @@ export function renderChatPage(): string {
       ${s.busy ? `<p class="muted"><span class="spinner"></span> ${he.chat.working}</p>` : ""}
     </div>
     <form id="chat-form" class="card chat-composer">
+      ${cachedWorkspaces().length ? `<label class="field"><span>${he.workspaces.picker}</span>${workspaceSelect("chat-workspace", currentWorkspace())}</label>` : ""}
       <label class="field"><span>${he.chat.message}</span>
         <textarea id="chat-input" name="message" required placeholder="${he.chat.messagePh}" style="min-height:88px;font-family:var(--font);font-size:16px">${escapeHtml(s.draft)}</textarea>
       </label>
@@ -202,7 +204,23 @@ function renderMarkdown(text: string): string {
 }
 
 export async function bindChatPage(): Promise<void> {
+  if (!cachedWorkspaces().length) {
+    const before = cachedWorkspaces().length;
+    const list = await loadWorkspaces();
+    if (list.length !== before && document.getElementById("chat-page")) {
+      rerenderChat();
+      return;
+    }
+  }
   chatState.extensionReady = await probeExtension().catch(() => false);
+  const picker = document.getElementById("chat-workspace") as HTMLSelectElement | null;
+  picker?.addEventListener("change", () => {
+    // A workspace is its own assistant: start a fresh conversation in it.
+    setCurrentWorkspace(picker.value);
+    chatState.messages = [];
+    chatState.job = null;
+    rerenderChat();
+  });
   const form = document.getElementById("chat-form") as HTMLFormElement | null;
   const input = document.getElementById("chat-input") as HTMLTextAreaElement | null;
   const ext = document.getElementById("chat-target-extension") as HTMLInputElement | null;
@@ -245,6 +263,7 @@ export async function sendChat(message: string, opts?: { confirm?: boolean; jobI
       confirm: Boolean(opts?.confirm),
       job_id: opts?.jobId,
       results: opts?.results,
+      workspace: currentWorkspace() || undefined,
     };
     if (settings.openrouterKey) {
       body.llm = { api_key: settings.openrouterKey, model: settings.model || undefined };

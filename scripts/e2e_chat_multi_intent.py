@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 
 BACKEND = os.environ.get("BROWSER_PLATFORM_BACKEND", "https://browser.129-159-156-75.sslip.io")
+WORKSPACE = os.environ.get("BROWSER_PLATFORM_WORKSPACE") or None  # e.g. "sports"; unset = whole library
 
 # Workflow-id prefixes of the BBC library (27 Nov 2026).
 FIXTURES, RESULTS, TABLE, SCORERS, CRICKET, RUGBY, F1 = "9f27bcc8", "fec9514f", "d79e4ca1", "424b5b4f", "fd896b70", "ca3a55eb", "62818d14"
@@ -78,7 +79,7 @@ def main() -> None:
         for name, message, expected, forbidden in CASES:
             t0 = time.perf_counter()
             try:
-                res = client.post(f"{BACKEND}/api/chat", json={"message": message, "target": "cloud", "stream": False, "confirm": True})
+                res = client.post(f"{BACKEND}/api/chat", json={"message": message, "target": "cloud", "stream": False, "confirm": True, "workspace": WORKSPACE})
                 res.raise_for_status()
                 job = res.json()
             except Exception as exc:

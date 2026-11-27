@@ -1,7 +1,7 @@
-import { api, type CatalogWorkflow, type WorkflowInput } from "./api";
+import { api, type CatalogWorkflow, type CatalogWorkspace, type WorkflowInput } from "./api";
 import { he } from "./copy/he";
 import { probeExtension, requestRun, watchRunProgress, type ExtRun } from "./ext";
-import { getRun, listRuns, loadInputs, newRunId, saveInputs, upsertRun, type LocalRun } from "./storage";
+import { getRun, listRuns, loadInputs, loadWorkspace, newRunId, saveInputs, saveWorkspace, upsertRun, type LocalRun } from "./storage";
 
 type Route =
   | { name: "catalog" }
@@ -157,11 +157,39 @@ function matchesQuery(item: CatalogWorkflow, query: string): boolean {
   return hay.includes(query.trim().toLowerCase());
 }
 
+let workspacesCache: CatalogWorkspace[] | null = null;
+
+async function loadWorkspaces(): Promise<CatalogWorkspace[]> {
+  if (workspacesCache) return workspacesCache;
+  try {
+    workspacesCache = (await api.listWorkspaces()).workspaces || [];
+  } catch {
+    workspacesCache = [];
+  }
+  const chosen = loadWorkspace();
+  if (chosen && !workspacesCache.some((ws) => ws.slug === chosen)) saveWorkspace("");
+  return workspacesCache;
+}
+
 async function loadCatalog(force = false): Promise<CatalogWorkflow[]> {
   if (!force && catalogCache) return catalogCache;
-  const { workflows } = await api.listCatalog();
+  await loadWorkspaces();
+  const { workflows } = await api.listCatalog(loadWorkspace());
   catalogCache = workflows;
   return workflows;
+}
+
+function workspacePicker(): string {
+  const spaces = workspacesCache || [];
+  if (!spaces.length) return "";
+  const chosen = loadWorkspace();
+  const options = spaces
+    .map((ws) => `<option value="${escapeHtml(ws.slug)}" ${ws.slug === chosen ? "selected" : ""}>${escapeHtml(ws.name)} (${ws.workflow_count})</option>`)
+    .join("");
+  const desc = spaces.find((ws) => ws.slug === chosen)?.description;
+  return `<label class="field ws-picker"><span>${he.catalog.workspace}</span>
+      <select id="ws-picker"><option value="">${he.catalog.allWorkspaces}</option>${options}</select></label>
+      ${desc ? `<p class="muted" style="margin:4px 0 10px">${escapeHtml(desc)}</p>` : ""}`;
 }
 
 async function renderCatalog(): Promise<string> {
@@ -189,7 +217,8 @@ async function renderCatalog(): Promise<string> {
     return shell(
       he.title,
       he.catalog.eyebrow,
-      `<input class="search" type="search" name="q" value="${escapeHtml(searchQuery)}" placeholder="${he.catalog.search}" />
+      `${workspacePicker()}
+       <input class="search" type="search" name="q" value="${escapeHtml(searchQuery)}" placeholder="${he.catalog.search}" />
        ${list}`,
       he.catalog.subtitle,
     );
@@ -430,9 +459,19 @@ function onInput(event: Event): void {
 
 export function mount(el: HTMLElement): void {
   root = el;
+  // ?workspace=sports opens the run site in that workspace (and remembers it).
+  const linked = new URLSearchParams(location.search).get("workspace");
+  if (linked !== null) saveWorkspace(linked === "all" ? "" : linked);
   window.addEventListener("hashchange", () => void render());
   el.addEventListener("submit", (event) => void onSubmit(event));
   el.addEventListener("input", onInput);
+  el.addEventListener("change", (event) => {
+    const target = event.target as HTMLSelectElement | null;
+    if (target?.id !== "ws-picker") return;
+    saveWorkspace(target.value);
+    catalogCache = null;
+    void render();
+  });
   void (async () => {
     await refreshExtension();
     await render();

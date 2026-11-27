@@ -1,3 +1,4 @@
+import { currentWorkspace } from "./workspaces";
 import { request } from "./api";
 import { listingIdForName, publishWorkflowJson, type MarketListing } from "./market";
 import { loadSettings } from "./storage";
@@ -355,6 +356,7 @@ export async function saveRecording(): Promise<string> {
       goal: recordState.goal,
       review: recordState.review,
       parameters: recordState.parameters,
+      workspace_ids: currentWorkspace() ? [currentWorkspace()] : undefined,
     }),
   });
   recordState.workflowId = stored.id;

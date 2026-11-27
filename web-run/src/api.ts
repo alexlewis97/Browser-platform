@@ -100,7 +100,11 @@ async function request<T>(path: string): Promise<T> {
   return data as T;
 }
 
+export type CatalogWorkspace = { id: string; slug: string; name: string; description?: string; workflow_count: number };
+
 export const api = {
-  listCatalog: () => request<{ workflows: CatalogWorkflow[] }>("/api/catalog"),
+  listCatalog: (workspace = "") =>
+    request<{ workflows: CatalogWorkflow[] }>(workspace ? `/api/catalog?workspace=${encodeURIComponent(workspace)}` : "/api/catalog"),
+  listWorkspaces: () => request<{ workspaces: CatalogWorkspace[] }>("/api/catalog/workspaces"),
   getCatalog: (id: string) => request<CatalogWorkflow>(`/api/catalog/${encodeURIComponent(id)}`),
 };

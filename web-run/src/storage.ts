@@ -2,6 +2,25 @@ import type { ExtRun } from "./ext";
 
 const INPUTS_KEY = "bp-run-site-inputs-v1";
 const HISTORY_KEY = "bp-run-site-history-v1";
+const WORKSPACE_KEY = "bp-run-site-workspace";
+
+/** Remembered workspace slug ("" = all published workflows). */
+export function loadWorkspace(): string {
+  try {
+    return localStorage.getItem(WORKSPACE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveWorkspace(slug: string): void {
+  try {
+    if (slug) localStorage.setItem(WORKSPACE_KEY, slug);
+    else localStorage.removeItem(WORKSPACE_KEY);
+  } catch {
+    /* private mode */
+  }
+}
 
 export type LocalRun = {
   id: string;

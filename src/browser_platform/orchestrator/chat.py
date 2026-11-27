@@ -8,6 +8,7 @@ import re
 import time
 import logging
 import uuid
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from browser_platform.authoring.tools import (
@@ -32,9 +33,11 @@ from browser_platform.orchestrator.planner import (
     retrieval_query,
     sub_queries,
     uncovered_intents,
+    workspace_context,
     waves,
 )
 from browser_platform.skills.registry import SkillRegistry
+from browser_platform.workspaces import Workspace, WorkspaceStore, resolve_scope
 from browser_platform.skills.retrieve import rank_skills
 from browser_platform.redaction import redact
 from browser_platform.store.file_store import FileStore
@@ -218,12 +221,24 @@ class ChatOrchestrator:
         self.skills = SkillRegistry(store)
         if getattr(self.jobs, "dir", None) is None and getattr(store, "data_dir", None) is not None:
             self.jobs.dir = store.data_dir / "chat_jobs"
+        self.workspaces = WorkspaceStore(Path(getattr(store, "data_dir", "data")))
         hooks = getattr(store, "on_change", None)
         if isinstance(hooks, list):
             hooks.append(self.skills.on_store_change)
+            hooks.append(self.workspaces.on_store_change)
 
-    def catalog(self) -> list[dict[str, Any]]:
-        return tools_from_workflows(self.store.list_workflows())
+    def scope(self, workspace: str | None) -> Workspace | None:
+        """Resolve a workspace id/slug; None or 'all' is the whole library. Unknown -> KeyError."""
+
+        return resolve_scope(self.workspaces, workspace)
+
+    def catalog(self, workspace: str | None = None) -> list[dict[str, Any]]:
+        ws = self.scope(workspace)
+        tools = tools_from_workflows(self.store.list_workflows())
+        if ws is None:
+            return tools
+        allowed = set(ws.workflow_ids)
+        return [t for t in tools if t.get("workflow_id") in allowed]
 
     def stored_for(self, tool: dict[str, Any] | None) -> StoredWorkflow | None:
         if not tool:
@@ -320,6 +335,7 @@ class ChatOrchestrator:
         emit: Emit | None = None,
         llm_api_key: str = "",
         llm_model: str = "",
+        workspace: str | None = None,
     ) -> dict[str, Any]:
         started = _now()
         if job_id:
@@ -363,6 +379,7 @@ class ChatOrchestrator:
             emit=emit,
             llm_api_key=llm_api_key,
             llm_model=llm_model,
+            workspace=workspace,
         )
         needs = job.get("status")
         if needs == "needs_confirmation" and confirm:
@@ -403,9 +420,12 @@ class ChatOrchestrator:
         emit: Emit | None = None,
         llm_api_key: str = "",
         llm_model: str = "",
+        workspace: str | None = None,
     ) -> dict[str, Any]:
-        tools, manifests = self.skills.catalog()
+        ws = self.scope(workspace)
+        tools, manifests = self.skills.catalog(set(ws.workflow_ids) if ws else None)
         job: dict[str, Any] = {
+            "workspace": {"id": ws.id, "slug": ws.slug, "name": ws.name, "description": ws.description, "instructions": ws.instructions} if ws else None,
             "id": uuid.uuid4().hex,
             "status": "planning",
             "message": message,
@@ -427,7 +447,9 @@ class ChatOrchestrator:
         await _emit(emit, {"type": "planning", "job_id": job["id"]})
         if not tools:
             job["status"] = "failed"
-            job["error"] = "No saved workflows are available to use as tools."
+            job["error"] = (
+                f"The workspace '{ws.name}' has no workflows yet." if ws else "No saved workflows are available to use as tools."
+            )
             await _emit(emit, {"type": "error", "error": job["error"]})
             return job
         api_key = job["llm_api_key"] or env_api_key()
@@ -452,7 +474,7 @@ class ChatOrchestrator:
 
         # 2) Plan over compact cards.
         assistant, usage = await chat_complete(
-            planner_messages(message, history, candidates),
+            planner_messages(message, history, candidates, workspace=job["workspace"]),
             max_tokens=600,
             response_format={"type": "json_object"},
             api_key=api_key,
@@ -490,7 +512,7 @@ class ChatOrchestrator:
             if slate:
                 try:
                     repaired, rusage, rtext = await repair_calls(
-                        message, history, slate, api_key=api_key, model=model, parse_tool_calls=_parse_tool_calls
+                        message, history, slate, api_key=api_key, model=model, parse_tool_calls=_parse_tool_calls, workspace=job["workspace"]
                     )
                     breakdown["repair"] = rusage
                     job["usage"] = merge_usage(job.get("usage"), rusage)
@@ -524,7 +546,7 @@ class ChatOrchestrator:
                     slate.append(manifest)
             try:
                 extra_msg, extra_usage = await chat_complete(
-                    planner_messages(message, history, slate[:8], focus=missing_intents),
+                    planner_messages(message, history, slate[:8], focus=missing_intents, workspace=job["workspace"]),
                     max_tokens=500,
                     response_format={"type": "json_object"},
                     api_key=api_key,
@@ -890,6 +912,7 @@ class ChatOrchestrator:
                             "Cite which workflow and input each fact came from (for example football_fixtures / team=Arsenal). "
                             "Clearly mention any item the output validator flagged as suspect or wrong, that failed, or that was not run (verdict not_run). "
                             "Do not dump raw extracts. Keep the answer tight."
+                            + workspace_context(job.get("workspace"))
                         ),
                     },
                     {
@@ -939,6 +962,7 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "retrieval": {k: v for k, v in (job.get("retrieval") or {}).items() if k != "scores"} or None,
         "notes": job.get("notes") or [],
         "intents": job.get("intents") or [],
+        "workspace": {k: v for k, v in (job.get("workspace") or {}).items() if k in {"id", "slug", "name"}} or None,
         "uncovered": job.get("uncovered") or [],
         "elapsed_ms": job.get("elapsed_ms"),
         "error": job.get("error"),
