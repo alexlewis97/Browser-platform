@@ -1184,7 +1184,8 @@ class ChatOrchestrator:
                             "When the question asks about one day and the results cover a longer period, answer for that day only. "
                             "results[].page_view, when present, says which of the page's own views the facts come from (page_label is the page's name for it). "
                             "computed, when present, is parsed from results[].facts by code: events_on_question_dates are the items on the question's dates, "
-                            "and computed_order is the ordering the question asks for (rank 1 first). Use them for which items fall on a day and for any ordering. "
+                            "and computed_order is the ordering the question asks for (rank 1 first; equal ranks are a tie; undated items could not be ranked, so say so). "
+                            "Use them for which items fall on a day and for any ordering. days_in_question, when present, lists every day a period such as a weekend covers. "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
                         ),

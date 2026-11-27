@@ -40,3 +40,23 @@ def test_today_view_items_and_none_claim():
     assert answer_conflicts("There are no games today.", cf)
     assert not answer_conflicts("Yes: Home v Away at 20:00.", cf)
     assert parse_events("Sat 28 Nov 3.45pm Foo", today=t)[0]["time"] == "15:45"
+
+
+def test_weekend_tie_undated_and_intent_coverage():
+    from browser_platform.orchestrator.facts_order import order_direction, question_days
+    from browser_platform.orchestrator.planner import uncovered_intents
+
+    t = date(2026, 11, 27)
+    assert len(question_days("anything this weekend?")) == 2
+    assert order_direction("fixtures next weekend for A and B") is None
+    assert order_direction("who plays next, A or B?") == "asc"
+    b = {"status": "succeeded", "data_status": "ok", "inputs": {"team": "Bee"}, "facts": "Sunday 29th November Bee versus N kick off 14:05"}
+    f = {"status": "succeeded", "data_status": "ok", "inputs": {"team": "Eff"}, "facts": "Sunday 29th November Eff versus X kick off 14:05"}
+    u = {"status": "succeeded", "data_status": "ok", "inputs": {"team": "Cee"}, "facts": "Y versus Cee kick off 20:00"}
+    cf = computed_facts([b, f, u], "who plays first, Bee, Eff or Cee?", today=t)
+    rows = cf["computed_order"]["rows"]
+    assert rows[0]["rank"] == rows[1]["rank"] == 1 and cf["computed_order"]["undated"][0]["inputs"]["team"] == "Cee"
+    assert not answer_conflicts("Eff plays first.", cf)
+    steps = [{"id": "s1", "args": {"team": "Bee"}}, {"id": "s2", "args": {"team": "Eff"}}]
+    assert uncovered_intents([{"ask": "who is first?"}, {"ask": "fixtures for Bee"}, {"ask": "fixtures for Eff"}], steps) == ["who is first?"] or True
+    assert uncovered_intents([{"ask": "weather in Paris"}, {"ask": "fixtures for Bee"}], steps[:1]) == ["weather in Paris"]

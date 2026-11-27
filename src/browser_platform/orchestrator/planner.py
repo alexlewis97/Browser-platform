@@ -142,6 +142,18 @@ def uncovered_intents(intents: list[dict[str, Any]], steps: list[dict[str, Any]]
             missing.append(intent["ask"])
     claimed = {i for intent in intents or [] for i in intent.get("steps") or []}
     spare = [s for s in steps if s["id"] not in claimed]
+    if missing and spare:
+        # An unmapped intent that names an unclaimed step's argument value is served by it.
+        def _names_arg(ask: str, step: dict[str, Any]) -> bool:
+            low = f" {re.sub(r'[^a-z0-9]+', ' ', (ask or '').lower())} "
+            return any(
+                isinstance(v, str) and len(v.strip()) >= 3 and f" {re.sub(r'[^a-z0-9]+', ' ', v.lower()).strip()} " in low
+                for v in (step.get("args") or {}).values()
+            )
+
+        used = {s["id"] for ask in missing for s in spare if _names_arg(ask, s)}
+        missing = [ask for ask in missing if not any(_names_arg(ask, s) for s in spare)]
+        spare = [s for s in spare if s["id"] not in used]
     # Unmapped steps can cover unmapped intents one for one (models sometimes skip the ids).
     return missing[len(spare):] if spare and len(spare) <= len(missing) else ([] if spare else missing)
 

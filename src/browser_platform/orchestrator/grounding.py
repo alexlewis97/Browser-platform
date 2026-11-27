@@ -77,6 +77,11 @@ def date_context(question: str) -> dict[str, Any]:
                 resolved[expr] = value
     if resolved:
         out["dates_in_question"] = resolved
+        from browser_platform.orchestrator.facts_order import question_days
+
+        days = question_days(question)
+        if len(days) > len(set(v.split(" (")[-1].rstrip(")") for v in resolved.values())):
+            out["days_in_question"] = days
     return out
 
 

@@ -106,7 +106,13 @@ def parse_events(facts: str, *, today: date | None = None, undated_day: date | N
 
 
 def order_direction(question: str) -> str | None:
-    words = set(re.findall(r"[a-z]+", (question or "").lower()))
+    """'asc' or 'desc' for an ordering question; words inside date phrases ("next weekend",
+    "last month") do not count."""
+
+    text = (question or "").lower()
+    for expr in sorted(dates.find_expressions(text), key=len, reverse=True):
+        text = text.replace(expr.lower(), " ")
+    words = set(re.findall(r"[a-z]+", text))
     if words & ORDER_WORDS["asc"]:
         return "asc"
     if words & ORDER_WORDS["desc"]:
@@ -132,11 +138,29 @@ def _today_view(item: dict[str, Any]) -> bool:
     return any("today" in str(v.get("page_label") or "").lower() for v in item.get("page_view") or [] if isinstance(v, dict))
 
 
+def question_days(question: str) -> list[str]:
+    """Calendar days the question refers to; a weekend covers Saturday and Sunday."""
+
+    from datetime import timedelta
+
+    days: set[str] = set()
+    for expr in dates.find_expressions(question or ""):
+        value = dates.resolve(expr, "date")
+        if not value:
+            continue
+        days.add(value)
+        if "weekend" in expr.lower():
+            d = date.fromisoformat(value)
+            start = d - timedelta(days=(d.weekday() - 5)) if d.weekday() >= 5 else d
+            days.update({start.isoformat(), (start + timedelta(days=1)).isoformat()})
+    return sorted(days)
+
+
 def computed_facts(compact: list[dict[str, Any]], question: str, *, today: date | None = None) -> dict[str, Any]:
     """Structured events per result, plus the ordering or day filter the question asks for."""
 
     today = today or dates.today()
-    qdays = sorted({v for e in dates.find_expressions(question or "") if (v := dates.resolve(e, "date"))})
+    qdays = question_days(question)
     out: dict[str, Any] = {}
     per_item: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     for item in compact:
@@ -157,22 +181,34 @@ def computed_facts(compact: list[dict[str, Any]], question: str, *, today: date 
     direction = order_direction(question)
     if direction and len(per_item) >= 2:
         rows = []
+        undated: list[dict[str, Any]] = []
         for item, events in per_item:
             dated = [e for e in events if e["date"]]
+            if qdays:
+                dated = [e for e in dated if e["date"] in qdays]
             pool = [e for e in dated if e["date"] >= today.isoformat()] or dated
             if not pool:
+                if not any(e["date"] for e in events):
+                    first = events[0]
+                    undated.append({"inputs": _label(item), "time": first["time"], "context": first["context"]})
                 continue
             pick = min(pool, key=lambda e: e["sort"]) if direction == "asc" else max(pool, key=lambda e: e["sort"])
             rows.append({"inputs": _label(item), "_names": _aliases(item), "date": pick["date"], "time": pick["time"], "context": pick["context"], "_sort": pick["sort"]})
         rows.sort(key=lambda r: r["_sort"], reverse=(direction == "desc"))
         for i, r in enumerate(rows, 1):
             r["rank"] = i
+        for a, b in zip(rows, rows[1:]):
+            if a["_sort"] == b["_sort"]:
+                a["tied_with_next"] = True
+                b["rank"] = a["rank"]
+        for r in rows:
             r.pop("_sort", None)
-        if len(rows) >= 2:
+        if len(rows) + len(undated) >= 2 and rows:
             out["computed_order"] = {
                 "order": "earliest upcoming first" if direction == "asc" else "latest first",
                 "times": "as printed on the page",
                 "rows": rows,
+                **({"undated": undated, "undated_note": "the page printed no date for these items, so they are not ranked"} if undated else {}),
             }
     return out
 
@@ -209,8 +245,9 @@ def answer_conflicts(answer: str, computed: dict[str, Any]) -> list[str]:
             pos = min([p for p in (_mentions(lead, n) for n in _names(row)) if p >= 0] or [-1])
             positions.append(pos)
         named = [(p, i) for i, p in enumerate(positions) if p >= 0]
-        # Only a lead that names another entity first (or without rank 1) contradicts the order.
-        if named and min(named)[1] != 0:
+        top = {i for i, r in enumerate(order) if r.get("rank") == 1}
+        # Only a lead that names a lower-ranked entity first contradicts the order (ties allowed).
+        if named and min(named)[1] not in top and not (computed["computed_order"].get("undated")):
             first = order[0]
             problems.append(f"computed_order rank 1 is {first['inputs']} ({first['date']} {first['time']}), but the answer leads with another")
     hits = computed.get("events_on_question_dates") or {}
@@ -233,6 +270,8 @@ def answer_from_computed(computed: dict[str, Any]) -> str:
         lines.append("| --- | --- | --- | --- | --- |")
         for r in order:
             lines.append(f"| {r['rank']} | {', '.join(str(v) for v in r['inputs'].values())} | {r['date']} | {r['time']} | {r['context']} |")
+        for r in computed["computed_order"].get("undated") or []:
+            lines.append(f"| ? | {', '.join(str(v) for v in r['inputs'].values())} | not shown | {r['time']} | {r['context']} |")
         return "\n".join(lines)
     hits = computed.get("events_on_question_dates") or {}
     if hits.get("count"):
