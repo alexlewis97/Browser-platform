@@ -15,3 +15,8 @@ Scope rule: only tool authoring or workspace orchestration, generic only. These 
 - The existing explore tab regex proposed a bogus "competition" tab on Wikipedia (pre-existing, not changed).
 - From-task authoring does not propose list-type inputs yet; authors can set type "list" by editing the definition.
 - The extension Playwright e2e specs need the Playwright chromium build and a token on the box to run.
+- Output validator marked a category mismatch `ok` (requested Mystery, extract was Travel). Authoring binding is fixed; the validator itself is still loose.
+- HITL for attended API clients is now opt-in via `interactive: true`. The admin/extension UIs should send that flag if they still want a confirmation card; not done here.
+- L4/L5 Sports and DemoQA cases remain pending (chain table → fixtures; unsupported weather decline; delayed alerts, iframes, progress bar, multi-turn form edit).
+- Day-level cricket (and other sports) results in the Sports catalog: team-level tools exist; a competition/date tool should be authored via explore/from-task, not a hand-built QA copy.
+- DemoQA checkbox-tree "Expand all" selector is gone; the QA workflow needs re-recording (site-specific).

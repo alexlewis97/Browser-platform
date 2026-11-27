@@ -162,6 +162,19 @@ class WorkflowRunner:
         original_version = definition.version
         definition = definition.model_copy(deep=True)
         try:
+            from browser_platform.workflow_inputs import invalid_typed_inputs, missing_required_inputs
+
+            missing = missing_required_inputs(definition, variables)
+            unknown = invalid_typed_inputs(definition, variables)
+            if missing or unknown:
+                run.status = "needs_input"
+                parts = []
+                if missing:
+                    parts.append("Missing required inputs: " + ", ".join(missing) + ".")
+                parts.extend(unknown)
+                run.error = " ".join(parts)
+                run.failure_kind = "needs_input"
+                return run
             # Tier 1 (workflow-level): a minted Pomerado tool can satisfy the whole task.
             if definition.pomerado_artifact and self.pomerado:
                 started = time.perf_counter()
@@ -572,6 +585,32 @@ class WorkflowRunner:
             )
             if hitl_result is not None:
                 return hitl_result
+
+        # In-run LLM / browser-use repair is kept below but hard-disabled unless the
+        # server env BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR is set. No per-run override.
+        if not self._in_run_repair_allowed():
+            if pending_hitl and pending_hitl["hitl"].mode == "llm_then_human":
+                hitl_result = await self._await_hitl(
+                    page,
+                    workflow_id,
+                    definition,
+                    index,
+                    step,
+                    pending_hitl,
+                    write_back_repairs=write_back_repairs,
+                    run=run,
+                    started=started,
+                    timeout_ms=timeout_ms,
+                    det_error=det_error,
+                )
+                if hitl_result is not None:
+                    return hitl_result
+            label = step_label(index, len(definition.steps or []), step)
+            return (
+                _tel(index, step, "workflow_use", False, started, error=f"{label}: {det_error}"),
+                definition,
+                None,
+            )
 
         # --- LLM repair (browser-use, then OpenRouter selector repair) ---
         if not llm:
@@ -1123,7 +1162,14 @@ class WorkflowRunner:
             {"query": query, "matched": picked.text, "reason": "human"},
         )
 
+    def _in_run_repair_allowed(self) -> bool:
+        """True only when the server env flag is on. Not overridable per run or workflow."""
+
+        return bool(getattr(self.settings, "allow_in_run_repair", False))
+
     def _should_use_browser_use(self, page: Page) -> bool:
+        if not self._in_run_repair_allowed():
+            return False
         if self.browser_use_repair is not None:
             return True
         if self.use_browser_use is False:
@@ -1189,6 +1235,8 @@ def _failure_kind(error: str | None) -> str | None:
     text = (error or "").lower()
     if "strict selectors" in text:
         return "strict_selector"
+    if text.startswith("Missing required inputs") or "must be one of the tool's known values" in text:
+        return "needs_input"
     if "timed out after" in text and "step_timeout_s" in text:
         return "step_timeout"
     if "run_timeout_s" in text:

@@ -107,7 +107,36 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
     updated = definition.model_copy(deep=True)
     names = {item.name for item in (updated.input_schema or [])}
     for proposal in proposals:
+        from browser_platform.authoring.explore_links import family_value_map, reuse_existing_family_input
+
+        proposal = dict(proposal)
+        reused = reuse_existing_family_input(updated, proposal)
+        if reused:
+            proposal["name"] = reused
+            binding0 = dict(proposal.get("binding") or {})
+            previous = str(binding0.get("placeholder") or "")
+            filt = ""
+            if "|" in previous:
+                filt = "|" + previous.split("|", 1)[1].rstrip("}")
+            elif proposal.get("format") == "slug" and binding0.get("kind") == "url_segment":
+                filt = "|slug"
+            binding0["placeholder"] = "{" + reused + filt + "}"
+            proposal["binding"] = binding0
         name = proposal["name"]
+        vmap = family_value_map(proposal)
+        if reused:
+            from browser_platform.authoring.explore_links import _same_option
+            existing = next((item for item in (updated.input_schema or []) if item.name == name), None)
+            if existing is not None:
+                slugs = list(dict.fromkeys([*vmap.values(), *(proposal.get("examples") or [])]))
+                for sample in [existing.default, *(getattr(existing, "examples", None) or [])]:
+                    if sample in (None, ""):
+                        continue
+                    if str(sample) in vmap:
+                        continue
+                    hit = next((slug for slug in slugs if _same_option(sample, slug)), None)
+                    if hit:
+                        vmap[str(sample)] = hit
         if name not in names:
             updated.input_schema = list(updated.input_schema or [])
             updated.input_schema.append(
@@ -125,9 +154,35 @@ def apply_proposals(definition: WorkflowDefinition, proposals: list[dict[str, An
                     **({"examples": list(proposal["examples"])} if proposal.get("examples") else {}),
                     **({"enum": list(proposal["enum"])} if proposal.get("enum") else {}),
                     **({"default_view": proposal["default_view"]} if proposal.get("default_view") else {}),
+                    **({"value_map": vmap} if vmap else {}),
                 )
             )
             names.add(name)
+        elif vmap or proposal.get("examples") or proposal.get("format"):
+            # Reuse: bind the family onto the existing input. Do not pin a required
+            # input to the seed page's default slug.
+            schema = list(updated.input_schema or [])
+            for i, item in enumerate(schema):
+                if item.name != name:
+                    continue
+                updates: dict = {}
+                if vmap:
+                    updates["value_map"] = {**(getattr(item, "value_map", None) or {}), **vmap}
+                examples = list(getattr(item, "examples", None) or [])
+                if proposal.get("examples"):
+                    examples = list(dict.fromkeys([*examples, *proposal["examples"], *vmap.keys()]))
+                elif vmap:
+                    examples = list(dict.fromkeys([*examples, *vmap.keys()]))
+                if examples:
+                    updates["examples"] = examples
+                if proposal.get("format") and not item.format:
+                    updates["format"] = proposal["format"]
+                if proposal.get("enum") and not getattr(item, "enum", None):
+                    updates["enum"] = list(proposal["enum"])
+                if updates:
+                    schema[i] = item.model_copy(update=updates)
+                    updated.input_schema = schema
+                break
         binding = proposal.get("binding") or {}
         index = binding.get("step_index")
         steps = list(updated.steps or [])

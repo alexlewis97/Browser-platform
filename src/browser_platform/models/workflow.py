@@ -80,6 +80,8 @@ class WorkflowInput(BaseModel):
     label: str | None = None
     description: str | None = None
     sensitive: bool | None = None
+    # Human label / alias -> canonical option value (from explore link families).
+    value_map: dict[str, str] | None = None
 
 
 class ExpectedState(BaseModel):

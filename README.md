@@ -199,6 +199,12 @@ Example body:
 
 A local form fixture used in tests lives at `tests/fixtures/from_task_form.html` (copied under `examples/fixtures/`).
 
+## Deterministic replay (no in-run LLM)
+
+When a saved workflow runs, every step is resolved deterministically (recorded selectors, aliases, and — unless `strict` is on — confident fuzzy match). A step that cannot be resolved fails by name, or the run returns `needs_input` when a required or closed value is missing or unknown.
+
+In-run LLM repair and `browser-use` agent fallback are **kept in the codebase but hard-disabled**. They are not available as a per-run, per-workflow, API, chat, or extension flag. The only switch is the server environment variable `BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR` (default `false`). LLM use remains allowed in the chat orchestration layer (planning, choosing tools, answering) and at authoring time (`from-task`, explore naming, recording cleanup).
+
 ## Human-in-the-loop confirmation (mobile / web app)
 
 Fuzzy target resolution lives **inside workflow-use**, not in Pomerado and not as its own tier. Start a run with `wait: false` so the HTTP request returns immediately, then subscribe to events and render a confirmation card when the run pauses.
@@ -220,10 +226,10 @@ Set these on the workflow or on an individual step (step wins). Platform default
 
 - `threshold` / `margin` are rapidfuzz scores on a 0–100 scale. A candidate is accepted automatically only if `score >= threshold` **and** (`score - runner_up) >= margin`.
 - `hitl_mode`:
-  - `always_on_uncertain` (default) — pause for a human when the match is below threshold or the margin is tight.
-  - `llm_then_human` — try LLM repair first; if that fails, pause for a human.
-  - `llm_only` — never pause; go to the LLM tier.
-- `timeout_policy`: `fail` the step, or `fall_to_llm` when the confirmation window expires.
+  - `always_on_uncertain` (default) — pause for a human when the match is below threshold or the margin is tight. API and other unattended clients must pass `"interactive": true` to pause; otherwise the step fails clearly.
+  - `llm_then_human` — if in-run repair is enabled (see below), try it first; if that fails, pause for a human.
+  - `llm_only` — never pause; go to the LLM repair path only when in-run repair is enabled.
+- `timeout_policy`: `fail` the step, or `fall_to_llm` when the confirmation window expires (repair still requires the server flag).
 - `include_screenshot`: if `true`, each of the top-N candidates may include a `screenshot` data-URL (`data:image/png;base64,...`).
 - After a human confirms, the choice is saved on the workflow as `aliases[]` (`query`, `query_normalized`, `chosen_text`, optional `cssSelector`). The next run with the same step + query resolves inside workflow-use (`resolution: "alias"`) without pausing.
 
@@ -231,7 +237,7 @@ An example roster workflow (10 people + status dropdown) is in `examples/attenda
 
 ### Recommended client flow
 
-1. `POST /api/workflows/{id}/run` with `"wait": false` and the declared variables (for example `term`). Required inputs are listed on the phone **Run** screen with clear labels (Wikipedia: **Search term**). Last-used values are remembered in the phone's localStorage; a run is rejected until required fields are filled — defaults are not applied silently.
+1. `POST /api/workflows/{id}/run` with `"wait": false`, `"interactive": true` (so an uncertain click can pause for confirmation instead of failing), and the declared variables (for example `term`). Required inputs are listed on the phone **Run** screen with clear labels (Wikipedia: **Search term**). Last-used values are remembered in the phone's localStorage; a run is rejected until required fields are filled — defaults are not applied silently.
 2. Open `WS /ws/runs?run_id={run_id}` (or poll `GET /api/runs/{run_id}`).
 3. When `status` is `needs_confirmation` (event type `needs_confirmation`), render the prompt.
 4. `POST /api/runs/{run_id}/confirmation` with the user’s choice, then wait for `run_resumed` / a terminal status.

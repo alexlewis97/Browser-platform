@@ -302,6 +302,17 @@ def _is_optional(step: WorkflowStep) -> bool:
     return bool(getattr(step, "optional", False))
 
 
+
+def _wants_page_heading(goal: str) -> bool:
+    """True only when the extract asked for the page heading, not a list of item titles."""
+
+    g = (goal or "").lower()
+    if "h1" in g or re.search(r"\bheadings?\b", g) or re.search(r"\bpage title\b", g):
+        return True
+    # "the title" / "title" but not "titles" (book titles, product titles, ...).
+    return bool(re.search(r"\btitle\b", g) and not re.search(r"\btitles\b", g))
+
+
 async def extract_content(page: Page, step: WorkflowStep, *, variables: dict[str, Any] | None = None) -> str:
     """Read the extract target. A step's ``cssSelector`` is mandatory: if it matches nothing or
     only empty text the step fails (naming the selector and what the page showed) unless the
@@ -337,7 +348,7 @@ async def extract_content(page: Page, step: WorkflowStep, *, variables: dict[str
                 f"extract selector {selector!r} matched no element",
                 last_error=f"expected {selector!r} on {page.url} ({title!r}); found no matching element",
             )
-    if "heading" in goal or "title" in goal or "h1" in goal:
+    if _wants_page_heading(goal):
         h1 = page.locator("h1")
         if await h1.count():
             return (await h1.first.inner_text()).strip()

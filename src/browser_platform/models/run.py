@@ -48,7 +48,7 @@ class RunRecord(BaseModel):
     # succeeded_with_fallback: finished, but at least one step only worked through a
     # non-primary strategy (see ``fallbacks``) - the workflow needs repair.
     status: Literal[
-        "running", "succeeded", "succeeded_with_fallback", "failed", "cancelled", "needs_confirmation"
+        "running", "succeeded", "succeeded_with_fallback", "failed", "cancelled", "needs_confirmation", "needs_input"
     ] = "running"
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: datetime | None = None

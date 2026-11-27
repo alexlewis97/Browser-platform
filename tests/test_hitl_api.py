@@ -60,7 +60,7 @@ def test_confirmation_rest_and_websocket(data_dir: Path):
 
             started = client.post(
                 f"/api/workflows/{wf_id}/run",
-                json={"cdp_url": "http://127.0.0.1:0", "wait": False, "variables": {"name": "Ann Cohen"}},
+                json={"cdp_url": "http://127.0.0.1:0", "wait": False, "interactive": True, "variables": {"name": "Ann Cohen"}},
             )
             assert started.status_code == 200
             run_id = started.json()["id"]

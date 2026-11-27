@@ -114,6 +114,8 @@ def propose_from_link_families(
         name = _name_for(kind, cur, pos, used)
         if not name:
             continue
+        if self_label and current not in values:
+            values = {current: self_label, **values}
         proposals.append(_proposal(name, kind, current, options, values, step_index, url, pos=pos))
         used.add(name)
     child_values = list(child_family)
@@ -199,6 +201,16 @@ def _proposal(
         proposal.update({"format": "YYYY", "default": current})
     elif current:
         proposal["default"] = current  # the page's current selection (page state)
+    if kind == "option":
+        # Path/query slugs are identifiers; the planner and run path can map labels to them.
+        proposal["format"] = "slug"
+        labels = {v: labels.get(v, "") for v in examples}
+        mapping = {v: v for v in examples if v}
+        for slug, label in labels.items():
+            if label and str(label).strip():
+                mapping[str(label).strip()] = slug
+        if mapping:
+            proposal["value_map"] = mapping
     if kind == "option" and 2 <= len(examples) <= MAX_ENUM:
         # The page's own links are the choices it offers: shown to the planner as name=a|b.
         proposal["enum"] = list(examples)
@@ -271,3 +283,79 @@ def propose_sibling_views(html: str, url: str, template: str, *, limit: int = 6)
                 "sample_url": base + "/".join(segs),
             }
     return list(found.values())[:limit]
+
+def family_value_map(proposal: dict[str, Any]) -> dict[str, str]:
+    """Label and slug aliases for a link-family proposal."""
+
+    if proposal.get("value_map"):
+        return {str(k): str(v) for k, v in proposal["value_map"].items() if k and v}
+    family = proposal.get("link_family") or {}
+    mapping: dict[str, str] = {}
+    for slug in family.get("options") or proposal.get("examples") or []:
+        if slug:
+            mapping[str(slug)] = str(slug)
+    for slug, label in (family.get("labels") or {}).items():
+        if slug:
+            mapping[str(slug)] = str(slug)
+        if label and str(label).strip():
+            mapping[str(label).strip()] = str(slug)
+    return mapping
+
+
+def _option_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).lower())
+
+
+def _option_slug(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
+
+
+def _same_option(sample: Any, option: Any) -> bool:
+    if sample in (None, "") or option in (None, ""):
+        return False
+    if _option_key(sample) == _option_key(option):
+        return True
+    a, b = _option_slug(sample), _option_slug(option)
+    if a == b:
+        return True
+    # "Travel" matches "travel_2"; "Poetry" matches "poetry_23".
+    return b.startswith(a + "-") or a.startswith(b + "-")
+
+
+def reuse_existing_family_input(definition: Any, proposal: dict[str, Any]) -> str | None:
+    """If a link family describes an existing unused input, reuse that input's name.
+
+    Stops explore from adding a defaulted slug parameter (e.g. option=travel_2) while a
+    required human parameter (e.g. category=Travel) is left unbound.
+    """
+
+    family = proposal.get("link_family") or {}
+    if family.get("kind") not in {None, "", "option"}:
+        return None
+    from browser_platform.workflow_inputs import placeholders_in_definition
+
+    bound = set(placeholders_in_definition(definition))
+    mapping = family_value_map(proposal)
+    options = list(family.get("options") or proposal.get("examples") or [])
+    if not options and not mapping:
+        return None
+    for item in getattr(definition, "input_schema", None) or []:
+        name = getattr(item, "name", None)
+        if not name or name in bound or name == proposal.get("name"):
+            continue
+        samples = [getattr(item, "default", None), *(getattr(item, "examples", None) or [])]
+        samples.extend(mapping.keys())
+        # Only the input's own samples should trigger a match; mapping keys are aliases
+        # of the family, not of this input. Compare the input's samples to family values.
+        own = [getattr(item, "default", None), *(getattr(item, "examples", None) or [])]
+        for sample in own:
+            if sample in (None, ""):
+                continue
+            if str(sample) in mapping or str(sample).strip() in mapping:
+                return name
+            if any(_same_option(sample, option) for option in options):
+                return name
+            if any(_same_option(sample, label) for label in mapping):
+                return name
+    return None
+

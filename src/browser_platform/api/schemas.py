@@ -34,6 +34,9 @@ class RunRequest(BaseModel):
     wait: bool = True
     # None = workflow / platform default. True makes any non-primary selector resolution a named failure.
     strict: bool | None = None
+    # Attended UI (admin / extension confirmation card). Default off so API, MCP,
+    # and other unattended clients do not pause on HITL for hitl_timeout_s.
+    interactive: bool = False
 
 
 class MintRequest(BaseModel):

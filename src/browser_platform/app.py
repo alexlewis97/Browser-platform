@@ -294,5 +294,6 @@ def create_app(
     app.state.pomerado = pomerado
     app.state.event_hub = event_hub
     app.state.confirmation_broker = confirmation_broker
-    app.state.from_task_jobs = {}
+    from browser_platform.store.from_task_jobs import FromTaskJobStore
+    app.state.from_task_jobs = FromTaskJobStore(settings.data_dir / "from_task_jobs")
     return app

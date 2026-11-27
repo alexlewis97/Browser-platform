@@ -207,11 +207,21 @@ def events_to_steps(events: list[RecordedEvent], *, extract_goal: str = "result"
 
 
 def _extract_goal(task: str) -> str:
+    """Goal stored on the extract step. 'titles' (a list of items) is not a page heading."""
+
+    import re
+
     lower = task.lower()
-    if "first paragraph" in lower or "paragraph" in lower:
+    if "first paragraph" in lower or re.search(r"\bparagraphs?\b", lower):
         return "first paragraph"
-    if "heading" in lower or "title" in lower:
+    if re.search(r"\bheadings?\b", lower) or re.search(r"\bh1\b", lower) or re.search(r"\bpage title\b", lower):
         return "heading"
+    if re.search(r"\btitle\b", lower) and not re.search(r"\btitles\b", lower):
+        return "heading"
+    # Keep the author's ask so extract reads the content region (list, prices, ...) not just h1.
+    if re.search(r"\b(titles|prices|items|results|products|books|list)\b", lower):
+        cleaned = re.sub(r"\s+", " ", task.strip())
+        return cleaned[:160] or "result"
     return "result"
 
 

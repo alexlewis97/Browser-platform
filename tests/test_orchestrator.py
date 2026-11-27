@@ -238,6 +238,7 @@ async def test_falls_through_to_workflow_use_when_pomerado_fails(runner):
 
 @pytest.mark.asyncio
 async def test_llm_repair_write_back_when_selectors_fail(runner):
+    runner.settings.allow_in_run_repair = True
     runner._fake_page.broken_click = True
     runner.repair_client = FakeRepair([SelectorStrategy(type="css", value="h1", priority=1)])
     stored = runner.store.create_workflow(
@@ -270,6 +271,7 @@ async def test_llm_repair_write_back_when_selectors_fail(runner):
 
 @pytest.mark.asyncio
 async def test_no_llm_config_does_not_call_repair(runner):
+    runner.settings.allow_in_run_repair = True
     stored = runner.store.create_workflow(
         _extract_wf(
             steps=[

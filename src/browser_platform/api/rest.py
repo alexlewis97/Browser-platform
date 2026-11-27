@@ -23,6 +23,21 @@ def _state(request: Request):
     return request.app.state
 
 
+def _from_task_jobs(state):
+    jobs = getattr(state, "from_task_jobs", None)
+    if jobs is not None and hasattr(jobs, "get") and hasattr(jobs, "put"):
+        return jobs
+    from browser_platform.store.from_task_jobs import FromTaskJobStore
+    data_dir = getattr(getattr(state, "settings", None), "data_dir", None)
+    store = FromTaskJobStore((data_dir / "from_task_jobs") if data_dir else None)
+    if jobs:
+        # Migrate a leftover in-memory dict (tests / older app state).
+        for job in (jobs.values() if isinstance(jobs, dict) else []):
+            store.put(job)
+    state.from_task_jobs = store
+    return store
+
+
 @router.get("/health")
 async def health() -> dict[str, Any]:
     return {"ok": True, "service": "browser-platform"}
@@ -193,10 +208,7 @@ async def create_workflow_from_task_endpoint(payload: FromTaskRequest, request: 
     state = _state(request)
     cdp_url = payload.cdp_url or state.settings.default_cdp_url
     job_id = uuid.uuid4().hex
-    jobs = getattr(state, "from_task_jobs", None)
-    if jobs is None:
-        jobs = {}
-        state.from_task_jobs = jobs
+    jobs = _from_task_jobs(state)
     seed = FromTaskResult(
         id=job_id,
         status="running",
@@ -204,10 +216,10 @@ async def create_workflow_from_task_endpoint(payload: FromTaskRequest, request: 
         name=payload.name or (payload.task.strip().split("\n")[0][:80] or "from_task"),
         variables=dict(payload.variables or {}),
     )
-    jobs[job_id] = seed
+    jobs.put(seed)
 
     def _remember(job: FromTaskResult) -> None:
-        jobs[job.id] = job
+        jobs.put(job)
 
     async def _run() -> FromTaskResult:
         return await create_workflow_from_task(
@@ -234,29 +246,25 @@ async def create_workflow_from_task_endpoint(payload: FromTaskRequest, request: 
 
     if payload.wait:
         job = await _run()
-        jobs[job_id] = job
+        jobs.put(job)
         return job.model_dump(mode="json")
 
     async def _bg() -> None:
         try:
             job = await _run()
-            jobs[job_id] = job
+            jobs.put(job)
         except Exception as exc:
             seed.status = "failed"
             seed.error = str(exc)
-            jobs[job_id] = seed
+            jobs.put(seed)
 
-    # Cap in-memory from-task jobs and track the background task.
-    while len(jobs) > 50:
-        oldest = next(iter(jobs))
-        jobs.pop(oldest, None)
     _track_task(request, asyncio.create_task(_bg()))
     return seed.model_dump(mode="json")
 
 
 @router.get("/api/workflows/from-task/{job_id}")
 async def get_from_task_job(job_id: str, request: Request) -> dict[str, Any]:
-    jobs = getattr(_state(request), "from_task_jobs", None) or {}
+    jobs = _from_task_jobs(_state(request))
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="from-task job not found")
@@ -295,7 +303,7 @@ async def post_from_task_explore(job_id: str, payload: dict, request: Request) -
     from browser_platform.authoring.explore import apply_proposals, strip_proposals
 
     state = _state(request)
-    jobs = getattr(state, "from_task_jobs", None) or {}
+    jobs = _from_task_jobs(state)
     job = jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="from-task job not found")
@@ -314,7 +322,7 @@ async def post_from_task_explore(job_id: str, payload: dict, request: Request) -
     job.definition = stored.definition
     if job.explore is not None:
         job.explore = {**explore, "accepted": [item["name"] for item in keep], "rejected": drop, "applied": bool(keep)}
-    jobs[job_id] = job
+    jobs.put(job)
     return {"ok": True, "job_id": job_id, "workflow_id": stored.id, "accepted": [item["name"] for item in keep], "rejected": drop, "definition": stored.definition.model_dump(exclude_none=True)}
 
 
@@ -580,6 +588,9 @@ async def run_workflow(workflow_id: str, payload: RunRequest, request: Request) 
             write_back_repairs=payload.write_back,
             run_id=run_id,
             strict=payload.strict,
+            # HITL only when the caller is an interactive UI. API / unattended
+            # wait=true clients must not sit on needs_confirmation for 300s.
+            allow_hitl=bool(getattr(payload, "interactive", False)),
         )
 
     task = asyncio.create_task(_run_in_background())

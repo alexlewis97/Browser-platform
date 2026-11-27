@@ -54,7 +54,7 @@ def test_browser_use_package_and_openrouter_construction():
 
 @pytest.mark.asyncio
 async def test_runner_browser_use_tier_writes_back(data_dir: Path):
-    settings = Settings(data_dir=data_dir)
+    settings = Settings(data_dir=data_dir, allow_in_run_repair=True)
     store = FileStore(data_dir)
     page = FakePage()
     page.broken_click = True

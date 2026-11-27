@@ -1,0 +1,23 @@
+{
+  "round": 2,
+  "rule": "Train cases were used while implementing generic fixes. Held-out cases were written first as a checklist and only run after the implementation froze; they were not used to tune behaviour. No case is site-, league- or entity-specific.",
+  "train": [
+    "test_train_known_slug_is_mapped_in_code_unknown_is_invalid",
+    "test_train_unknown_slug_is_needs_input_and_does_not_repair",
+    "test_train_missing_required_input_is_needs_input",
+    "test_train_default_config_never_calls_llm_or_browser_use_on_replay",
+    "test_train_strict_broken_click_fails_by_name_not_fuzzy",
+    "test_train_explore_reuses_unused_required_input_and_extract_goal_is_not_heading",
+    "test_train_unattended_run_does_not_pause_on_hitl",
+    "test_train_from_task_job_survives_memory_loss",
+    "test_train_repair_has_no_per_run_or_api_override"
+  ],
+  "held_out": [
+    "test_held_out_identifier_examples_map_and_reject_unknown",
+    "test_held_out_value_map_labels_and_free_text_untouched",
+    "test_held_out_extract_goal_for_product_list_not_page_title",
+    "test_held_out_explore_binds_required_topic_not_a_second_option",
+    "test_held_out_api_run_is_not_interactive_by_default",
+    "test_held_out_from_task_poll_after_new_store"
+  ]
+}

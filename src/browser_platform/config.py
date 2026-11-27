@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # hitl_timeout_s instead and is not counted here.
     step_timeout_s: float = 60.0
     run_timeout_s: float = 240.0
+    # In-run LLM / browser-use step repair is kept in the tree but hard-disabled.
+    # Only the server env BROWSER_PLATFORM_ALLOW_IN_RUN_REPAIR can turn it back on.
+    # There is no per-run, per-workflow, API, chat, or extension override.
+    allow_in_run_repair: bool = False
 
     def resolve(self, root: Path | None = None) -> "Settings":
         base = root or Path.cwd()

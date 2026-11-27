@@ -283,20 +283,66 @@ def _value_tokens(value: str) -> list[str]:
     return [_NUMBER_WORDS.get(t, t) for t in re.findall(r"[a-z0-9]+", str(value).lower())]
 
 
+_IDENTIFIER = re.compile(r"^[a-z0-9]+(?:[-_][a-z0-9]+)*$", re.I)
+
+
+def _value_map(item: WorkflowInput) -> dict[str, str]:
+    raw = getattr(item, "value_map", None) or {}
+    out: dict[str, str] = {}
+    for key, val in raw.items() if isinstance(raw, dict) else []:
+        if key in (None, "") or val in (None, ""):
+            continue
+        out[str(key)] = str(val)
+        out[str(key).strip().lower()] = str(val)
+    return out
+
+
+def known_values_for(item: WorkflowInput, *, closed: bool = False) -> list[str] | None:
+    """Canonical values this input is known to accept, or None if it is free text.
+
+    Mapping may use identifier-like examples (slugs). Rejection (``closed=True``) only
+    applies to an enum, an explicit value_map, or a format of slug/id/code/key — a
+    list of examples alone is not a closed set (a team name is not an unknown slug).
+    """
+
+    enum = [str(v) for v in (getattr(item, "enum", None) or []) if v not in (None, "")]
+    examples = [str(v) for v in (getattr(item, "examples", None) or []) if isinstance(v, str) and v.strip()]
+    mapped = [str(v) for v in (getattr(item, "value_map", None) or {}).values() if v not in (None, "")]
+    fmt = str(getattr(item, "format", "") or "").lower()
+    if enum:
+        return list(dict.fromkeys([*enum, *mapped]))
+    if fmt in {"slug", "id", "code", "key"} or mapped:
+        known = list(dict.fromkeys([*examples, *mapped]))
+        return known or None
+    if closed:
+        return None
+    if examples and all(_IDENTIFIER.match(v) for v in examples):
+        return list(dict.fromkeys([*examples, *mapped]))
+    return None
+
+
 def match_known_value(item: WorkflowInput, value: Any) -> Any:
-    """Map a free-text value to the input's own enum or example value when the match is unique:
-    same words in another form ("Premier League" -> premier-league, "1" -> "one"), or the
-    value's words are part of one known value ("ligue 1" -> french-ligue-one). An enum is a
+    """Map a free-text value to the input's own enum, example, or value_map entry when the
+    match is unique: same words in another form ("Premier League" -> premier-league, "1" ->
+    "one"), a documented label ("Travel" -> travel_2), or the value's words are part of one
+    known value ("ligue 1" -> french-ligue-one, "la-liga" -> spanish-la-liga). An enum is a
     closed set, so any unique containing value matches; open examples need most of their words."""
 
     if not isinstance(value, str) or not value.strip():
         return value
+    raw_map = getattr(item, "value_map", None) or {}
+    if isinstance(raw_map, dict) and value in raw_map and raw_map[value] not in (None, ""):
+        return str(raw_map[value])
+    lowered = value.strip().lower()
+    mapped = _value_map(item)
+    if lowered in mapped:
+        return mapped[lowered]
     enum = [str(v) for v in (getattr(item, "enum", None) or []) if v not in (None, "")]
+    known = known_values_for(item)
     # Open examples only constrain identifier-like inputs (slugs, codes), never free text.
-    if not enum and str(getattr(item, "format", "") or "").lower() not in {"slug", "id", "code", "key"}:
+    if not known:
         return value
-    known = enum or [str(v) for v in (getattr(item, "examples", None) or []) if isinstance(v, str) and v.strip()]
-    if not known or value in known:
+    if value in known:
         return value
     tokens = _value_tokens(value)
     if not tokens:
@@ -451,19 +497,33 @@ def migrate_defaults(definition: WorkflowDefinition) -> tuple[WorkflowDefinition
 
 
 def invalid_typed_inputs(definition: WorkflowDefinition | None, variables: dict[str, Any] | None) -> list[str]:
-    """Human-readable problems for typed values that are not a valid date at their grain."""
+    """Human-readable problems for typed or closed values that cannot be used as-is."""
 
     from browser_platform.dates import resolve
 
     problems: list[str] = []
     for item in getattr(definition, "input_schema", None) or []:
         value = (variables or {}).get(item.name)
-        grain = input_grain(item, definition)
-        if not grain or value in (None, "") or is_placeholder_value(value):
+        if value in (None, "") or is_placeholder_value(value):
             continue
-        if resolve(str(value), grain) is None:
+        grain = input_grain(item, definition)
+        if grain and resolve(str(value), grain) is None:
             want = {"date": "a specific day", "month": "a month", "year": "a year"}[grain]
             problems.append(f"{item.name} must be {want} (got '{value}')")
+            continue
+        known = known_values_for(item, closed=True)
+        if not known:
+            continue
+        allowed = {str(k) for k in known}
+        values = value if isinstance(value, (list, tuple)) else [value]
+        for raw in values:
+            if raw in (None, "") or is_placeholder_value(raw):
+                continue
+            mapped = match_known_value(item, raw)
+            if str(mapped) not in allowed:
+                problems.append(
+                    f"{item.name} must be one of the tool's known values (got '{raw}')"
+                )
     return problems
 
 
@@ -539,6 +599,8 @@ __all__ = [
     "finalize_authored_inputs",
     "input_grain",
     "invalid_typed_inputs",
+    "known_values_for",
+    "match_known_value",
     "resolve_typed_value",
     "inputs_from_integration",
     "inputs_from_json_schema",

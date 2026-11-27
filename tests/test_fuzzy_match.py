@@ -71,8 +71,8 @@ def _definition(**hitl_kw) -> WorkflowDefinition:
     )
 
 
-def _runner(data_dir: Path, page: AttendancePage, *, broker: ConfirmationBroker | None = None, repair=None):
-    settings = Settings(data_dir=data_dir, hitl_timeout_s=2)
+def _runner(data_dir: Path, page: AttendancePage, *, broker: ConfirmationBroker | None = None, repair=None, allow_in_run_repair: bool = False):
+    settings = Settings(data_dir=data_dir, hitl_timeout_s=2, allow_in_run_repair=allow_in_run_repair)
     store = FileStore(data_dir)
     hub = EventHub()
 
@@ -236,7 +236,7 @@ async def test_hitl_timeout_fail_and_fall_to_llm(data_dir: Path):
 
     page2 = AttendancePage()
     repair = Repair([])
-    runner, store = _runner(data_dir, page2, broker=ConfirmationBroker(), repair=repair)
+    runner, store = _runner(data_dir, page2, broker=ConfirmationBroker(), repair=repair, allow_in_run_repair=True)
     stored = store.create_workflow(
         _definition(mode="always_on_uncertain", timeout_s=0.05, timeout_policy="fall_to_llm")
     )
@@ -252,7 +252,7 @@ async def test_llm_only_skips_hitl(data_dir: Path):
     page = AttendancePage()
     broker = ConfirmationBroker()
     repair = FakeRepair([])
-    runner, store = _runner(data_dir, page, broker=broker, repair=repair)
+    runner, store = _runner(data_dir, page, broker=broker, repair=repair, allow_in_run_repair=True)
     stored = store.create_workflow(_definition(mode="llm_only", timeout_s=5))
     llm = LLMConfig(api_key="sk-or-v1-should-never-be-stored", model="qwen/qwen3.7-flash")
     run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, llm=llm)
