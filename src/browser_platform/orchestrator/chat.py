@@ -21,7 +21,7 @@ from browser_platform.executor.isolated import IsolatedBrowser, close_isolated, 
 from browser_platform.executor.output_validate import collect_sample, is_nav_footer_only
 from browser_platform.llm.openrouter import chat_complete, env_api_key, merge_usage, message_text
 from browser_platform.models.workflow import StoredWorkflow
-from browser_platform.orchestrator.grounding import data_status, ungrounded_claims
+from browser_platform.orchestrator.grounding import data_status, date_context, ungrounded_claims
 from browser_platform.orchestrator.normalize_inputs import normalize_prepared_calls
 from browser_platform.orchestrator.planner import (
     TOP_K,
@@ -1052,6 +1052,9 @@ class ChatOrchestrator:
                             "State only facts present in results[].facts: inputs are what was requested, not what the page showed. "
                             "data_status no_data means the page showed nothing; say the data was not available or could not be verified, "
                             "never conclude that something does not exist. "
+                            "Dates: use today and dates_in_question as given; never assume another current date. "
+                            "Report the page's data as it is; never second-guess it from your own knowledge (for example who plays in a league). "
+                            "When the question asks about one day and the results cover a longer period, answer for that day only. "
                             "Do not dump raw extracts. Keep the answer tight."
                             + workspace_context(job.get("workspace"))
                         ),
@@ -1059,7 +1062,8 @@ class ChatOrchestrator:
                     {
                         "role": "user",
                         "content": json.dumps(
-                            {"question": job.get("message"), "results": compact, "flagged": job.get("flagged") or []},
+                            {"question": job.get("message"), **date_context(str(job.get("message") or "")),
+                             "results": compact, "flagged": job.get("flagged") or []},
                             ensure_ascii=False,
                         )[:6000],
                     },

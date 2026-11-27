@@ -60,6 +60,21 @@ def _numbers(text: str) -> set[str]:
     return {str(int(n)) if n.isdigit() and len(n) < 6 else n for n in re.findall(r"\d+", text)}
 
 
+def date_context(question: str) -> dict[str, Any]:
+    """Today and the calendar days the question refers to, resolved by code (for synthesis)."""
+
+    today = dates.today()
+    out: dict[str, Any] = {"today": today.strftime("%A %d %B %Y") + f" ({today.isoformat()})"}
+    resolved = {}
+    for expr in dates.find_expressions(question or ""):
+        value = dates.resolve(expr, "date")
+        if value:
+            resolved[expr] = value
+    if resolved:
+        out["dates_in_question"] = resolved
+    return out
+
+
 def evidence_text(compact: list[dict[str, Any]], question: str, extra: str = "") -> str:
     parts = [question or "", extra or ""]
     for item in compact:

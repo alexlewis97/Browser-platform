@@ -324,8 +324,12 @@ def _explore_sample_variables(definition: Any) -> dict[str, Any]:
     Required inputs often have no default (no silent entity defaults); exploring still needs a
     real page, so a sample example is used for the visit and never saved as a default."""
 
+    from browser_platform.workflow_inputs import has_runtime_default
+
     out: dict[str, Any] = {}
     for item in definition.input_schema or []:
+        if has_runtime_default(item, definition):
+            continue  # filled at run time (the current month/day), like a real run
         if item.default not in (None, ""):
             out[item.name] = item.default
         elif getattr(item, "examples", None):
@@ -392,12 +396,20 @@ async def post_workflow_derive(workflow_id: str, request: Request) -> dict[str, 
         derived = derive_view_definition(stored.definition, view)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    explored = await explore_definition(derived, task=derived.description or derived.name,
-                                        variables=_explore_sample_variables(derived), enabled=True)
-    if explored.get("definition"):
+    accepted: list[str] = []
+    dropped: list[dict[str, Any]] = []
+    # Two passes: a parameter found on the first page (a month segment) opens a page whose
+    # own links show the next control (a fixtures/results filter).
+    for _ in range(2):
+        explored = await explore_definition(derived, task=derived.description or derived.name,
+                                            variables=_explore_sample_variables(derived), enabled=True)
+        dropped.extend(explored.get("dropped") or [])
+        if not explored.get("definition"):
+            break
         derived = WorkflowDefinition.model_validate(explored["definition"])
-    result: dict[str, Any] = {"definition": derived.model_dump(exclude_none=True), "explore": {
-        k: explored.get(k) for k in ("accepted", "dropped", "usage")}, "saved": False}
+        accepted.extend(explored.get("accepted") or [])
+    result: dict[str, Any] = {"definition": derived.model_dump(exclude_none=True),
+                              "explore": {"accepted": accepted, "dropped": dropped}, "saved": False}
     if bool((body or {}).get("apply")):
         saved = state.store.create_workflow(derived)
         result.update({"saved": True, "workflow_id": saved.id})
