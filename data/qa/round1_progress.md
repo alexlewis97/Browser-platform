@@ -82,3 +82,10 @@
     - OK: man utd weekend, spurs/chelse points, PL 20 Jun 2026 empty, barcelona table position (La Liga inferred), man city/newcastle points, "show me the league table" (correctly asks).
     - Fail: Eredivisie (planner slug 'eredivisie' → not-found page, honest failure); celtic/hearts still declined (implied question variance); villa/brighton (right table, but the answer says Villa above while the facts show Brighton 2nd / Villa 12th).
 - Open: table-position comparisons are not covered by computed_order (dates/times only); the implied-value question is not 100% reliable.
+
+## Round 3b — numeric table comparisons, implied values from prior runs (463846e, live 13:33 Asia/Jerusalem)
+- facts_order: generic table parser (modal-width rows, numeric columns detected per column, rank from leading integer); `table_comparison` computes above/below, more/less, top/bottom in code; `table_conflicts` drives the rewrite-then-fallback check.
+- prior_values: deterministic implied value from the workflow's past run outputs (unique option page containing all distinguishing user words); LLM implied-value question is now only the fallback.
+- Live: TRAIN 2/2 (Villa/Brighton "No", Celtic/Hearts). TEST 5/5 correct answers (Newcastle below Villa, fewer points Everton/Fulham, best GD, Rangers/Hibs, where are Hearts). REGRESS 3/3.
+- Gap: "is rangers above hibs?" fanned out a second call; the normaliser remapped the planner's `scottish-championship` to the non-existent `scottish-premier-league` (failed, ignored in the answer, status partial).
+- Gap: Celtic/Hearts live — planner supplied the competition itself, so the prior-runs path was not exercised live (unit-tested and probed against the VM's real runs: Celtic/Hearts → scottish-premiership).
