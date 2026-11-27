@@ -127,6 +127,9 @@ def _cos(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+PRIOR_WEIGHT = 0.02
+
+
 async def rank_skills(
     query: str,
     manifests: list[dict[str, Any]],
@@ -163,9 +166,11 @@ async def rank_skills(
             embedder.disabled_reason = type(exc).__name__
             dense = []
     if prior:
-        # Reliability prior from run history (0..1): nudges, never overrides, relevance.
+        # Reliability prior from run history (0..1): a tie-break only. RRF scores of
+        # neighbouring ranks differ by ~1.5%, so a +-15% factor used to let run history
+        # outrank relevance outright (a new, unrun tool always sank to the bottom).
         for i in list(fused):
-            fused[i] *= 0.85 + 0.3 * float(prior.get(str(manifests[i].get("id")), 0.5))
+            fused[i] *= 1.0 + PRIOR_WEIGHT * (float(prior.get(str(manifests[i].get("id")), 0.5)) - 0.5)
     if not fused:
         # Nothing matched lexically and no embeddings: give the planner a small default slate.
         chosen = list(range(min(k, len(manifests))))

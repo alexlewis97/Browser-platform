@@ -62,3 +62,16 @@ def test_last_segment_values_are_a_parameter_when_url_has_none():
     html = "".join(f'<a href="/tag/{t}/">{t}</a>' for t in ("love", "life", "humor", "books"))
     props = propose_from_link_families(html, BASE + "/tag/love/", step_template=BASE + "/tag/love/")
     assert props and props[0]["default"] == "love" and props[0]["link_family"]["kind"] == "option"
+
+
+def test_run_history_prior_does_not_outrank_relevance():
+    import asyncio
+
+    from browser_platform.skills.retrieve import rank_skills
+
+    ms = [
+        {"id": "old", "slug": "team_fixtures", "summary": "a club's matches"},
+        {"id": "new", "slug": "competition_fixtures", "summary": "fixtures for a competition such as the championship"},
+    ]
+    r = asyncio.run(rank_skills("championship fixtures", ms, k=2, prior={"old": 1.0}))
+    assert r["skills"][0]["id"] == "new"
