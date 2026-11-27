@@ -259,14 +259,18 @@ _MAIN_TEXT_JS = r"""
   root.querySelectorAll('a[href^="#"]').forEach(a => { if (words(a.innerText) <= 4) drop.add(a); });
   root.querySelectorAll('button').forEach(b => { if (words(b.innerText) <= 3) drop.add(b); });
   // Link strips: many short links and almost no other text (menus, date or tab scrollers).
+  // Only the innermost such block is dropped, so a page whose whole body is link-heavy keeps
+  // its content and loses only the menu itself.
+  const strips = [];
   for (const el of root.querySelectorAll('ul, ol, div, section')) {
     const links = Array.from(el.querySelectorAll('a'));
     if (links.length < 5) continue;
     const short = links.filter(a => words(a.innerText) <= 3).length;
     const total = len(el.innerText);
     const linkText = links.reduce((n, a) => n + len(a.innerText), 0);
-    if (total && short / links.length >= 0.8 && linkText / total >= 0.8) drop.add(el);
+    if (total && short / links.length >= 0.8 && linkText / total >= 0.8) strips.push(el);
   }
+  for (const el of strips) { if (!strips.some(o => o !== el && el.contains(o))) drop.add(el); }
   const hidden = [];
   for (const el of drop) { hidden.push([el, el.style.getPropertyValue("display"), el.style.getPropertyPriority("display")]); el.style.setProperty("display", "none", "important"); }
   let text = "";
