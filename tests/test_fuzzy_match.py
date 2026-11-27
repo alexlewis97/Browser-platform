@@ -124,7 +124,7 @@ async def test_workflow_use_fuzzy_accepts_name_order(data_dir: Path):
     page = AttendancePage()
     runner, store = _runner(data_dir, page)
     stored = store.create_workflow(_definition())
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Lewis, Alex"})
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Lewis, Alex"}, caller="admin")
     # Rescued by fuzzy: never silent.
     assert run.status == "succeeded_with_fallback"
     assert run.needs_repair is True
@@ -141,14 +141,14 @@ async def test_workflow_use_fuzzy_accepts_hebrew_and_typo(data_dir: Path):
     page = AttendancePage()
     runner, store = _runner(data_dir, page)
     stored = store.create_workflow(_definition())
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "כהן יונתן"})
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "כהן יונתן"}, caller="admin")
     assert run.status == "succeeded_with_fallback"
     assert page.applied == ["יונתן כהן"]
 
     page2 = AttendancePage()
     runner, store = _runner(data_dir, page2)
     stored = store.create_workflow(_definition())
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Sara OConnor"})
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Sara OConnor"}, caller="admin")
     assert run.status == "succeeded_with_fallback"
     assert page2.applied == ["Sarah O'Connor"]
 
@@ -174,7 +174,7 @@ async def test_uncertain_match_pauses_and_alias_makes_next_run_deterministic(dat
         assert broker.resolve(runs[0].id, ConfirmationDecision(action="confirm", text="Anna Cohen"))
 
     task = asyncio.create_task(confirm_when_ready())
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"})
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, caller="admin")
     await task
     assert run.status == "succeeded_with_fallback"
     click = next(s for s in run.steps if s.step_type == "click")
@@ -213,7 +213,7 @@ async def test_hitl_cancel(data_dir: Path):
                 return
 
     task = asyncio.create_task(cancel())
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"})
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, caller="admin")
     await task
     assert run.status == "cancelled"
     assert page.applied == []
@@ -225,7 +225,7 @@ async def test_hitl_timeout_fail_and_fall_to_llm(data_dir: Path):
     broker = ConfirmationBroker()
     runner, store = _runner(data_dir, page, broker=broker)
     stored = store.create_workflow(_definition(mode="always_on_uncertain", timeout_s=0.05, timeout_policy="fail"))
-    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"})
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Ann Cohen"}, caller="admin")
     assert run.status == "failed"
     assert "timed out" in (run.error or "")
 
@@ -289,3 +289,23 @@ async def test_strict_mode_from_workflow_and_platform_default(data_dir: Path):
     runner.settings.strict_selectors = True
     definition.strict_selectors = None
     assert resolve_strict(runner.settings, definition, None) is True
+
+
+@pytest.mark.asyncio
+async def test_user_path_does_not_fuzzy_rescue_a_failed_click(data_dir: Path):
+    """User-side replay must fail a missed click by step name, not fuzzy-match it."""
+    page = AttendancePage()
+    runner, store = _runner(data_dir, page)
+    stored = store.create_workflow(_definition())
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", variables={"name": "Lewis, Alex"})
+    assert run.status == "failed"
+    assert run.status != "succeeded_with_fallback"
+    assert run.failure_kind == "strict_selector"
+    assert "Pick the attendee" in (run.error or "")
+    assert "strict selectors" in (run.error or "")
+    click = next(s for s in run.steps if s.step_type == "click")
+    assert click.success is False
+    assert click.resolution != "fuzzy"
+    assert page.applied == []
+    flagged = store.get_workflow(stored.id)
+    assert flagged.definition.needs_repair is True

@@ -16,7 +16,7 @@ from browser_platform.models.workflow import SelectorStrategy, WorkflowDefinitio
 from browser_platform.orchestrator.runner import WorkflowRunner, _safe_repair_variables
 from browser_platform.store.file_store import FileStore
 
-from test_orchestrator import FakePage, FakeRepair, FakeSession
+from test_orchestrator import FakeLocator, FakePage, FakeRepair, FakeSession
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "node_host" / "src" / "stock-mcp.mjs"
@@ -76,6 +76,11 @@ class _TokenReq:
         self.headers = {"authorization": f"Bearer {token}"} if token else {}
         self.query_params = {}
         self.scope = {"client": ("127.0.0.1", 9), "scheme": "http", "server": ("127.0.0.1", 8745)}
+
+
+def test_caller_role_loopback_without_tokens_is_admin():
+    settings = Settings(access_token="", user_token="")
+    assert caller_role(_TokenReq(None), settings) == "admin"
 
 
 def test_caller_role_is_admin_only_for_access_token():
@@ -191,3 +196,100 @@ def test_repair_endpoint_400_without_repair_from(data_dir: Path):
     client = TestClient(app)
     res = client.post(f"/api/workflows/{stored.id}/repair", headers={"X-Browser-Platform-Token": ADMIN})
     assert res.status_code == 400
+
+
+class ExpandPage(FakePage):
+    """A page whose Expand all control is only reachable via the live selector."""
+
+    def __init__(self):
+        super().__init__()
+        self.body = "Expand all\nNotes\nReact\nPublic"
+        self.expanded = False
+
+    def locator(self, sel: str):
+        if sel == "button.expand-all":
+            page = self
+            loc = FakeLocator(text="Expand all")
+
+            async def click(**kwargs) -> None:
+                loc.clicked = True
+                page.expanded = True
+                page.body = "Expand all\nNotes\nReact\nPublic"
+
+            loc.click = click  # type: ignore[method-assign]
+            return loc
+        return super().locator(sel)
+
+
+def _expand_all_wf() -> WorkflowDefinition:
+    # Recorded selector is stale on purpose. The live selector is not written here;
+    # an admin repair run has to rediscover it.
+    return WorkflowDefinition(
+        name="checkbox tree",
+        steps=[
+            WorkflowStep(type="navigation", url="https://example.com/checkbox"),
+            WorkflowStep(
+                type="click",
+                description="Expand all",
+                cssSelector="button.gone",
+                selectorStrategies=[SelectorStrategy(type="css", value="button.gone", priority=1)],
+            ),
+            WorkflowStep(type="extract", extractionGoal="checked leaves", cssSelector="body", output="leaves"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_broken_click_fails_named_without_fuzzy_rescue(data_dir: Path):
+    page = ExpandPage()
+    runner, store = _runner(data_dir, page=page, repair=FakeRepair([]), allow_in_run_repair=True)
+    stored = store.create_workflow(_expand_all_wf())
+    run = await runner.run(stored, cdp_url="http://127.0.0.1:0", llm=LLM)
+    assert run.status == "failed"
+    assert run.failure_kind == "strict_selector"
+    assert "Expand all" in (run.error or "")
+    assert "strict selectors" in (run.error or "")
+    assert "button.gone" in (run.error or "")
+    click = next(s for s in run.steps if s.step_type == "click")
+    assert click.success is False
+    assert click.resolution != "fuzzy"
+    assert click.tier not in {"llm", "browser_use"}
+    assert page.expanded is False
+    assert store.get_workflow(stored.id).definition.needs_repair is True
+    assert store.get_workflow(stored.id).definition.version == "1"
+
+
+@pytest.mark.asyncio
+async def test_admin_repair_rerecords_expand_all_without_hand_coded_selector(data_dir: Path):
+    page = ExpandPage()
+    # Repair rediscovers the live selector; it is not present on the saved workflow.
+    repair = FakeRepair([SelectorStrategy(type="css", value="button.expand-all", priority=1)])
+    runner, store = _runner(data_dir, page=page, repair=repair, allow_in_run_repair=True)
+    stored = store.create_workflow(_expand_all_wf())
+    stored.definition.needs_repair = True
+    stored.definition.repair_from = {"run_id": "failed-user", "variables": {}}
+    store.update_workflow(stored.id, stored.definition)
+
+    admin = await runner.run(stored, cdp_url="http://127.0.0.1:0", llm=LLM, caller="admin")
+    assert admin.status in {"succeeded", "succeeded_with_fallback"}
+    assert admin.repaired is True
+    assert repair.calls == 1
+    assert page.expanded is True
+    refreshed = store.get_workflow(stored.id)
+    assert refreshed.definition.needs_repair is False
+    written = [s.value for s in (refreshed.definition.steps[1].selectorStrategies or [])]
+    assert "button.expand-all" in written
+    assert "button.gone" in written  # previous selector kept, winner prepended
+    assert refreshed.definition.version != "1"
+
+    # User path now runs deterministically on the written-back selector.
+    page2 = ExpandPage()
+    runner2, _ = _runner(data_dir, page=page2, repair=FakeRepair([]), allow_in_run_repair=True)
+    # Point at the already-updated store
+    runner2.store = store
+    stored2 = store.get_workflow(stored.id)
+    user = await runner2.run(stored2, cdp_url="http://127.0.0.1:0", llm=LLM)
+    assert user.status in {"succeeded", "succeeded_with_fallback"}
+    assert user.repaired is False
+    assert page2.expanded is True
+    assert "Notes" in str(user.outputs.get("leaves") or user.outputs.get("extract") or "")

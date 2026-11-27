@@ -159,8 +159,10 @@ class WorkflowRunner:
         run.strict = resolve_strict(self.settings, stored.definition, strict)
         caller = "admin" if caller == "admin" else "user"
         if caller != "admin":
-            # User-side runs never persist selector write-back or in-run repair.
+            # User-side runs never persist selector write-back or in-run repair,
+            # and never use fuzzy/HITL to rescue a failed recorded selector.
             write_back_repairs = False
+            run.strict = True
         if not allow_hitl:
             self._no_hitl_runs.add(run.id)
         if caller == "admin":
@@ -570,22 +572,20 @@ class WorkflowRunner:
                 if run is not None:
                     run.failure_kind = "extract_missing"
                 return _tel(index, step, "workflow_use", False, started, error=det_error), definition, None
-            if strict:
-                if run is not None:
-                    run.failure_kind = "strict_selector"
-                if primary is not None:
-                    recorded = interpolate(primary.value, variables)
-                    found = await probe_alternatives(page, full_plan, variables, primary)
-                    message = (
-                        f"strict selectors: recorded {primary.type}:{recorded!r} did not match "
-                        f"({det_error}); found: {found}"
-                    )
-                else:
-                    message = f"strict selectors: {det_error}"
-                return _tel(index, step, "workflow_use", False, started, error=message), definition, None
+            # Admin + strict: no alias/fuzzy rescue (existing behaviour).
+            if strict and self._is_admin_run(run):
+                return (
+                    _tel(index, step, "workflow_use", False, started, error=await self._strict_selector_message(
+                        page, full_plan, primary, variables, det_error, run=run
+                    )),
+                    definition,
+                    None,
+                )
 
-        # Still in workflow-use: resolve the step target with aliases + fuzzy match.
+        # Aliases are deterministic recordings and may run on any path.
+        # Fuzzy / HITL rescue of a failed selector is admin-only (and not when strict).
         pending_hitl: dict[str, Any] | None = None
+        allow_fuzzy = self._is_admin_run(run) and not strict
         fuzzy_outcome = await self._workflow_use_fuzzy(
             page,
             workflow_id,
@@ -597,6 +597,7 @@ class WorkflowRunner:
             run=run,
             started=started,
             timeout_ms=timeout_ms,
+            aliases_only=not allow_fuzzy,
         )
         if fuzzy_outcome is not None:
             kind, payload = fuzzy_outcome
@@ -604,6 +605,15 @@ class WorkflowRunner:
                 return payload
             if kind == "needs_hitl":
                 pending_hitl = payload
+
+        if not allow_fuzzy:
+            return (
+                _tel(index, step, "workflow_use", False, started, error=await self._strict_selector_message(
+                    page, full_plan, primary, variables, det_error, run=run
+                )),
+                definition,
+                None,
+            )
 
         if pending_hitl and pending_hitl["hitl"].mode == "always_on_uncertain":
             hitl_result = await self._await_hitl(
@@ -853,11 +863,13 @@ class WorkflowRunner:
         run: RunRecord | None,
         started: float,
         timeout_ms: int,
+        aliases_only: bool = False,
     ):
         """Alias lookup + fuzzy target resolution. Still the workflow-use tier.
 
         Returns ("done", (tel, definition, output)), ("needs_hitl", context), or None
-        to continue to the LLM tier.
+        to continue to the LLM tier. ``aliases_only`` (user path / strict) tries
+        recorded aliases and does not fuzzy-score or pause for HITL.
         """
         fuzzy_cfg = merge_fuzzy(self.settings, definition, step)
         if not fuzzy_applies(step, fuzzy_cfg):
@@ -914,6 +926,9 @@ class WorkflowRunner:
                 )
             except Exception:
                 pass
+
+        if aliases_only:
+            return None
 
         include_screenshot = bool(fuzzy_cfg.include_screenshot)
         try:
@@ -1197,6 +1212,31 @@ class WorkflowRunner:
             definition,
             {"query": query, "matched": picked.text, "reason": "human"},
         )
+
+    def _is_admin_run(self, run: RunRecord | None = None) -> bool:
+        run_id = getattr(run, "id", None)
+        return bool(run_id and run_id in self._admin_repair_runs)
+
+    async def _strict_selector_message(
+        self,
+        page: Page,
+        full_plan,
+        primary,
+        variables: dict[str, Any],
+        det_error: str,
+        *,
+        run: RunRecord | None,
+    ) -> str:
+        if run is not None:
+            run.failure_kind = "strict_selector"
+        if primary is not None:
+            recorded = interpolate(primary.value, variables)
+            found = await probe_alternatives(page, full_plan, variables, primary)
+            return (
+                f"strict selectors: recorded {primary.type}:{recorded!r} did not match "
+                f"({det_error}); found: {found}"
+            )
+        return f"strict selectors: {det_error}"
 
     def _in_run_repair_allowed(self, run: RunRecord | None = None) -> bool:
         """Admin runs only, and only when the env kill-switch is on.

@@ -542,8 +542,16 @@ async def run_step(
 
 
 def primary_attempt(plan: list[SelectorAttempt]) -> SelectorAttempt | None:
-    """The step's recorded first-choice selector (lowest-priority recorded strategy)."""
+    """The step's current first-choice selector.
 
+    A cached / write-back winner is the selector the last successful repair (or
+    run) recorded, so it is the primary for the next strict or user-side replay.
+    Otherwise the first declared selector strategy, else a heuristic.
+    """
+
+    for attempt in plan:
+        if attempt.kind == "cached":
+            return attempt
     for attempt in plan:
         if attempt.kind == "selector":
             return attempt

@@ -167,6 +167,9 @@ def caller_role(connection: Any, settings: Any | None, *, allow_query: bool = Fa
     provided = provided_access_token(connection, allow_query=allow_query)
     if provided and tokens["admin"] and hmac.compare_digest(provided, tokens["admin"]):
         return "admin"
+    # No tokens configured: loopback-only operator mode (laptop admin UI, TestClient).
+    if not tokens["admin"] and not tokens["user"]:
+        return "admin"
     return "user"
 
 
