@@ -511,6 +511,28 @@ def fuzzy_known(value: str, known: Iterable[str]) -> tuple[str | None, list[str]
     return scored[0][1], []
 
 
+def keeps_planner_value(value: str, proposed: str, examples: list[str]) -> bool:
+    """True when a well-formed planner value must pass through unchanged.
+
+    For an open example list in slug form, a value already in that form is only rewritten
+    to one of the listed examples, and only when it is a near-typo of it. The mapper never
+    swaps it for a different value, or one that is in neither the options nor the examples
+    ("scottish-championship" -> "scottish-premier-league")."""
+    text, new = (value or "").strip(), (proposed or "").strip()
+    if not text or not new or text == new or not _prefers_slug_form(examples):
+        return False
+    if path_slug(text) != text:
+        return False  # not well formed: free text still gets canonicalised
+    target = match_canonical_example(new, examples)
+    if not target:
+        return True
+    if path_slug(target) == path_slug(text):
+        return False
+    a, b = path_slug(text).split("-"), path_slug(target).split("-")
+    # Near-typo: same words, each spelled within the fuzzy threshold ("west" vs "east" is not).
+    return len(a) != len(b) or any(_similar(x, y) < FUZZY_THRESHOLD for x, y in zip(a, b))
+
+
 async def normalize_prepared_calls(
     calls: list[dict[str, Any]],
     *,
@@ -671,7 +693,8 @@ async def normalize_prepared_calls(
                 continue
             hints = parameter_hints(definition, name)
             chosen = _choose_form(row.get("canonical") or "", row.get("slug"), hints.get("examples") or [])
-            if chosen:
+            # An unstated value replaced by an implied one is not a rewrite of a planner value.
+            if chosen and (row.get("implied_by") or not keeps_planner_value(text, chosen, hints.get("examples") or [])):
                 args[name] = chosen
         call["arguments"] = args
     return usage

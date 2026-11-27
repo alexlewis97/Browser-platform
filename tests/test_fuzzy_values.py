@@ -204,3 +204,31 @@ def test_prior_runs_single_out_a_value(tmp_path):
     assert value_from_prior_runs(tmp_path, "w", tpl, "competition", "who is higher, stonebrige or elmwick?")[0] == "south-league"
     assert value_from_prior_runs(tmp_path, "w", tpl, "competition", "who is higher, redwood or elmwick?") is None  # split
     assert value_from_prior_runs(tmp_path, "w", tpl, "competition", "show me the table") is None
+
+
+def test_open_examples_keep_well_formed_planner_value():
+    import asyncio, json
+    from browser_platform.orchestrator.normalize_inputs import keeps_planner_value, normalize_prepared_calls
+    from browser_platform.models.workflow import WorkflowDefinition
+
+    ex = ["north-league", "south-cup", "east-division"]
+    assert keeps_planner_value("west-division", "north-premier-league", ex)  # invented value
+    assert keeps_planner_value("west-division", "east-division", ex)  # different listed value, not a typo
+    assert not keeps_planner_value("east-divison", "east-division", ex)  # near-typo of a listed value
+    assert not keeps_planner_value("North League", "north-league", ex)  # free text is still canonicalised
+
+    definition = WorkflowDefinition.model_validate({
+        "name": "Tables", "steps": [{"type": "navigation", "url": "https://ex.org/{competition|slug}/table"}, {"type": "extract", "extractionGoal": "x"}],
+        "input_schema": [{"name": "competition", "type": "string", "required": True, "examples": ex}]})
+
+    async def fake_complete(*a, **k):
+        return {"content": json.dumps({"values": [{"call": "c1", "param": "competition", "canonical": "North Premier League",
+                                                   "slug": "north-premier-league", "fits": True}]})}, {"tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "used": True}
+
+    calls = [{"id": "c1", "workflow_id": "w1", "arguments": {"competition": "west-division"}}]
+    asyncio.run(normalize_prepared_calls(calls, definitions={"w1": definition}, complete=fake_complete))
+    assert calls[0]["arguments"]["competition"] == "west-division"
+    # sanity: the same mapper still canonicalises free text into the slug form
+    calls = [{"id": "c1", "workflow_id": "w1", "arguments": {"competition": "North Premier League"}}]
+    asyncio.run(normalize_prepared_calls(calls, definitions={"w1": definition}, complete=fake_complete))
+    assert calls[0]["arguments"]["competition"] == "north-premier-league"
