@@ -69,7 +69,12 @@ def date_context(question: str) -> dict[str, Any]:
     for expr in dates.find_expressions(question or ""):
         value = dates.resolve(expr, "date")
         if value:
-            resolved[expr] = value
+            try:
+                from datetime import date as _date
+
+                resolved[expr] = _date.fromisoformat(value).strftime("%A %d %B %Y") + f" ({value})"
+            except ValueError:
+                resolved[expr] = value
     if resolved:
         out["dates_in_question"] = resolved
     return out
